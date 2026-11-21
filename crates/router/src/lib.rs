@@ -374,6 +374,12 @@ pub enum Destination {
     Genre(SharedString),
     /// The internet radio stations of a provider that lists them.
     Radio,
+    /// A video, by its YouTube id.
+    Watch(SharedString),
+    /// A YouTube channel's uploads.
+    Channel(SharedString),
+    /// A YouTube playlist's videos.
+    Videos(SharedString),
     Search,
     Settings(SettingsPage),
     /// The equalizer's own settings page, opened from Sound.

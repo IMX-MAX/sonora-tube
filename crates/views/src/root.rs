@@ -10,7 +10,8 @@ use router::{Destination, NavigationEvent, back, forward, navigate};
 use state::{
     ArtistDetail, Detail, GenreDetails, Genres, HistoryState, Home, Io, Library, LibraryState,
     Network, Playback, Profile, Queue, Reconnected, SYSTEM_FONT, Scan, Search, Session,
-    SessionState, Shelf, SideTab, SongDetail, Sonora, Stations,
+    SessionState, Shelf, SideTab, SongDetail, Sonora, Stations, VideoList, VideoSearch,
+    VideoShelf, Watching,
 };
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use ui::WindowFrame;
@@ -26,6 +27,7 @@ use crate::chrome::{
 use crate::screens::radio::RadioView;
 use crate::screens::search::SearchView;
 use crate::screens::settings::SettingsHeader;
+use crate::screens::video::{VideoListView, VideoSearchView, WatchView};
 use crate::shared::ambient::{self, Ambient};
 use crate::shared::confirm::Confirm;
 use crate::shared::playlist_editor::PlaylistEditor;
@@ -68,6 +70,12 @@ struct Screens {
     playlist: Option<Entity<DetailView>>,
     playlist_detail: Option<Entity<Detail>>,
     search: Entity<SearchView>,
+    videos: Entity<VideoSearchView>,
+    video_search: Entity<VideoSearch>,
+    watch: Entity<WatchView>,
+    watching: Entity<Watching>,
+    video_list: Entity<VideoListView>,
+    video_shelf: Entity<VideoList>,
     genres: Entity<Genres>,
     genre: Option<Entity<GenreView>>,
     genre_detail: Option<Entity<GenreDetails>>,
@@ -300,6 +308,14 @@ impl Root {
             )
         });
 
+        let tube = tube::Client::new();
+        let video_search = cx.new(|_| VideoSearch::new(tube.clone(), io.clone()));
+        let videos = cx.new(|cx| VideoSearchView::new(video_search.clone(), cx));
+        let watching = cx.new(|_| Watching::new(tube.clone(), io.clone(), playback.clone()));
+        let watch = cx.new(|cx| WatchView::new(watching.clone(), cx));
+        let video_shelf = cx.new(|_| VideoList::new(tube, io.clone()));
+        let video_list = cx.new(|cx| VideoListView::new(video_shelf.clone(), cx));
+
         let settings = cx.new(|cx| SettingsView::new(session.clone(), playback.clone(), cx));
         let equalizer = Sonora::global(cx).equalizer.clone();
         let equalizer = cx.new(|cx| EqualizerView::new(equalizer, window, cx));
@@ -431,6 +447,12 @@ impl Root {
                 playlist: None,
                 playlist_detail: None,
                 search,
+                videos,
+                video_search,
+                watch,
+                watching,
+                video_list,
+                video_shelf,
                 genres,
                 genre: None,
                 genre_detail: None,
@@ -559,7 +581,7 @@ impl Root {
     fn search_for(&mut self, query: &str, cx: &mut Context<Self>) {
         if !query.is_empty() {
             self.screens
-                .search
+                .videos
                 .update(cx, |search, cx| search.search_for(query, cx));
         }
         self.open_search(cx);
@@ -762,6 +784,14 @@ impl Root {
                 let radio = self.screens.radio.clone();
                 Box::new(move |cx| radio.read(cx).is_loading(cx))
             }
+            Destination::Watch(_) => {
+                let watching = self.screens.watching.clone();
+                Box::new(move |cx| watching.read(cx).is_loading())
+            }
+            Destination::Channel(_) | Destination::Videos(_) => {
+                let list = self.screens.video_shelf.clone();
+                Box::new(move |cx| list.read(cx).is_loading())
+            }
             Destination::Search
             | Destination::Settings(_)
             | Destination::Equalizer
@@ -813,10 +843,19 @@ impl Root {
                 .user_profile
                 .update(cx, |profile, cx| profile.refresh(cx)),
             Destination::Radio => self.screens.radio.update(cx, |radio, cx| radio.reload(cx)),
-            Destination::Search
-            | Destination::Settings(_)
-            | Destination::Equalizer
-            | Destination::Fullscreen => {}
+            Destination::Watch(_) => self
+                .screens
+                .watching
+                .update(cx, |watching, cx| watching.refresh(cx)),
+            Destination::Channel(_) | Destination::Videos(_) => self
+                .screens
+                .video_shelf
+                .update(cx, |list, cx| list.refresh(cx)),
+            Destination::Search => self
+                .screens
+                .video_search
+                .update(cx, |search, cx| search.refresh(cx)),
+            Destination::Settings(_) | Destination::Equalizer | Destination::Fullscreen => {}
         }
     }
 
@@ -1028,8 +1067,32 @@ impl Root {
         let mut header = None;
         let cached = destination != Destination::Equalizer;
 
+        if !matches!(destination, Destination::Watch(_) | Destination::Fullscreen) {
+            self.screens
+                .watching
+                .update(cx, |watching, cx| watching.leave(cx));
+        }
+
         let content: AnyView = match destination {
             Destination::Fullscreen => return,
+            Destination::Watch(id) => {
+                self.screens
+                    .watching
+                    .update(cx, |watching, cx| watching.open(&id, cx));
+                self.screens.watch.clone().into()
+            }
+            Destination::Channel(id) => {
+                self.screens.video_shelf.update(cx, |list, cx| {
+                    list.open(VideoShelf::Channel(id.to_string()), cx);
+                });
+                self.screens.video_list.clone().into()
+            }
+            Destination::Videos(id) => {
+                self.screens.video_shelf.update(cx, |list, cx| {
+                    list.open(VideoShelf::Playlist(id.to_string()), cx);
+                });
+                self.screens.video_list.clone().into()
+            }
             Destination::Home => self.screens.home.clone().into(),
             Destination::History => {
                 let history = self.screens.history.clone();
@@ -1086,10 +1149,7 @@ impl Root {
                 radio.update(cx, |radio, cx| radio.open(cx));
                 radio.into()
             }
-            Destination::Search => {
-                self.screens.genres.update(cx, |genres, cx| genres.load(cx));
-                self.screens.search.clone().into()
-            }
+            Destination::Search => self.screens.videos.clone().into(),
             Destination::Equalizer => {
                 header = Some(self.screens.settings_header.clone().into());
                 self.screens.equalizer.clone().into()
@@ -1212,7 +1272,7 @@ impl Render for Root {
         match self.pending.take() {
             Some(Focus::Search) => self
                 .screens
-                .search
+                .videos
                 .update(cx, |search, cx| search.focus(window, cx)),
             Some(Focus::Workspace) => self
                 .shells
