@@ -168,6 +168,8 @@ pub struct Watching {
     captions: bool,
     /// Whether the picture is in its own small window rather than on the watch page.
     floating: bool,
+    /// Whether the picture fills the whole screen.
+    full: bool,
     task: Option<Task<()>>,
 }
 
@@ -194,6 +196,7 @@ impl Watching {
             muted: false,
             captions: false,
             floating: false,
+            full: false,
             task: None,
         }
     }
@@ -204,6 +207,20 @@ impl Watching {
 
     pub fn watch(&self) -> Option<&Watch> {
         self.watch.as_deref()
+    }
+
+    /// The video on the page as a tile lists it, for the history and for watching later.
+    pub fn video(&self) -> Option<Video> {
+        let watch = self.watch.as_ref()?;
+        Some(Video {
+            id: watch.id.clone(),
+            title: watch.title.clone(),
+            channel: watch.channel.as_ref().map(|channel| tube::ChannelRef {
+                id: channel.id.clone(),
+                name: channel.name.clone(),
+            }),
+            ..Video::default()
+        })
     }
 
     pub fn is_loading(&self) -> bool {
@@ -286,18 +303,11 @@ impl Watching {
                 match crate::settled(loaded, cx) {
                     Ok(watch) => {
                         this.thread.more = watch.comments.clone();
-                        let seen = Video {
-                            id: watch.id.clone(),
-                            title: watch.title.clone(),
-                            channel: watch.channel.as_ref().map(|channel| tube::ChannelRef {
-                                id: channel.id.clone(),
-                                name: channel.name.clone(),
-                            }),
-                            ..Video::default()
-                        };
-                        this.subscriptions
-                            .update(cx, |kept, cx| kept.watched_now(seen, cx));
                         this.watch = Some(Arc::new(watch));
+                        if let Some(seen) = this.video() {
+                            this.subscriptions
+                                .update(cx, |kept, cx| kept.watched_now(seen, cx));
+                        }
                         this.load_comments(cx);
                     }
                     Err(reason) => this.error = Some(reason),
@@ -320,6 +330,7 @@ impl Watching {
 
     /// Stops the video when its page is left, so nothing plays unseen.
     pub fn leave(&mut self, cx: &mut Context<Self>) {
+        self.full = false;
         self.set_paused(true, cx);
     }
 
@@ -338,6 +349,16 @@ impl Watching {
     /// Records that the picture moved to its own window or came back from it.
     pub fn set_floating(&mut self, floating: bool, cx: &mut Context<Self>) {
         self.floating = floating;
+        cx.notify();
+    }
+
+    /// Whether the picture fills the whole screen.
+    pub fn full(&self) -> bool {
+        self.full
+    }
+
+    pub fn set_full(&mut self, full: bool, cx: &mut Context<Self>) {
+        self.full = full;
         cx.notify();
     }
 
@@ -776,6 +797,8 @@ struct Kept {
     channels: Vec<Channel>,
     #[serde(default)]
     watched: Vec<Video>,
+    #[serde(default)]
+    later: Vec<Video>,
 }
 
 /// The channels the user follows, the feed of their newest uploads and the videos watched. All
@@ -857,6 +880,25 @@ impl Subscriptions {
         self.kept.watched.retain(|kept| kept.id != video.id);
         self.kept.watched.insert(0, video);
         self.kept.watched.truncate(HISTORY_CAP);
+        self.save();
+        cx.notify();
+    }
+
+    /// The videos saved to watch later, the latest saved first.
+    pub fn later(&self) -> &[Video] {
+        &self.kept.later
+    }
+
+    pub fn saved(&self, video: &str) -> bool {
+        self.kept.later.iter().any(|kept| kept.id == video)
+    }
+
+    /// Saves the video to watch later, or takes it back out.
+    pub fn toggle_later(&mut self, video: &Video, cx: &mut Context<Self>) {
+        match self.saved(&video.id) {
+            true => self.kept.later.retain(|kept| kept.id != video.id),
+            false => self.kept.later.insert(0, video.clone()),
+        }
         self.save();
         cx.notify();
     }

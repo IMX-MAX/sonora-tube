@@ -1,14 +1,15 @@
 //! The video screens: the search results, the page a video plays on and the page of a channel or
 //! a playlist. All three lay videos out as the same thumbnail tiles.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, AnyView, AnyWindowHandle, App, Bounds, ClipboardItem, Context, Entity, FontWeight,
-    MouseButton, MouseUpEvent, Pixels, Render, ScrollHandle, SharedString, Size, Task, Window,
-    WindowBounds, WindowControlArea, WindowKind, WindowOptions, div, point, px, size,
+    MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ScrollHandle, SharedString,
+    Size, Task, Window, WindowBounds, WindowControlArea, WindowKind, WindowOptions, anchored,
+    deferred, div, point, px, size,
 };
 use i18n::t;
 use router::{Destination, navigate};
@@ -44,7 +45,18 @@ const ROW_SHARE: f32 = 0.42;
 const FIELD_MAX: Pixels = px(640.);
 const ROWS_MAX: Pixels = px(1100.);
 /// How tall the transcript panel is when it sits under the video rather than beside it.
-const SCRIPT_HEIGHT: Pixels = px(320.);
+/// The widest the home page, the history and the saved videos lay their tiles out.
+const FEED_MAX: Pixels = px(1500.);
+/// A followed channel's avatar on the home page, in controls, and its cell in avatars.
+const FACE: f32 = 1.8;
+const FACE_ROOM: f32 = 1.7;
+const SCRIPT_HEIGHT: Pixels = px(420.);
+/// How much of the window's height the picture may take in theater mode.
+const THEATER_SHARE: f32 = 0.78;
+/// How long the controls stay over a full screen picture after the pointer last moved.
+const LINGER: Duration = Duration::from_secs(3);
+/// How see-through the bar under a full screen picture is.
+const VEIL: f32 = 0.85;
 /// How large the picture-in-picture window opens, and how far from the screen's corner.
 const PIP_SIZE: Size<Pixels> = size(px(480.), px(270.));
 const PIP_MARGIN: Pixels = px(24.);
@@ -65,6 +77,8 @@ const VOLUME_WIDTH: Pixels = px(110.);
 struct Tiles {
     width: Pixels,
     gap: Pixels,
+    /// How many tiles one row holds.
+    columns: usize,
 }
 
 impl Tiles {
@@ -75,6 +89,7 @@ impl Tiles {
         Self {
             width: ((available - gap * (columns - 1.)) / columns).floor(),
             gap,
+            columns: columns as usize,
         }
     }
 
@@ -108,6 +123,8 @@ struct Card<'a> {
     badge: Option<SharedString>,
     title: &'a str,
     lines: [SharedString; 2],
+    /// What sits over the picture's top corner, shown while the tile is pointed at.
+    corner: Option<AnyElement>,
 }
 
 /// A tile showing `card`, opening `destination` when pressed.
@@ -124,6 +141,7 @@ fn tile(
         badge,
         title,
         lines,
+        corner,
     } = card;
     let theme = cx.theme();
     let title = SharedString::from(title.to_owned());
@@ -131,7 +149,8 @@ fn tile(
     let radius = theme.radius;
 
     div()
-        .id(id)
+        .id(id.clone())
+        .group(id)
         .role(Role::Link)
         .aria_label(title.clone())
         .aria_description(caption)
@@ -164,7 +183,8 @@ fn tile(
                             .text_color(theme.overlay_foreground)
                             .child(badge),
                     )
-                }),
+                })
+                .children(corner),
         )
         .child(
             div()
@@ -202,6 +222,7 @@ fn video_tile(
     video: &Video,
     place: (usize, usize),
     tiles: Tiles,
+    kept: &Entity<Subscriptions>,
     cx: &App,
 ) -> AnyElement {
     let picture = Artwork::new(Some(video.thumbnail()))
@@ -213,19 +234,59 @@ fn video_tile(
         channel.unwrap_or_default().into(),
         caption([video.views.clone(), video.published.clone()]),
     ];
+    let id = SharedString::from(format!("{scope}-video-{}", video.id));
     tile(
-        format!("{scope}-video-{}", video.id).into(),
+        id,
         Card {
             picture,
             badge: video.length.clone().map(Into::into),
             title: &video.title,
             lines,
+            corner: Some(later(scope, video, kept, cx)),
         },
         place,
         Destination::Watch(video.id.clone().into()),
         tiles,
         cx,
     )
+}
+
+/// The button over a thumbnail's corner that saves the video to watch later or takes it back out.
+/// It shows while its tile, the group named after the tile's id, is pointed at, and stays once saved.
+fn later(scope: &str, video: &Video, kept: &Entity<Subscriptions>, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let saved = kept.read(cx).saved(&video.id);
+    let group = SharedString::from(format!("{scope}-video-{}", video.id));
+    let (kept, video) = (kept.clone(), video.clone());
+
+    div()
+        .absolute()
+        .top_1p5()
+        .right_1p5()
+        .rounded(theme.radius)
+        .corner_smoothing(theme.smoothing)
+        .bg(theme.overlay)
+        .when(!saved, |this| {
+            this.invisible().group_hover(group, |this| this.visible())
+        })
+        .child(
+            Button::new(SharedString::from(format!("{scope}-later-{}", video.id)))
+                .icon(match saved {
+                    true => "icons/check.svg",
+                    false => "icons/clock.svg",
+                })
+                .ghost()
+                .small()
+                .tint(theme.overlay_foreground)
+                .tooltip(match saved {
+                    true => "video-later-remove",
+                    false => "video-later-add",
+                })
+                .on_click(move |_, _, cx| {
+                    kept.update(cx, |kept, cx| kept.toggle_later(&video, cx));
+                }),
+        )
+        .into_any_element()
 }
 
 /// The length of a video over the corner of its thumbnail.
@@ -256,6 +317,7 @@ fn video_row(
     place: (usize, usize),
     picture: Pixels,
     roomy: bool,
+    kept: &Entity<Subscriptions>,
     cx: &App,
 ) -> AnyElement {
     let theme = cx.theme();
@@ -273,8 +335,10 @@ fn video_row(
     };
     let channel = channel.map(SharedString::from);
 
+    let id = SharedString::from(format!("{scope}-video-{}", video.id));
     div()
-        .id(SharedString::from(format!("{scope}-video-{}", video.id)))
+        .id(id.clone())
+        .group(id)
         .role(Role::Link)
         .aria_label(title.clone())
         .aria_description(spoken)
@@ -303,7 +367,8 @@ fn video_row(
                 )
                 .when_some(video.length.clone(), |this, length| {
                     this.child(length_badge(length.into(), cx))
-                }),
+                })
+                .child(later(scope, video, kept, cx)),
         )
         .child(
             div()
@@ -359,36 +424,6 @@ fn video_row(
         .into_any_element()
 }
 
-fn channel_tile(
-    scope: &str,
-    channel: &Channel,
-    place: (usize, usize),
-    tiles: Tiles,
-    cx: &App,
-) -> AnyElement {
-    let side = (tiles.width * 9. / 16.).floor();
-    let picture = Artwork::new(channel.avatar.clone())
-        .size(side)
-        .circle()
-        .fallback(CHANNEL_ICON);
-    tile(
-        format!("{scope}-channel-{}", channel.id).into(),
-        Card {
-            picture,
-            badge: None,
-            title: &channel.name,
-            lines: [
-                channel.subscribers.clone().unwrap_or_default().into(),
-                SharedString::default(),
-            ],
-        },
-        place,
-        Destination::Channel(channel.id.clone().into()),
-        tiles,
-        cx,
-    )
-}
-
 fn playlist_tile(
     scope: &str,
     playlist: &Playlist,
@@ -411,6 +446,7 @@ fn playlist_tile(
                 playlist.detail.clone().unwrap_or_default().into(),
                 SharedString::default(),
             ],
+            corner: None,
         },
         place,
         Destination::Videos(playlist.id.clone().into()),
@@ -641,10 +677,17 @@ impl VideoSearchView {
             })
             .collect();
         let listed = videos.len();
-        let videos = videos
-            .into_iter()
-            .enumerate()
-            .map(|(place, video)| video_row("search", video, (place, listed), picture, true, cx));
+        let videos = videos.into_iter().enumerate().map(|(place, video)| {
+            video_row(
+                "search",
+                video,
+                (place, listed),
+                picture,
+                true,
+                &self.subscriptions,
+                cx,
+            )
+        });
         let playlists: Vec<&Playlist> = found
             .iter()
             .filter_map(|found| match found {
@@ -772,6 +815,14 @@ pub(crate) struct WatchView {
     adjusting: bool,
     /// Whether the pointer is over the speaker or its slider.
     over_volume: bool,
+    /// Whether the comments show in a panel beside the picture rather than under the page.
+    discussed: bool,
+    /// Whether the picture spans the page with everything else under it.
+    theater: bool,
+    /// Whether going full screen put the window into the system's full screen, so leaving undoes it.
+    entered: bool,
+    /// When the pointer last moved over the full screen picture, which keeps its controls up.
+    stirred: Instant,
     _tick: Task<()>,
 }
 
@@ -819,6 +870,10 @@ impl WatchView {
             described: false,
             adjusting: false,
             over_volume: false,
+            discussed: false,
+            theater: false,
+            entered: false,
+            stirred: Instant::now(),
             _tick: tick,
         }
     }
@@ -874,23 +929,32 @@ impl WatchView {
     }
 
     /// The picture, letterboxed in a 16:9 box as wide as the page allows.
-    fn stage(&self, cx: &Context<Self>) -> impl IntoElement {
+    /// The picture, `room` large. Pressing it plays or pauses and pressing it twice fills the screen.
+    fn stage(&self, room: Size<Pixels>, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let view = self.watching.read(cx).view();
         let floating = self.watching.read(cx).floating();
+        let full = self.watching.read(cx).full();
         let toggled = self.watching.clone();
 
         div()
             .id("video-stage")
             .role(Role::Video)
             .aria_label(t!("video-picture"))
-            .w(self.width)
-            .h((self.width * 9. / 16.).floor())
-            .rounded(theme.radius)
-            .corner_smoothing(theme.smoothing)
+            .w(room.width)
+            .h(room.height)
+            .flex_none()
+            .when(!full, |this| {
+                this.rounded(theme.radius).corner_smoothing(theme.smoothing)
+            })
             .overflow_hidden()
             .bg(gpui::black())
-            .on_click(move |_, _, cx| toggled.update(cx, |watching, cx| watching.toggle(cx)))
+            .on_click(move |event, _, cx| {
+                toggled.update(cx, |watching, cx| match event.click_count() {
+                    2 => watching.set_full(!full, cx),
+                    _ => watching.toggle(cx),
+                })
+            })
             .map(|stage| match floating {
                 true => stage
                     .flex()
@@ -915,6 +979,8 @@ impl WatchView {
         let (captioned, silenced) = (self.watching.clone(), self.watching.clone());
         let (scripted, script) = (watching.transcript_open(), self.watching.clone());
         let floating = watching.floating();
+        let (full, filled) = (watching.full(), self.watching.clone());
+        let (discussed, theater) = (self.discussed, self.theater);
         let fraction = match self.pending {
             Some(pending) => pending,
             None if seekable => (position / total).clamp(0., 1.) as f32,
@@ -996,6 +1062,20 @@ impl WatchView {
                     }),
             )
             .child(
+                Button::new("video-discussion")
+                    .icon("icons/message-square.svg")
+                    .ghost()
+                    .selected(discussed)
+                    .tooltip(match discussed {
+                        true => "video-discussion-hide",
+                        false => "video-discussion-show",
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.discussed = !this.discussed;
+                        cx.notify();
+                    })),
+            )
+            .child(
                 Button::new("video-captions")
                     .label(t!("video-captions"))
                     .ghost()
@@ -1018,6 +1098,37 @@ impl WatchView {
                         false => "video-pip-open",
                     })
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_pip(cx))),
+            )
+            .when(!full, |this| {
+                this.child(
+                    Button::new("video-theater")
+                        .icon("icons/rectangle-horizontal.svg")
+                        .ghost()
+                        .selected(theater)
+                        .tooltip(match theater {
+                            true => "video-theater-leave",
+                            false => "video-theater-enter",
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.theater = !this.theater;
+                            cx.notify();
+                        })),
+                )
+            })
+            .child(
+                Button::new("video-full")
+                    .icon(match full {
+                        true => "icons/minimize.svg",
+                        false => "icons/maximize.svg",
+                    })
+                    .ghost()
+                    .tooltip(match full {
+                        true => "video-full-leave",
+                        false => "video-full-enter",
+                    })
+                    .on_click(move |_, _, cx| {
+                        filled.update(cx, |watching, cx| watching.set_full(!full, cx));
+                    }),
             )
             .child(
                 // The slider folds away until the pointer is over the speaker or dragging it.
@@ -1101,7 +1212,7 @@ impl WatchView {
 
     /// The transcript panel, `height` tall: its heading with the buttons to copy and close it,
     /// then every line with its time, the one being spoken lit. A line seeks to its time.
-    fn transcript(&self, height: Pixels, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
+    fn transcript(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let theme = *cx.theme();
         let watching = self.watching.read(cx);
         if !watching.transcript_open() {
@@ -1201,7 +1312,8 @@ impl WatchView {
                 .flex()
                 .flex_col()
                 .w_full()
-                .h(height)
+                .flex_1()
+                .min_h_0()
                 .rounded(theme.radius)
                 .corner_smoothing(theme.smoothing)
                 .border_1()
@@ -1267,8 +1379,135 @@ impl WatchView {
                         .min_h_0()
                         .overflow_y_scroll()
                         .child(body),
-                ),
+                )
+                .into_any_element(),
         )
+    }
+
+    /// The comments in a panel shaped like the transcript's, once they are asked for there.
+    fn discussion(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let theme = *cx.theme();
+        if !self.discussed {
+            return None;
+        }
+        let title: SharedString = match self.watching.read(cx).comment_total() {
+            Some(total) => total.to_owned().into(),
+            None => t!("video-comments"),
+        };
+
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .flex_1()
+                .min_h_0()
+                .rounded(theme.radius)
+                .corner_smoothing(theme.smoothing)
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.sidebar)
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap_1()
+                        .pl_3()
+                        .pr_1()
+                        .py_1()
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(
+                            div()
+                                .id("video-discussion-heading")
+                                .role(Role::Heading)
+                                .aria_level(2)
+                                .aria_label(title.clone())
+                                .flex_1()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_size(theme.text(Text::Label))
+                                .text_color(theme.foreground)
+                                .child(title),
+                        )
+                        .child(
+                            Button::new("video-discussion-close")
+                                .icon("icons/x.svg")
+                                .ghost()
+                                .tooltip("video-discussion-hide")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.discussed = false;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("video-discussion-lines")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .p_3()
+                        .child(self.comments(false, cx)),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The panels asked for, the transcript first: side by side they share their column's height.
+    fn panels(&self, cx: &Context<Self>) -> Vec<AnyElement> {
+        self.transcript(cx)
+            .into_iter()
+            .chain(self.discussion(cx))
+            .collect()
+    }
+
+    /// The picture over the whole window, its controls coming up while the pointer moves or the
+    /// video is paused.
+    fn screen(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+        let theme = *cx.theme();
+        let room = window.viewport_size();
+        let paused = self
+            .watching
+            .read(cx)
+            .player()
+            .is_none_or(|player| player.paused());
+        let shown = paused || self.stirred.elapsed() < LINGER;
+
+        deferred(
+            anchored().position(Point::default()).child(
+                div()
+                    .id("video-screen")
+                    .relative()
+                    .w(room.width)
+                    .h(room.height)
+                    .bg(gpui::black())
+                    .occlude()
+                    .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, cx| {
+                        let hidden = this.stirred.elapsed() >= LINGER;
+                        this.stirred = Instant::now();
+                        if hidden {
+                            cx.notify();
+                        }
+                    }))
+                    .child(self.stage(room, cx))
+                    .when(shown, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .bottom_0()
+                                .left_0()
+                                .right_0()
+                                .px_4()
+                                .py_2()
+                                .bg(theme.background.opacity(VEIL))
+                                .child(self.controls(cx)),
+                        )
+                    }),
+            ),
+        )
+        .with_priority(1)
     }
 
     /// The title, the numbers under it, the channel and the description.
@@ -1312,6 +1551,26 @@ impl WatchView {
                     let name = SharedString::from(channel.name.clone());
                     let opened = SharedString::from(channel.id.clone());
                     let button = subscribe("video-subscribe", channel, &self.subscriptions, cx);
+                    let saved = self.subscriptions.read(cx).saved(&watch.id);
+                    let (kept, page) = (self.subscriptions.clone(), self.watching.clone());
+                    let later = Button::new("video-later")
+                        .icon(match saved {
+                            true => "icons/check.svg",
+                            false => "icons/clock.svg",
+                        })
+                        .label(t!("video-later"))
+                        .secondary()
+                        .selected(saved)
+                        .tooltip(match saved {
+                            true => "video-later-remove",
+                            false => "video-later-add",
+                        })
+                        .on_click(move |_, _, cx| {
+                            let Some(video) = page.read(cx).video() else {
+                                return;
+                            };
+                            kept.update(cx, |kept, cx| kept.toggle_later(&video, cx));
+                        });
                     this.child(
                         div()
                             .id("video-channel")
@@ -1344,7 +1603,8 @@ impl WatchView {
                                         )
                                     }),
                             )
-                            .child(button),
+                            .child(button)
+                            .child(later),
                     )
                 })
                 .when(!watch.description.is_empty(), |this| {
@@ -1483,7 +1743,8 @@ impl WatchView {
             .into_any_element()
     }
 
-    fn comments(&self, cx: &Context<Self>) -> impl IntoElement {
+    /// The comments, under their count as a heading when `headed`.
+    fn comments(&self, headed: bool, cx: &Context<Self>) -> impl IntoElement {
         let watching = self.watching.read(cx);
         let comments = watching.comments();
         let total = comments.len();
@@ -1499,13 +1760,15 @@ impl WatchView {
             .flex()
             .flex_col()
             .gap_4()
-            .child(
-                heading(title.clone(), cx)
-                    .id("video-comments-heading")
-                    .role(Role::Heading)
-                    .aria_level(2)
-                    .aria_label(title),
-            )
+            .when(headed, |this| {
+                this.child(
+                    heading(title.clone(), cx)
+                        .id("video-comments-heading")
+                        .role(Role::Heading)
+                        .aria_level(2)
+                        .aria_label(title),
+                )
+            })
             .children(
                 comments
                     .iter()
@@ -1544,7 +1807,16 @@ impl WatchView {
             related
                 .iter()
                 .enumerate()
-                .map(|(place, video)| video_tile("related", video, (place, total), tiles, cx))
+                .map(|(place, video)| {
+                    video_tile(
+                        "related",
+                        video,
+                        (place, total),
+                        tiles,
+                        &self.subscriptions,
+                        cx,
+                    )
+                })
                 .collect(),
         );
 
@@ -1656,9 +1928,18 @@ impl Render for WatchView {
         let pad = cx.theme().metrics.inset;
         let gap = cx.theme().metrics.inset;
         let whole = cells::content_width(window, pad * 2., cx);
-        // Only the transcript sits beside the picture, and only once it is asked for.
-        self.beside =
-            Chrome::room(window, cx).fits(Room::Wide) && self.watching.read(cx).transcript_open();
+        let full = self.watching.read(cx).full();
+        if full != self.entered {
+            // Leaving only undoes a full screen this went into, so a window already there stays.
+            if full != window.is_fullscreen() {
+                window.toggle_fullscreen();
+            }
+            self.entered = full;
+            self.stirred = Instant::now();
+        }
+        // A panel sits beside the picture only once it is asked for and there is room.
+        let side = self.discussed || self.watching.read(cx).transcript_open();
+        self.beside = side && Chrome::room(window, cx).fits(Room::Wide);
         let room = match self.beside {
             true => whole.min(WATCH_MAX) - NEXT_WIDTH - gap,
             false => whole.min(STAGE_MAX),
@@ -1667,84 +1948,134 @@ impl Render for WatchView {
             self.width = room;
         }
         if let Some(view) = self.watching.read(cx).view() {
-            let radius = cx.theme().radius;
+            let radius = match full {
+                true => Pixels::ZERO,
+                false => cx.theme().radius,
+            };
             view.update(cx, |view, cx| view.round(radius, cx));
         }
-        let beside = self.beside;
+        let (beside, theater, discussed) = (self.beside, self.theater, self.discussed);
+        let viewport = window.viewport_size();
+        let stage = match theater {
+            true => size(
+                whole,
+                (whole * 9. / 16.)
+                    .min(viewport.height * THEATER_SHARE)
+                    .floor(),
+            ),
+            false => size(self.width, (self.width * 9. / 16.).floor()),
+        };
+        // Beside the picture the panels run down to the foot of the window.
+        let column = (viewport.height - cx.theme().metrics.title_bar - pad * 2.).max(SCRIPT_HEIGHT);
         let watching = self.watching.read(cx);
         let loading = watching.is_loading();
         let failure = watching.error().map(str::to_owned);
         let retried = self.watching.clone();
+        let player = (!full).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .w(stage.width)
+                .gap_2()
+                .child(self.stage(stage, cx))
+                .child(self.controls(cx))
+        });
+        let (above, within) = match theater {
+            true => (player, None),
+            false => (None, player),
+        };
 
-        div().flex().flex_col().size_full().child(
-            Scroller::new("video-watch-page", &self.scrollbar)
-                .hold()
-                .bottom_inset(Chrome::bottom(cx))
-                .py(pad)
-                .px(pad + Chrome::margin(window, cx))
-                .child(
-                    div()
-                        .flex()
-                        .items_start()
-                        .justify_center()
-                        .gap(gap)
-                        .map(|page| match beside {
-                            true => page,
-                            false => page.flex_col().items_center(),
-                        })
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .flex_none()
-                                .w(self.width)
-                                .gap_6()
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap_2()
-                                        .child(self.stage(cx))
-                                        .child(self.controls(cx)),
-                                )
-                                .when(!beside, |this| {
-                                    this.children(self.transcript(SCRIPT_HEIGHT, cx))
-                                })
-                                .when(loading, |this| this.child(waiting("video-watch-waiting")))
-                                .when_some(failure, |this, reason| {
-                                    this.child(
-                                        div().id("video-watch-failure").role(Role::Alert).child(
-                                            trouble::lost(
-                                                "video-watch-lost",
-                                                t!("trouble-not-loaded"),
-                                                Some(&reason),
-                                                move |_, _, cx| {
-                                                    retried.update(cx, |watching, cx| {
-                                                        watching.refresh(cx)
-                                                    });
-                                                },
-                                                cx,
-                                            ),
-                                        ),
-                                    )
-                                })
-                                .children(self.about(cx))
-                                .children(self.related(cx))
-                                .when(self.watching.read(cx).watch().is_some(), |this| {
-                                    this.child(self.comments(cx))
-                                }),
-                        )
-                        .when(beside, |page| {
-                            let height = (self.width * 9. / 16.).floor();
-                            page.child(
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .when(full, |this| this.child(self.screen(window, cx)))
+            .child(
+                Scroller::new("video-watch-page", &self.scrollbar)
+                    .hold()
+                    .bottom_inset(Chrome::bottom(cx))
+                    .py(pad)
+                    .px(pad + Chrome::margin(window, cx))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap_6()
+                            .children(above)
+                            .child(
                                 div()
-                                    .flex_none()
-                                    .w(NEXT_WIDTH)
-                                    .children(self.transcript(height, cx)),
-                            )
-                        }),
-                ),
-        )
+                                    .flex()
+                                    .items_start()
+                                    .justify_center()
+                                    .gap(gap)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .flex_none()
+                                            .w(self.width)
+                                            .gap_6()
+                                            .children(within)
+                                            .when(!beside, |this| {
+                                                this.children(self.panels(cx).into_iter().map(
+                                                    |panel| {
+                                                        div()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .h(SCRIPT_HEIGHT)
+                                                            .child(panel)
+                                                    },
+                                                ))
+                                            })
+                                            .when(loading, |this| {
+                                                this.child(waiting("video-watch-waiting"))
+                                            })
+                                            .when_some(failure, |this, reason| {
+                                                this.child(
+                                                    div()
+                                                        .id("video-watch-failure")
+                                                        .role(Role::Alert)
+                                                        .child(trouble::lost(
+                                                            "video-watch-lost",
+                                                            t!("trouble-not-loaded"),
+                                                            Some(&reason),
+                                                            move |_, _, cx| {
+                                                                retried.update(
+                                                                    cx,
+                                                                    |watching, cx| {
+                                                                        watching.refresh(cx)
+                                                                    },
+                                                                );
+                                                            },
+                                                            cx,
+                                                        )),
+                                                )
+                                            })
+                                            .children(self.about(cx))
+                                            .children(self.related(cx))
+                                            .when(
+                                                !discussed
+                                                    && self.watching.read(cx).watch().is_some(),
+                                                |this| this.child(self.comments(true, cx)),
+                                            ),
+                                    )
+                                    .when(beside, |page| {
+                                        page.child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .flex_none()
+                                                .w(NEXT_WIDTH)
+                                                .h(column)
+                                                .gap(gap)
+                                                .children(self.panels(cx)),
+                                        )
+                                    }),
+                            ),
+                    ),
+            )
     }
 }
 
@@ -1838,7 +2169,16 @@ impl Render for VideoListView {
         let cards: Vec<AnyElement> = videos
             .iter()
             .enumerate()
-            .map(|(place, video)| video_tile("list", video, (place, total), tiles, cx))
+            .map(|(place, video)| {
+                video_tile(
+                    "list",
+                    video,
+                    (place, total),
+                    tiles,
+                    &self.subscriptions,
+                    cx,
+                )
+            })
             .collect();
         let empty = cards.is_empty() && !loading;
         let next = self.list.clone();
@@ -1897,6 +2237,8 @@ pub(crate) enum Feed {
     Subscriptions,
     /// The videos watched, the latest first.
     History,
+    /// The videos saved to watch later.
+    Later,
 }
 
 /// The home page and the watch history: a heading and a grid of videos.
@@ -1927,10 +2269,107 @@ impl VideoFeedView {
     }
 }
 
+impl VideoFeedView {
+    /// A heading with what goes at its far end.
+    fn titled(&self, title: SharedString, trailing: Option<AnyElement>, cx: &App) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(heading(title, cx))
+            .children(trailing)
+            .into_any_element()
+    }
+
+    /// The followed channels as one row of avatars over their names, each opening its page.
+    fn followed(&self, cx: &App) -> Option<AnyElement> {
+        let theme = cx.theme();
+        let channels = self.subscriptions.read(cx).channels();
+        if self.feed != Feed::Subscriptions || channels.is_empty() {
+            return None;
+        }
+        let total = channels.len();
+        let face = theme.metrics.control * FACE;
+
+        Some(
+            div()
+                .id("video-home-channels")
+                .flex()
+                .gap_4()
+                .overflow_x_scroll()
+                .children(channels.iter().enumerate().map(|(place, channel)| {
+                    let name = SharedString::from(channel.name.clone());
+                    let destination = Destination::Channel(channel.id.clone().into());
+                    div()
+                        .id(SharedString::from(format!("home-channel-{}", channel.id)))
+                        .role(Role::Link)
+                        .aria_label(name.clone())
+                        .aria_position_in_set(place + 1)
+                        .aria_size_of_set(total)
+                        .flex()
+                        .flex_col()
+                        .flex_none()
+                        .items_center()
+                        .gap_2()
+                        .w(face * FACE_ROOM)
+                        .p_2()
+                        .rounded(theme.radius)
+                        .corner_smoothing(theme.smoothing)
+                        .cursor_pointer()
+                        .hover(|this| this.bg(theme.secondary))
+                        .on_click(move |_, _, cx| navigate(destination.clone(), cx))
+                        .child(Avatar::new(channel.avatar.clone()).size(face))
+                        .child(
+                            div()
+                                .w_full()
+                                .truncate()
+                                .text_center()
+                                .text_size(theme.text(Text::Small))
+                                .text_color(theme.muted_foreground)
+                                .child(name),
+                        )
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// The first row of the videos saved for later, on the home page, with a way to the rest.
+    fn saved(&self, tiles: Tiles, cx: &App) -> Vec<AnyElement> {
+        let later = self.subscriptions.read(cx).later();
+        if self.feed != Feed::Subscriptions || later.is_empty() {
+            return Vec::new();
+        }
+        let shown = &later[..later.len().min(tiles.columns)];
+        let total = shown.len();
+        let all = Button::new("video-later-all")
+            .label(t!("video-later-all"))
+            .ghost()
+            .on_click(|_, _, cx| navigate(Destination::Later, cx));
+        let cards = shown
+            .iter()
+            .enumerate()
+            .map(|(place, video)| {
+                video_tile(
+                    "saved",
+                    video,
+                    (place, total),
+                    tiles,
+                    &self.subscriptions,
+                    cx,
+                )
+            })
+            .collect();
+        vec![
+            self.titled(t!("video-later"), Some(all.into_any_element()), cx),
+            tiles.grid(cards).into_any_element(),
+        ]
+    }
+}
+
 impl Render for VideoFeedView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pad = cx.theme().metrics.inset;
-        let room = cells::content_width(window, pad * 2., cx);
+        let room = cells::content_width(window, pad * 2., cx).min(FEED_MAX);
         if (room - self.width).abs() >= STEADY {
             self.width = room;
         }
@@ -1939,7 +2378,7 @@ impl Render for VideoFeedView {
         let (kind, title, hint, videos) = match self.feed {
             Feed::Subscriptions => (
                 "feed",
-                t!("video-feed"),
+                t!("video-home-latest"),
                 t!("video-feed-empty"),
                 kept.feed(),
             ),
@@ -1949,27 +2388,34 @@ impl Render for VideoFeedView {
                 t!("video-history-empty"),
                 kept.watched(),
             ),
+            Feed::Later => (
+                "later",
+                t!("video-later"),
+                t!("video-later-empty"),
+                kept.later(),
+            ),
         };
-        let loading = self.feed == Feed::Subscriptions && kept.is_loading();
+        let home = self.feed == Feed::Subscriptions;
+        let loading = home && kept.is_loading();
         let total = videos.len();
         let cards: Vec<AnyElement> = videos
             .iter()
             .enumerate()
-            .map(|(place, video)| video_tile(kind, video, (place, total), tiles, cx))
+            .map(|(place, video)| {
+                video_tile(kind, video, (place, total), tiles, &self.subscriptions, cx)
+            })
             .collect();
         let empty = cards.is_empty() && !loading;
-        let channels = match self.feed {
-            Feed::Subscriptions => kept.channels(),
-            Feed::History => &[],
-        };
-        let followed = channels.len();
-        let channels: Vec<AnyElement> = channels
-            .iter()
-            .enumerate()
-            .map(|(place, channel)| channel_tile("followed", channel, (place, followed), tiles, cx))
-            .collect();
-        let clearable = self.feed == Feed::History && !empty;
         let cleared = self.subscriptions.clone();
+        let trailing = (self.feed == Feed::History && !empty).then(|| {
+            Button::new("video-history-clear")
+                .label(t!("video-history-clear"))
+                .secondary()
+                .on_click(move |_, _, cx| {
+                    cleared.update(cx, |kept, cx| kept.forget_watched(cx));
+                })
+                .into_any_element()
+        });
 
         div().flex().flex_col().size_full().child(
             Scroller::new("video-feed-page", &self.scrollbar)
@@ -1978,44 +2424,42 @@ impl Render for VideoFeedView {
                 .py(pad)
                 .px(pad + Chrome::margin(window, cx))
                 .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_6()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .child(heading(title, cx))
-                                .when(clearable, |this| {
-                                    this.child(
-                                        Button::new("video-history-clear")
-                                            .label(t!("video-history-clear"))
-                                            .secondary()
-                                            .on_click(move |_, _, cx| {
-                                                cleared.update(cx, |kept, cx| {
-                                                    kept.forget_watched(cx);
-                                                });
-                                            }),
-                                    )
-                                }),
-                        )
-                        .child(tiles.grid(cards))
-                        .when(empty, |this| {
-                            this.child(
-                                div()
-                                    .id("video-feed-empty")
-                                    .role(Role::Status)
-                                    .aria_label(hint.clone())
-                                    .child(vacant(hint, cx)),
-                            )
-                        })
-                        .when(loading, |this| this.child(waiting("video-feed-waiting")))
-                        .when(!channels.is_empty(), |this| {
-                            this.child(heading(t!("video-feed-channels"), cx))
-                                .child(tiles.grid(channels))
-                        }),
+                    div().flex().justify_center().child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .w(self.width)
+                            .gap_6()
+                            .children(self.followed(cx))
+                            .children(self.saved(tiles, cx))
+                            .child(self.titled(title, trailing, cx))
+                            .child(tiles.grid(cards))
+                            .when(empty, |this| {
+                                this.child(
+                                    div()
+                                        .id("video-feed-empty")
+                                        .role(Role::Status)
+                                        .aria_label(hint.clone())
+                                        .flex()
+                                        .flex_col()
+                                        .items_center()
+                                        .gap_3()
+                                        .child(vacant(hint, cx))
+                                        .when(home, |this| {
+                                            this.child(
+                                                Button::new("video-home-find")
+                                                    .icon("icons/search.svg")
+                                                    .label(t!("video-home-find"))
+                                                    .secondary()
+                                                    .on_click(|_, _, cx| {
+                                                        navigate(Destination::Search, cx)
+                                                    }),
+                                            )
+                                        }),
+                                )
+                            })
+                            .when(loading, |this| this.child(waiting("video-feed-waiting"))),
+                    ),
                 ),
         )
     }

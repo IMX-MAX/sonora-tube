@@ -74,6 +74,7 @@ struct Screens {
     subscriptions: Entity<Subscriptions>,
     video_home: Entity<VideoFeedView>,
     video_history: Entity<VideoFeedView>,
+    video_later: Entity<VideoFeedView>,
     genres: Entity<Genres>,
     genre: Option<Entity<GenreView>>,
     genre_detail: Option<Entity<GenreDetails>>,
@@ -327,6 +328,7 @@ impl Root {
         let video_shelf = cx.new(|_| VideoList::new(tube, io.clone()));
         let video_home =
             cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::Subscriptions, cx));
+        let video_later = cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::Later, cx));
         let video_history =
             cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::History, cx));
         let video_list =
@@ -470,6 +472,7 @@ impl Root {
                 subscriptions,
                 video_home,
                 video_history,
+                video_later,
                 genres,
                 genre: None,
                 genre_detail: None,
@@ -695,6 +698,12 @@ impl Root {
             back(cx);
             return;
         }
+        if self.screens.watching.read(cx).full() {
+            self.screens
+                .watching
+                .update(cx, |watching, cx| watching.set_full(false, cx));
+            return;
+        }
         match router::trail(cx).read(cx).current() {
             Destination::Equalizer => {
                 self.screens.equalizer.update(cx, |view, cx| {
@@ -763,7 +772,7 @@ impl Root {
                 let kept = self.screens.subscriptions.clone();
                 Box::new(move |cx| kept.read(cx).is_loading())
             }
-            Destination::History => return None,
+            Destination::History | Destination::Later => return None,
             Destination::Library(_) => {
                 let session = Sonora::global(cx).session.clone();
                 let streaming = shelf(Shelf::Streaming);
@@ -821,7 +830,7 @@ impl Root {
                 .screens
                 .subscriptions
                 .update(cx, |kept, cx| kept.refresh(cx)),
-            Destination::History => {}
+            Destination::History | Destination::Later => {}
             Destination::Library(_) => library.update(cx, |library, cx| {
                 library.reload(Shelf::Streaming, cx);
                 library.reload(Shelf::Local, cx);
@@ -1110,6 +1119,7 @@ impl Root {
                 self.screens.video_home.clone().into()
             }
             Destination::History => self.screens.video_history.clone().into(),
+            Destination::Later => self.screens.video_later.clone().into(),
             Destination::Library(tab) => {
                 self.screens
                     .library

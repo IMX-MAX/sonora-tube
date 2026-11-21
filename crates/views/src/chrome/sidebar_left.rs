@@ -33,9 +33,10 @@ const PINS: &str = "sidebar-pins";
 /// The sidebar's navigation rows in order: the entry that can hide each, its icon and where it goes.
 /// Settings also lives in the account menu of the title bar and shows here only when added. It
 /// opens on the settings page last visited rather than on the one named here.
-pub(crate) const NAV: [(NavEntry, &str, Destination); 4] = [
+pub(crate) const NAV: [(NavEntry, &str, Destination); 5] = [
     (NavEntry::Home, "icons/house.svg", Destination::Home),
     (NavEntry::Search, "icons/search.svg", Destination::Search),
+    (NavEntry::Later, "icons/clock.svg", Destination::Later),
     (
         NavEntry::History,
         "icons/rotate-ccw-clock.svg",
@@ -316,8 +317,8 @@ impl SidebarLeft {
                 .filter(|index| stations || NAV[*index].0 != NavEntry::Radio)
                 .collect()
         };
-        let top = shown(0..4, cx);
-        let library = shown(4..NAV.len(), cx);
+        let top = shown(0..5, cx);
+        let library = shown(5..NAV.len(), cx);
         let mut rows = Vec::new();
         if self.folded() {
             for (group, indices) in [top, library]

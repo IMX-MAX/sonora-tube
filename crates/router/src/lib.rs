@@ -40,14 +40,17 @@ pub enum NavEntry {
     Playlists,
     Radio,
     History,
+    /// The videos saved to watch later.
+    Later,
     Settings,
     Pins,
 }
 
 impl NavEntry {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Home,
         Self::Search,
+        Self::Later,
         Self::History,
         Self::Settings,
         Self::Songs,
@@ -68,6 +71,7 @@ impl NavEntry {
             Self::Playlists => "playlists",
             Self::Radio => "radio",
             Self::History => "history",
+            Self::Later => "later",
             Self::Settings => "settings",
             Self::Pins => "sidebar-pins",
         }
@@ -83,6 +87,7 @@ impl NavEntry {
             Self::Playlists => "nav-playlists",
             Self::Radio => "nav-radio",
             Self::History => "nav-history",
+            Self::Later => "nav-later",
             Self::Settings => "nav-settings",
             Self::Pins => "nav-pinned",
         }
@@ -351,6 +356,8 @@ impl SettingsTab {
 pub enum Destination {
     Home,
     History,
+    /// The videos saved to watch later.
+    Later,
     Library(LibraryTab),
     Album(SharedString),
     Song(SharedString),
