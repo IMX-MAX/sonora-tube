@@ -44,6 +44,7 @@ impl RenderOnce for Steps {
                     .w_full()
                     .min_w_0()
                     .rounded(theme.radius)
+                    .corner_smoothing(theme.smoothing)
                     .p_1()
                     .border_color(theme.border)
                     .child(

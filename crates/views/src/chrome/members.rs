@@ -197,6 +197,7 @@ impl Render for Members {
                 .h(theme.metrics.row)
                 .px_2()
                 .rounded(theme.radius)
+                .corner_smoothing(theme.smoothing)
                 .child(jam::face(member, theme.metrics.control_small))
                 .child(div().flex_1().min_w_0().truncate().child(shown))
                 .when(member.host, |this| {

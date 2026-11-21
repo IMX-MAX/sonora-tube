@@ -238,6 +238,7 @@ impl SettingsView {
             .mx_neg_3()
             .px_3()
             .rounded(theme.radius)
+            .corner_smoothing(theme.smoothing)
             .cursor_pointer()
             .on_click(|_, _, cx| navigate(Destination::Equalizer, cx))
             .when_some(note.clone(), |row, note| row.py_2().aria_description(note))

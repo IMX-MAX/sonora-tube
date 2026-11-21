@@ -157,6 +157,7 @@ fn tile(
                             .px_1p5()
                             .py_0p5()
                             .rounded(radius)
+                            .corner_smoothing(theme.smoothing)
                             .bg(theme.overlay)
                             .text_size(theme.text(Text::Small))
                             .font_weight(FontWeight::MEDIUM)
@@ -205,7 +206,8 @@ fn video_tile(
 ) -> AnyElement {
     let picture = Artwork::new(Some(video.thumbnail()))
         .size(tiles.width)
-        .wide((tiles.width * 9. / 16.).floor());
+        .wide((tiles.width * 9. / 16.).floor())
+        .corner_radius(cx.theme().radius);
     let channel = video.channel.as_ref().map(|channel| channel.name.clone());
     let lines = [
         channel.unwrap_or_default().into(),
@@ -237,6 +239,7 @@ fn length_badge(length: SharedString, cx: &App) -> impl IntoElement {
         .px_1p5()
         .py_0p5()
         .rounded(theme.radius)
+        .corner_smoothing(theme.smoothing)
         .bg(theme.overlay)
         .text_size(theme.text(Text::Small))
         .font_weight(FontWeight::MEDIUM)
@@ -280,6 +283,7 @@ fn video_row(
         .flex()
         .w_full()
         .rounded(theme.radius)
+        .corner_smoothing(theme.smoothing)
         .cursor_pointer()
         .hover(|this| this.bg(theme.secondary))
         .on_click(move |_, _, cx| navigate(destination.clone(), cx))
@@ -294,7 +298,8 @@ fn video_row(
                 .child(
                     Artwork::new(Some(video.thumbnail()))
                         .size(picture)
-                        .wide((picture * 9. / 16.).floor()),
+                        .wide((picture * 9. / 16.).floor())
+                        .corner_radius(cx.theme().radius),
                 )
                 .when_some(video.length.clone(), |this, length| {
                     this.child(length_badge(length.into(), cx))
@@ -394,6 +399,7 @@ fn playlist_tile(
     let picture = Artwork::new(playlist.thumbnail.clone())
         .size(tiles.width)
         .wide((tiles.width * 9. / 16.).floor())
+        .corner_radius(cx.theme().radius)
         .fallback(PLAYLIST_ICON);
     tile(
         format!("{scope}-playlist-{}", playlist.id).into(),
@@ -440,6 +446,7 @@ fn channel_chip(
         .p_2()
         .pr_3()
         .rounded(theme.radius)
+        .corner_smoothing(theme.smoothing)
         .bg(theme.secondary)
         .hover(|this| this.bg(theme.secondary_hover))
         .cursor_pointer()
@@ -874,6 +881,7 @@ impl WatchView {
             .w(self.width)
             .h((self.width * 9. / 16.).floor())
             .rounded(theme.radius)
+            .corner_smoothing(theme.smoothing)
             .overflow_hidden()
             .bg(gpui::black())
             .on_click(move |_, _, cx| toggled.update(cx, |watching, cx| watching.toggle(cx)))
@@ -1129,6 +1137,7 @@ impl WatchView {
                             .px_2()
                             .py_1()
                             .rounded(theme.radius)
+                            .corner_smoothing(theme.smoothing)
                             .cursor_pointer()
                             .text_size(theme.text(Text::Small))
                             .when(lit, |this| this.bg(theme.secondary))
@@ -1164,6 +1173,7 @@ impl WatchView {
                 .w_full()
                 .h(height)
                 .rounded(theme.radius)
+                .corner_smoothing(theme.smoothing)
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.sidebar)
@@ -1312,6 +1322,7 @@ impl WatchView {
                         div()
                             .p(theme.metrics.pad)
                             .rounded(theme.radius)
+                            .corner_smoothing(theme.smoothing)
                             .bg(theme.secondary)
                             .flex()
                             .flex_col()
@@ -1574,6 +1585,7 @@ impl Render for PipView {
                     .gap_1()
                     .p_0p5()
                     .rounded(theme.radius)
+                    .corner_smoothing(theme.smoothing)
                     .bg(theme.overlay)
                     .invisible()
                     .group_hover("video-pip", |this| this.visible())
@@ -1623,6 +1635,10 @@ impl Render for WatchView {
         };
         if (room - self.width).abs() >= STEADY {
             self.width = room;
+        }
+        if let Some(view) = self.watching.read(cx).view() {
+            let radius = cx.theme().radius;
+            view.update(cx, |view, cx| view.round(radius, cx));
         }
         let beside = self.beside;
         let watching = self.watching.read(cx);

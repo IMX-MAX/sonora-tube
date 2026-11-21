@@ -121,6 +121,7 @@ impl RenderOnce for InfoCard {
             .when(!plain, |this| {
                 this.when(!flush, |this| this.p_5())
                     .rounded(theme.radius)
+                    .corner_smoothing(theme.smoothing)
                     .bg(theme.secondary.opacity(0.45))
                     .when(!borderless, |this| {
                         this.border_1().border_color(theme.border)
@@ -210,6 +211,7 @@ impl RenderOnce for Fact {
             .px(theme.metrics.pad)
             .py(theme.metrics.pad / 2.)
             .rounded(theme.radius)
+            .corner_smoothing(theme.smoothing)
             .when(striped, |this| this.bg(theme.table_hover.opacity(0.35)))
             .child(said(
                 div().flex_1().min_w_0().text_color(theme.muted_foreground),

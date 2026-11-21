@@ -245,6 +245,7 @@ impl RenderOnce for OptionCard {
                     .size_full()
                     .overflow_hidden()
                     .rounded(theme.radius)
+                    .corner_smoothing(theme.smoothing)
                     .border_1()
                     .when(dashed, |this| this.border_dashed())
                     .border_color(mix(theme.border, theme.muted_foreground, lit))
@@ -259,6 +260,7 @@ impl RenderOnce for OptionCard {
                         .absolute()
                         .inset_0()
                         .rounded(theme.radius)
+                        .corner_smoothing(theme.smoothing)
                         .bg(theme.background.opacity(1. - FADED)),
                 )
             })

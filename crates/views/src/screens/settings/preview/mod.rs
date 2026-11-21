@@ -240,6 +240,7 @@ pub(super) fn framed(content: impl IntoElement, cx: &App) -> Div {
                 .w_full()
                 .overflow_hidden()
                 .rounded(theme.radius)
+                .corner_smoothing(theme.smoothing)
                 .child(content),
         )
         .when(reach > Pixels::ZERO, |this| this.child(ring))
@@ -248,6 +249,7 @@ pub(super) fn framed(content: impl IntoElement, cx: &App) -> Div {
                 .absolute()
                 .inset_0()
                 .rounded(theme.radius)
+                .corner_smoothing(theme.smoothing)
                 .border_1()
                 .border_color(theme.border),
         )

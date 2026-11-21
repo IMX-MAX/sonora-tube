@@ -550,6 +550,7 @@ pub(super) fn corner(rounding: Rounding, cx: &App) -> Div {
             .w_full()
             .h_full()
             .rounded(rounding.radius())
+            .corner_smoothing(rounding.smoothing())
             .border_2()
             .border_color(theme.muted_foreground)
             .bg(theme.secondary),

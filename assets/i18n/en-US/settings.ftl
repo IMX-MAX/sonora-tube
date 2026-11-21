@@ -502,6 +502,7 @@ corners-square = Square
 corners-subtle = Subtle
 corners-rounded = Rounded
 corners-round = Round
+corners-squircle = Squircle
 
 # motion
 motion-system = System

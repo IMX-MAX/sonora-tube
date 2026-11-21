@@ -65,7 +65,8 @@ impl Shelves {
                             .mx(theme.metrics.inset)
                             .w(HEADING)
                             .h(theme.text(Text::Large))
-                            .rounded(theme.radius),
+                            .rounded(theme.radius)
+                            .corner_smoothing(theme.smoothing),
                     )
                     .child(
                         div()

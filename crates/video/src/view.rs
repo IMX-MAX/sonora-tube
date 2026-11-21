@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use futures::StreamExt as _;
 use gpui::prelude::*;
-use gpui::{Context, Entity, ObjectFit, RenderImage, Subscription, Task, Window, div, img};
+use gpui::{Context, Entity, ObjectFit, Pixels, RenderImage, Subscription, Task, Window, div, img};
 
 use crate::{Frames, Player};
 
@@ -13,6 +13,8 @@ pub struct VideoView {
     player: Arc<Player>,
     /// The frame painted last, kept so its texture can be freed once a newer one replaces it.
     shown: Option<Arc<RenderImage>>,
+    /// How round the picture's corners are drawn.
+    radius: Pixels,
     /// What repaints it: the player's own frames, or for a mirror the view they repaint.
     _frames: Option<Task<()>>,
     _source: Option<Subscription>,
@@ -30,8 +32,17 @@ impl VideoView {
         Self {
             player,
             shown: None,
+            radius: Pixels::ZERO,
             _frames: Some(task),
             _source: None,
+        }
+    }
+
+    /// Rounds the picture's corners by `radius`, which a clipping parent cannot do for it.
+    pub fn round(&mut self, radius: Pixels, cx: &mut Context<Self>) {
+        if self.radius != radius {
+            self.radius = radius;
+            cx.notify();
         }
     }
 
@@ -41,6 +52,7 @@ impl VideoView {
         Self {
             player: source.read(cx).player.clone(),
             shown: None,
+            radius: Pixels::ZERO,
             _frames: None,
             _source: Some(cx.observe(source, |_, _, cx| cx.notify())),
         }
@@ -63,7 +75,12 @@ impl Render for VideoView {
         self.shown.clone_from(&frame);
 
         div().size_full().when_some(frame, |this, frame| {
-            this.child(img(frame).size_full().object_fit(ObjectFit::Contain))
+            this.child(
+                img(frame)
+                    .size_full()
+                    .rounded(self.radius)
+                    .object_fit(ObjectFit::Contain),
+            )
         })
     }
 }

@@ -999,6 +999,7 @@ fn hint(cx: &App) -> AnyElement {
         .px_2()
         .py_1()
         .rounded(theme.radius)
+        .corner_smoothing(theme.smoothing)
         .border_1()
         .border_dashed()
         .border_color(theme.sidebar_border)

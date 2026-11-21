@@ -187,6 +187,7 @@ pub(crate) fn bleed<S: TableSource>(table: Table<S>, framed: bool, cx: &App) -> 
         .child(table.when(framed, |table| {
             table
                 .rounded(theme.radius)
+                .corner_smoothing(theme.smoothing)
                 .border_1()
                 .border_color(theme.border)
         }))

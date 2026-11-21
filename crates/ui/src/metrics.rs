@@ -11,10 +11,18 @@ pub enum Rounding {
     Subtle,
     Rounded,
     Round,
+    /// As large as `Round`, with each corner eased into its edges rather than a plain arc.
+    Squircle,
 }
 
 impl Rounding {
-    pub const ALL: [Self; 4] = [Self::Square, Self::Subtle, Self::Rounded, Self::Round];
+    pub const ALL: [Self; 5] = [
+        Self::Square,
+        Self::Subtle,
+        Self::Rounded,
+        Self::Round,
+        Self::Squircle,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -22,6 +30,7 @@ impl Rounding {
             Self::Subtle => "subtle",
             Self::Rounded => "rounded",
             Self::Round => "round",
+            Self::Squircle => "squircle",
         }
     }
 
@@ -31,6 +40,7 @@ impl Rounding {
             Self::Subtle => t!("corners-subtle"),
             Self::Rounded => t!("corners-rounded"),
             Self::Round => t!("corners-round"),
+            Self::Squircle => t!("corners-squircle"),
         }
     }
 
@@ -39,6 +49,7 @@ impl Rounding {
             "square" => Self::Square,
             "rounded" => Self::Rounded,
             "round" => Self::Round,
+            "squircle" => Self::Squircle,
             _ => Self::Subtle,
         }
     }
@@ -48,7 +59,15 @@ impl Rounding {
             Self::Square => px(0.),
             Self::Subtle => px(6.),
             Self::Rounded => px(10.),
-            Self::Round => px(20.),
+            Self::Round | Self::Squircle => px(20.),
+        }
+    }
+
+    /// How far its corners are eased from an arc towards a squircle, from 0 to 1.
+    pub fn smoothing(self) -> f32 {
+        match self {
+            Self::Squircle => 1.,
+            _ => 0.,
         }
     }
 }

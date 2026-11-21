@@ -295,6 +295,7 @@ impl RenderOnce for TabBar {
                         .aria_size_of_set(count)
                         .flex_shrink_0()
                         .rounded(radius)
+                        .corner_smoothing(theme.smoothing)
                 })
             });
         // A glass bar has no flat fill to paint a fade with: a wash of its own thin fill hides
@@ -320,6 +321,7 @@ impl RenderOnce for TabBar {
             .flex()
             .p_1()
             .rounded(theme.radius)
+            .corner_smoothing(theme.smoothing)
             .bg(theme.secondary)
             .border_1()
             .border_color(theme.border)

@@ -286,6 +286,7 @@ impl SongView {
                             .px(theme.metrics.pad)
                             .py(theme.metrics.pad / 2.)
                             .rounded(theme.radius)
+                            .corner_smoothing(theme.smoothing)
                             .child(avatar)
                             .child(
                                 div()
@@ -318,6 +319,7 @@ impl SongView {
                                 .aria_description(role)
                                 .cursor_pointer()
                                 .rounded(theme.radius)
+                                .corner_smoothing(theme.smoothing)
                                 .link(Destination::Artist(id.into()))
                                 .glowed(theme.secondary_hover)
                                 .into_any_element(),
@@ -431,6 +433,7 @@ impl SongView {
                 .flex_1()
                 .p(theme.metrics.pad)
                 .rounded(theme.radius)
+                .corner_smoothing(theme.smoothing)
                 .border_1()
                 .border_color(theme.border)
                 .child(Skeleton::new().w(FACT_SKELETON).h(theme.metrics.pad))

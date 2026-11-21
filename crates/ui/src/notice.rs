@@ -117,6 +117,7 @@ impl RenderOnce for Notice {
             .max_w(REACH)
             .p(theme.metrics.pad * 1.5)
             .rounded(theme.radius)
+            .corner_smoothing(theme.smoothing)
             .border_1()
             .border_color(theme.border)
             .bg(theme.secondary.opacity(0.45))

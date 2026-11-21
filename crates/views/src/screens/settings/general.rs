@@ -286,6 +286,8 @@ impl SettingsView {
         let offered = Rounding::ALL
             .into_iter()
             .filter(|rounding| cfg!(not(target_os = "macos")) || *rounding != Rounding::Square)
+            // The platform cuts a window's corners itself, and none of them cuts a squircle.
+            .filter(|rounding| *rounding != Rounding::Squircle)
             .collect::<Vec<_>>();
 
         let cards = grid(offered.len() as u16, window, cx).children(

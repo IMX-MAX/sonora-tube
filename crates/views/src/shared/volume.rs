@@ -159,6 +159,7 @@ pub(crate) fn rising_volume<V: VolumeHost>(
                 .p_1()
                 .py_2()
                 .rounded(theme.radius)
+                .corner_smoothing(theme.smoothing)
                 .border_1()
                 .border_color(theme.border)
                 .map(|this| match hazy {
@@ -221,6 +222,7 @@ pub(crate) fn rising_volume<V: VolumeHost>(
                                         .absolute()
                                         .inset_0()
                                         .rounded(theme.radius)
+                                        .corner_smoothing(theme.smoothing)
                                         .backdrop_blur(GLASS_BLUR)
                                         .fading("volume-frost"),
                                 )

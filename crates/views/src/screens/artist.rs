@@ -998,6 +998,7 @@ impl ArtistView {
             .child(
                 table(&self.table)
                     .rounded(theme.radius)
+                    .corner_smoothing(theme.smoothing)
                     .border_1()
                     .border_color(theme.border),
             )

@@ -427,6 +427,8 @@ pub struct Theme {
     pub table_active: Hsla,
     pub table_active_border: Hsla,
     pub radius: Pixels,
+    /// How far a corner of `radius` is eased from an arc towards a squircle, from 0 to 1.
+    pub smoothing: f32,
     pub font_size: Pixels,
     pub metrics: Metrics,
     pub transparent: bool,
@@ -485,6 +487,7 @@ impl Theme {
             table_active: rgba(0x1e40af33).into(),
             table_active_border: rgb(0x1d4ed8).into(),
             radius: px(6.),
+            smoothing: 0.,
             font_size: px(14.),
             metrics: Metrics::default(),
             transparent: false,
@@ -528,6 +531,7 @@ impl Theme {
             table_active: rgba(0x2563eb1f).into(),
             table_active_border: rgb(0x2563eb).into(),
             radius: px(6.),
+            smoothing: 0.,
             font_size: px(14.),
             metrics: Metrics::default(),
             transparent: false,
@@ -835,6 +839,7 @@ impl Theme {
             theme = theme.tinted(tint);
         }
         theme.radius = look.rounding.radius();
+        theme.smoothing = look.rounding.smoothing();
         theme = theme.with_overrides(overrides);
         if look.transparent {
             theme.see_through(1. - look.transparency.clamp(0., MAX_TRANSPARENCY));

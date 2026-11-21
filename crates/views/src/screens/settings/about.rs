@@ -246,6 +246,7 @@ impl SettingsView {
                     .mx_neg_3()
                     .px_3()
                     .rounded(theme.radius)
+                    .corner_smoothing(theme.smoothing)
                     .cursor_pointer()
                     .on_click(move |_, _, cx| cx.open_url(member.profile))
                     .child(Avatar::new(Some(member.avatar)).size(theme.metrics.thumb))
