@@ -62,7 +62,7 @@ jobs:
         with:
           arch: ${{ matrix.msvc }}
 
-      # The mpv builds ship a MinGW import library, so the MSVC one is made from their .def file.
+      # The mpv builds ship a MinGW import library, so the MSVC one is made from the DLL's exports.
       - name: fetch mpv and yt-dlp
         shell: bash
         env:
@@ -77,7 +77,13 @@ jobs:
             --pattern "mpv-dev-$MPV-2*.7z" --output mpv/dev.7z
           7z x mpv/dev.7z -ompv -y > /dev/null
           ls mpv
-          (cd mpv && MSYS2_ARG_CONV_EXCL='*' lib /nologo /def:mpv.def /name:libmpv-2.dll /out:mpv.lib "/machine:$MACHINE")
+          cd mpv
+          export MSYS2_ARG_CONV_EXCL='*'
+          { echo "LIBRARY libmpv-2.dll"; echo "EXPORTS"; dumpbin /nologo /exports libmpv-2.dll \
+            | awk '$1 ~ /^[0-9]+$/ && $4 ~ /^mpv_/ { print "  " $4 }'; } > mpv.def
+          test "$(wc -l < mpv.def)" -gt 20
+          lib /nologo /def:mpv.def /out:mpv.lib "/machine:$MACHINE"
+          cd ..
           cp mpv/libmpv-2.dll extras/
           curl -fsSL -o extras/yt-dlp.exe \
             "https://github.com/yt-dlp/yt-dlp/releases/latest/download/$YTDLP"
