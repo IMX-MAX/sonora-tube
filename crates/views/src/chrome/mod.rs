@@ -129,6 +129,11 @@ impl Chrome {
         });
     }
 
+    /// How much of the window's left the sidebar takes.
+    pub fn left(self) -> Pixels {
+        self.sidebar_left
+    }
+
     pub fn get(cx: &App) -> Self {
         cx.try_global::<Installed>()
             .map(|installed| *installed.0.read(cx))

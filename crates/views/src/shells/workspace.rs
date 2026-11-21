@@ -131,6 +131,14 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    /// Turns the rail's refresh button until `busy` says the reloaded page has its data.
+    pub fn refreshing(&mut self, busy: crate::chrome::Busy, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.refreshing(busy, cx));
+    }
+}
+
 impl Shell for Workspace {
     fn title_bar(&self, content: Option<AnyView>, cx: &App) -> TitleBarOptions {
         TitleBarOptions {

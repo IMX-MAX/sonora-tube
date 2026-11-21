@@ -3,8 +3,8 @@ use gpui::{App, Font, FontFallbacks, SharedString, StyleRefinement, font, prelud
 use gpui::{Pixels, Window, deferred, div};
 use input::{
     CloseWindow, MinimizeWindow, NavigateBack, NavigateForward, OpenFilter, OpenSearch,
-    OpenSettings, Refresh, ShowMembers, ToggleFullscreen, ToggleLyrics, TogglePowerbar,
-    ToggleQueue, ToggleWindowFullscreen, ZoomWindow,
+    OpenSettings, Refresh, SeekBack, SeekForward, ShowMembers, ToggleFullscreen, TogglePlayback,
+    TogglePowerbar, ToggleWindowFullscreen, VolumeDown, VolumeUp, ZoomWindow,
 };
 use router::{Destination, NavigationEvent, back, forward, navigate};
 use state::{
@@ -45,6 +45,10 @@ use crate::{
 
 /// How much smaller than its size the fullscreen player starts as it opens, zooming up to fill
 /// the window.
+/// How far a seek shortcut moves the video, in seconds.
+const SKIP: f64 = 5.;
+/// How much a volume shortcut changes the video's volume.
+const LOUDER: f32 = 0.05;
 const SHELL_ZOOM: f32 = 0.03;
 /// How close the opening zoom comes to its end before it counts as landed.
 const SHELL_ZOOM_REST: f32 = 1e-3;
@@ -632,6 +636,7 @@ impl Root {
         toolbar.update(cx, |toolbar, cx| toolbar.focus(window, cx));
     }
 
+    #[allow(dead_code)]
     fn show_side(&self, tab: SideTab, cx: &mut Context<Self>) {
         self.shells
             .workspace
@@ -677,6 +682,19 @@ impl Root {
         }
     }
 
+    /// Runs a keyboard shortcut on the video, when the page showing is the one playing it.
+    fn watching(
+        &self,
+        cx: &mut Context<Self>,
+        act: impl FnOnce(&mut Watching, &mut Context<Watching>),
+    ) {
+        if !matches!(router::trail(cx).read(cx).current(), Destination::Watch(_)) {
+            return;
+        }
+        self.screens.watching.update(cx, act);
+    }
+
+    #[allow(dead_code)]
     fn toggle_fullscreen(&mut self, cx: &mut Context<Self>) {
         match self.view {
             RootView::Workspace => navigate(Destination::Fullscreen, cx),
@@ -766,8 +784,9 @@ impl Root {
             return;
         }
         self.reload_page(destination, cx);
-        self.title_bar
-            .update(cx, |bar, cx| bar.refreshing(busy, cx));
+        self.shells
+            .workspace
+            .update(cx, |workspace, cx| workspace.refreshing(busy, cx));
     }
 
     /// How to tell whether `destination` is still loading, or `None` for a page with nothing
@@ -1605,18 +1624,33 @@ impl Render for Root {
             .on_action(cx.listener(|this, _: &OpenSearch, _, cx| this.open_search(cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_settings(cx)))
             .on_action(cx.listener(|this, _: &Refresh, _, cx| this.refresh(cx)))
-            .on_action(cx.listener(|this, _: &ToggleFullscreen, _, cx| this.toggle_fullscreen(cx)))
+            .on_action(cx.listener(|this, _: &ToggleFullscreen, _, cx| {
+                this.watching(cx, |watching, cx| watching.set_full(!watching.full(), cx));
+            }))
             .on_action(|_: &CloseWindow, window, _| window.remove_window())
             .on_action(|_: &MinimizeWindow, window, _| window.minimize_window())
             .on_action(|_: &ZoomWindow, window, _| window.zoom_window())
             .on_action(|_: &ToggleWindowFullscreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss(window, cx)))
-            .on_action(
-                cx.listener(|this, _: &ToggleQueue, _, cx| this.show_side(SideTab::Queue, cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &ToggleLyrics, _, cx| this.show_side(SideTab::Lyrics, cx)),
-            )
+            .on_action(cx.listener(|this, _: &TogglePlayback, _, cx| {
+                this.watching(cx, |watching, cx| watching.toggle(cx));
+            }))
+            .on_action(cx.listener(|this, _: &SeekBack, _, cx| {
+                this.watching(cx, |watching, cx| watching.seek_by(-SKIP, cx));
+            }))
+            .on_action(cx.listener(|this, _: &SeekForward, _, cx| {
+                this.watching(cx, |watching, cx| watching.seek_by(SKIP, cx));
+            }))
+            .on_action(cx.listener(|this, _: &VolumeUp, _, cx| {
+                this.watching(cx, |watching, cx| {
+                    watching.set_volume((watching.volume() + LOUDER).min(1.), cx)
+                });
+            }))
+            .on_action(cx.listener(|this, _: &VolumeDown, _, cx| {
+                this.watching(cx, |watching, cx| {
+                    watching.set_volume((watching.volume() - LOUDER).max(0.), cx)
+                });
+            }))
             .on_action(cx.listener(|this, _: &TogglePowerbar, window, cx| {
                 // The sign-in screen stands in for every shell, so there is nothing to search.
                 if !this.signing_in {

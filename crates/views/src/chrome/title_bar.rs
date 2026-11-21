@@ -68,6 +68,7 @@ impl Default for TitleBarOptions {
 
 pub(crate) enum TitleBarEvent {
     ToggleSidebar,
+    #[allow(dead_code)]
     ToggleSidebarRight,
 }
 
@@ -81,6 +82,7 @@ pub(crate) struct TitleBar {
     busy: Option<Busy>,
     /// The refresh icon's turn, which springs back to rest once `busy` is gone.
     spin: Spin,
+    #[allow(dead_code)]
     downloads: Entity<DownloadsButton>,
     /// The account menu's group, so it closes when another of the bar's menus opens.
     popovers: Popovers,
@@ -114,6 +116,7 @@ impl TitleBar {
     }
 
     /// Turns the refresh button until `busy` says the reloaded page has its data.
+    #[allow(dead_code)]
     pub fn refreshing(&mut self, busy: Busy, cx: &mut Context<Self>) {
         self.busy = Some(busy);
         cx.notify();
@@ -201,29 +204,6 @@ impl TitleBar {
                         .on_click(|_, window, cx| window.dispatch_action(Box::new(Refresh), cx)),
                 )
             })
-    }
-
-    fn lyrics_toggle(&self, open: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .occlude()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                Button::new("sidebar-right-toggle")
-                    .ghost()
-                    .small()
-                    .icon(match open {
-                        true => "icons/panel-right-close.svg",
-                        false => "icons/panel-right-open.svg",
-                    })
-                    .tooltip("nav-sidebar-right")
-                    .aria_expanded(open)
-                    .on_click(
-                        cx.listener(|_, _, _, cx| cx.emit(TitleBarEvent::ToggleSidebarRight)),
-                    ),
-            )
     }
 
     /// The account button and the menu it opens: the connected services to switch between, a
@@ -324,6 +304,11 @@ impl Render for TitleBar {
         let theme = cx.theme();
         let height = ui::snapped(theme.metrics.title_bar, window);
         let navigation = self.options.navigation;
+        // The rail beside the page holds the history, the account and settings, so the bar
+        // keeps only the window's own controls and carries the rail's colour above it.
+        let rail = super::Chrome::get(cx).left();
+        let railed = navigation && rail > Pixels::ZERO;
+        let (rail_bg, rail_edge) = (theme.sidebar, theme.sidebar_border);
         let sidebar_right = self
             .options
             .sidebar_right
@@ -366,9 +351,22 @@ impl Render for TitleBar {
             // one pixel lower than one that keeps it. The edge is always an edge; only its
             // colour goes, and fullscreen's controls land where the workspace's do.
             .border_b_1()
-            .border_color(match self.options.border {
+            .border_color(match self.options.border && !railed {
                 true => theme.title_bar_border,
                 false => gpui::transparent_black(),
+            })
+            .when(railed, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .w(rail)
+                        .h(height)
+                        .border_r_1()
+                        .border_color(rail_edge)
+                        .when(!theme.transparent, |this| this.bg(rail_bg)),
+                )
             })
             .window_control_area(gpui::WindowControlArea::Drag)
             .on_mouse_down(
@@ -412,7 +410,7 @@ impl Render for TitleBar {
                     .when(leading, |this| {
                         this.child(window_controls(true, traffic_light))
                     })
-                    .when(navigation, |this| this.child(self.toggle(cx))),
+                    .when(navigation && !railed, |this| this.child(self.toggle(cx))),
             )
             .child(
                 div()
@@ -421,17 +419,10 @@ impl Render for TitleBar {
                     .min_w_0()
                     .gap_1()
                     .items_center()
-                    .when(navigation, |this| this.child(self.history(window, cx)))
-                    .child(div().flex_1())
-                    .when(navigation, |this| {
-                        this.child(
-                            div()
-                                .flex_none()
-                                .occlude()
-                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .child(self.downloads.clone()),
-                        )
+                    .when(navigation && !railed, |this| {
+                        this.child(self.history(window, cx))
                     })
+                    .child(div().flex_1())
                     .map(|this| match (navigation, content) {
                         (true, Some(content)) => this.child(content).child(Self::segment_rule(cx)),
                         (_, content) => this.children(content),
@@ -449,10 +440,7 @@ impl Render for TitleBar {
                         .items_center()
                         .gap_1()
                         .pr_3()
-                        .when(navigation, |this| this.child(self.account(cx)))
-                        .when_some(sidebar_right, |this, open| {
-                            this.child(self.lyrics_toggle(open, cx))
-                        }),
+                        .when(navigation && !railed, |this| this.child(self.account(cx))),
                 )
             })
             .when(decorated && !leading, |this| {

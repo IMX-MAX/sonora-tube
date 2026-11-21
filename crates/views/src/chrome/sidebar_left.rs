@@ -1,9 +1,9 @@
 use std::rc::Rc;
 
 use ui::{
-    ActiveTheme as _, Avatar, Button, Card, Deck, DraggedPin, Edge, MenuItem, Panel, Picker, Pin,
-    PinKind, Pinnable as _, Popup, SNUG, Scroller, Shield, Side, Spot, Text, Vacancy, drop_gap,
-    drop_into, drop_marker,
+    ActiveTheme as _, Avatar, Button, Card, Deck, DraggedPin, Edge, Menu, MenuItem, Panel, Picker,
+    Pin, PinKind, Pinnable as _, Popup, SNUG, Scroller, Shield, Side, Spin, Spot, Text, Vacancy,
+    drop_gap, drop_into, drop_marker,
 };
 
 use gpui::accesskit::Role;
@@ -14,13 +14,15 @@ use gpui::{
 };
 use gpui::{Window, div, px};
 use music::Shape;
-use router::{
-    Destination, NavEntry, Navigation, NavigationEvent, SettingsPage, navigate, open_settings,
-};
+use router::{Destination, NavEntry, Navigation, NavigationEvent, navigate, open_settings};
 use state::{
     AppSettings, Leaving, Library, Origin, PinSort, Pins, Playback, Session, Shelf, Sonora,
     Subscriptions,
 };
+
+use super::title_bar::Busy;
+use i18n::t;
+use input::Refresh;
 
 use crate::shared::menus::{ItemMenu, item_menu};
 use crate::shared::nav::{entry_shown, nav_icon, nav_row};
@@ -33,7 +35,7 @@ const PINS: &str = "sidebar-pins";
 /// The sidebar's navigation rows in order: the entry that can hide each, its icon and where it goes.
 /// Settings also lives in the account menu of the title bar and shows here only when added. It
 /// opens on the settings page last visited rather than on the one named here.
-pub(crate) const NAV: [(NavEntry, &str, Destination); 5] = [
+pub(crate) const NAV: [(NavEntry, &str, Destination); 4] = [
     (NavEntry::Home, "icons/house.svg", Destination::Home),
     (NavEntry::Search, "icons/search.svg", Destination::Search),
     (NavEntry::Later, "icons/clock.svg", Destination::Later),
@@ -41,11 +43,6 @@ pub(crate) const NAV: [(NavEntry, &str, Destination); 5] = [
         NavEntry::History,
         "icons/rotate-ccw-clock.svg",
         Destination::History,
-    ),
-    (
-        NavEntry::Settings,
-        "icons/settings.svg",
-        Destination::Settings(SettingsPage::General),
     ),
 ];
 
@@ -95,6 +92,10 @@ pub(crate) struct SidebarLeft {
     context_menu: Option<(Pin, Point<Pixels>)>,
     scrollbar: Entity<ui::Scrollbar>,
     popovers: ui::Popovers,
+    /// Set by a refresh and dropped once the page has its data, so the refresh button turns
+    /// for exactly that long.
+    busy: Option<Busy>,
+    spin: Spin,
 }
 
 impl SidebarLeft {
@@ -157,6 +158,8 @@ impl SidebarLeft {
             context_menu: None,
             scrollbar,
             popovers: ui::Popovers::default(),
+            busy: None,
+            spin: Spin::default(),
         }
     }
 
@@ -176,12 +179,13 @@ impl SidebarLeft {
         )
     }
 
+    /// The rail holds the only way around the app, so it is always there.
     pub fn is_open(&self) -> bool {
-        self.forced.unwrap_or(self.open && !self.cramped)
+        true
     }
 
     pub fn overlays(&self) -> bool {
-        self.cramped && self.is_open()
+        false
     }
 
     /// Whether the window has folded a full sidebar onto the rail by itself. An overlaid one
@@ -192,7 +196,7 @@ impl SidebarLeft {
 
     /// Whether the sidebar is drawn as the rail, by choice or because the window is narrow.
     fn folded(&self) -> bool {
-        self.rail || self.squeezed()
+        true
     }
 
     fn breadth(&self) -> Pixels {
@@ -275,6 +279,9 @@ impl SidebarLeft {
     /// Otherwise it folds to the rail below halfway between the rail and `MIN_WIDTH` and
     /// unfolds above it, except while the window holds the sidebar on the rail.
     fn resize(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        if self.folded() {
+            return;
+        }
         self.grabbed.get_or_insert((self.width, self.rail));
         self.closing = width < self.rail_width / 2.;
         if !self.closing && !self.squeezed() {
@@ -317,8 +324,8 @@ impl SidebarLeft {
                 .filter(|index| stations || NAV[*index].0 != NavEntry::Radio)
                 .collect()
         };
-        let top = shown(0..5, cx);
-        let library = shown(5..NAV.len(), cx);
+        let top = shown(0..4, cx);
+        let library = shown(4..NAV.len(), cx);
         let mut rows = Vec::new();
         if self.folded() {
             for (group, indices) in [top, library]
@@ -426,6 +433,121 @@ impl SidebarLeft {
             .into_any_element()
         });
         std::iter::once(lead).chain(rows).collect()
+    }
+
+    /// Turns the refresh button until `busy` says the reloaded page has its data.
+    pub fn refreshing(&mut self, busy: Busy, cx: &mut Context<Self>) {
+        self.busy = Some(busy);
+        cx.notify();
+    }
+
+    /// One button of the rail outside the page list.
+    fn tool(id: &'static str, icon: &'static str, key: &'static str, cx: &App) -> Button {
+        let theme = cx.theme();
+        nav_icon(id, key, icon, theme.muted_foreground, theme.sidebar_accent)
+    }
+
+    /// Back, forward and refresh, at the head of the rail.
+    fn history(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.busy.as_ref().is_some_and(|busy| !busy(cx)) {
+            self.busy = None;
+        }
+        match self.busy.is_some() {
+            true => self.spin.start(),
+            false => self.spin.stop(),
+        }
+        let turn = self.spin.turn(window, cx);
+        let trail = self.trail.read(cx);
+        let (can_back, can_forward) = (trail.can_go_back(), trail.can_go_forward());
+        let refreshes = trail.current().refreshes();
+        let (back, forward) = (self.trail.clone(), self.trail.clone());
+
+        div()
+            .id("sidebar-history")
+            .role(Role::Toolbar)
+            .aria_label(i18n::lookup("nav-trail", None))
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap_1()
+            .px_2()
+            .child(
+                Self::tool("history-back", "icons/chevron-left.svg", "nav-back", cx)
+                    .disabled(!can_back)
+                    .on_click(move |_, _, cx| back.update(cx, |trail, cx| trail.back(cx))),
+            )
+            .child(
+                Self::tool(
+                    "history-forward",
+                    "icons/chevron-right.svg",
+                    "nav-forward",
+                    cx,
+                )
+                .disabled(!can_forward)
+                .on_click(move |_, _, cx| forward.update(cx, |trail, cx| trail.forward(cx))),
+            )
+            .child(
+                Self::tool("history-refresh", "icons/refresh-cw.svg", "app-refresh", cx)
+                    .turned(turn)
+                    .disabled(!refreshes)
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(Refresh), cx)),
+            )
+            .child(self.divider(cx))
+            .into_any_element()
+    }
+
+    /// The account menu and settings, at the foot of the rail.
+    fn foot(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut items: Vec<MenuItem> = Vec::new();
+        if let Some(account) = state::VideoAccount::entity(cx) {
+            let held = account.read(cx);
+            items.push(match held.signed_in() {
+                true => MenuItem::new("account-video-out", t!("account-video-sign-out"))
+                    .icon("icons/log-out.svg")
+                    .on_click(move |_, _, cx| {
+                        account.update(cx, |account, cx| account.sign_out(cx));
+                    }),
+                false => {
+                    let idle = held.supported() && !held.signing_in();
+                    let item = MenuItem::new("account-video-in", t!("account-video-sign-in"))
+                        .icon("icons/log-in.svg")
+                        .on_click(move |_, _, cx| {
+                            let title = t!("login-choose-title", provider = "YouTube").to_string();
+                            account.update(cx, |account, cx| account.sign_in(title, cx));
+                        });
+                    match idle {
+                        true => item,
+                        false => item.disabled(),
+                    }
+                }
+            });
+        }
+        let settings = self.trail.read(cx).current().in_settings();
+        let accent = cx.theme().sidebar_accent;
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .pb_3()
+            .child(self.divider(cx))
+            .child(
+                Picker::icon("account", &self.popovers, "icons/circle-user-round.svg")
+                    .tooltip("tool-account")
+                    .width(Picker::REGULAR)
+                    .left()
+                    .menu(Menu::new("account-menu").w(Picker::REGULAR).beside(ROW_GAP))
+                    .items(items),
+            )
+            .child(
+                Self::tool("sidebar-settings", "icons/settings.svg", "nav-settings", cx)
+                    .lit(settings, accent)
+                    .on_click(|_, _, cx| open_settings(cx)),
+            )
+            .into_any_element()
     }
 
     /// The pinned section: its header, and its entries once it is expanded.
@@ -843,6 +965,8 @@ impl Render for SidebarLeft {
 
         let mut rows = self.navigation(cx);
         rows.extend(self.channels(cx));
+        let history = self.history(window, cx);
+        let foot = self.foot(cx);
 
         let overlaid = self.overlays();
         let rail = self.folded();
@@ -886,6 +1010,7 @@ impl Render for SidebarLeft {
             .when(overlaid, |this| {
                 this.occlude().absolute().left_0().top_0().bottom_0()
             })
+            .child(div().flex_none().pt_1().child(history))
             .child(
                 div()
                     .relative()
@@ -904,7 +1029,7 @@ impl Render for SidebarLeft {
                                     .flex_col()
                                     .gap_1()
                                     .w_full()
-                                    .py_3()
+                                    .pb_3()
                                     .map(|column| match rail {
                                         true => column.px_2(),
                                         false => column.px_3(),
@@ -925,6 +1050,7 @@ impl Render for SidebarLeft {
                         }),
                     ),
             )
+            .child(foot)
             .children(self.menu(cx));
 
         match overlaid {
