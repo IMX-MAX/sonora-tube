@@ -8,7 +8,7 @@ use anyhow::{Context as _, Result};
 use serde_json::Value;
 
 use crate::{
-    Channel, ChannelPage, ChannelRef, Comment, Comments, Found, Page, Playlist, PlaylistPage,
+    Channel, ChannelPage, ChannelRef, Comment, Comments, Found, Line, Page, Playlist, PlaylistPage,
     Video, Watch,
 };
 
@@ -246,6 +246,46 @@ fn walk(node: &Value, page: &mut Page<Found>) {
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
+}
+
+/// The address of the captions a transcript is read from: written ones in `language` first, then
+/// generated ones in it, then whatever the video lists first.
+pub(crate) fn caption_track(player: &Value, language: &str) -> Option<String> {
+    let tracks = first(player, "captionTracks")?.as_array()?;
+    let spoken = |track: &&Value| {
+        track["languageCode"]
+            .as_str()
+            .is_some_and(|code| code.starts_with(language))
+    };
+    let written = |track: &&Value| track["kind"].as_str() != Some("asr");
+    tracks
+        .iter()
+        .find(|track| spoken(track) && written(track))
+        .or_else(|| tracks.iter().find(spoken))
+        .or_else(|| tracks.first())
+        .and_then(|track| string(&track["baseUrl"]))
+}
+
+/// The lines of a `json3` caption file, without the empty ones that only break a line.
+pub(crate) fn transcript(timed: &Value) -> Vec<Line> {
+    let Some(events) = timed["events"].as_array() else {
+        return Vec::new();
+    };
+    events
+        .iter()
+        .filter_map(|event| {
+            let said: String = event["segs"]
+                .as_array()?
+                .iter()
+                .filter_map(|piece| piece["utf8"].as_str())
+                .collect();
+            let text = said.split_whitespace().collect::<Vec<_>>().join(" ");
+            (!text.is_empty()).then(|| Line {
+                start: event["tStartMs"].as_f64().unwrap_or(0.) / 1000.,
+                text,
+            })
+        })
+        .collect()
 }
 
 /// A Short, which is listed with little more than its title and views.

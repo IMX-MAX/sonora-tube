@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Context, Entity, Task};
-use tube::{Channel, Client, Comment, Found, Page, Video, Watch};
+use tube::{Channel, Client, Comment, Found, Line, Page, Video, Watch};
 use video::{Player, VideoView};
 
 use crate::{Io, Playback, join};
@@ -138,6 +138,16 @@ struct Thread {
     reply_tasks: Vec<Task<()>>,
 }
 
+/// The transcript of the video being watched, fetched the first time its panel is opened.
+#[derive(Default)]
+struct Script {
+    open: bool,
+    lines: Option<Arc<Vec<Line>>>,
+    loading: bool,
+    failed: bool,
+    task: Option<Task<()>>,
+}
+
 /// The video being watched: its player, its page and its comments.
 pub struct Watching {
     client: Client,
@@ -149,6 +159,7 @@ pub struct Watching {
     loading: bool,
     error: Option<String>,
     thread: Thread,
+    script: Script,
     /// Made on the first video and kept, so one mpv serves every video after it.
     screen: Option<(Arc<Player>, Entity<VideoView>)>,
     /// The volume from 0 to 1, as the slider shows it.
@@ -175,6 +186,7 @@ impl Watching {
             loading: false,
             error: None,
             thread: Thread::default(),
+            script: Script::default(),
             screen: None,
             volume: 1.,
             muted: false,
@@ -241,6 +253,13 @@ impl Watching {
         self.watch = None;
         self.error = None;
         self.thread = Thread::default();
+        self.script = Script {
+            open: self.script.open,
+            ..Script::default()
+        };
+        if self.script.open {
+            self.load_transcript(cx);
+        }
         self.loading = true;
         cx.notify();
 
@@ -378,6 +397,68 @@ impl Watching {
             player.seek_by(seconds);
         }
         cx.notify();
+    }
+
+    /// Whether the transcript panel is open.
+    pub fn transcript_open(&self) -> bool {
+        self.script.open
+    }
+
+    /// The lines of the transcript once they have arrived. A video without captions has none.
+    pub fn transcript(&self) -> Option<Arc<Vec<Line>>> {
+        self.script.lines.clone()
+    }
+
+    pub fn transcript_loading(&self) -> bool {
+        self.script.loading
+    }
+
+    /// Whether the transcript could not be fetched, as opposed to the video having none.
+    pub fn transcript_failed(&self) -> bool {
+        self.script.failed
+    }
+
+    /// Opens or closes the transcript panel, fetching the lines the first time it opens.
+    pub fn toggle_transcript(&mut self, cx: &mut Context<Self>) {
+        self.script.open = !self.script.open;
+        if self.script.open && self.script.lines.is_none() {
+            self.load_transcript(cx);
+        }
+        cx.notify();
+    }
+
+    /// Fetches the transcript of the current video, unless it is already on its way.
+    pub fn load_transcript(&mut self, cx: &mut Context<Self>) {
+        if self.script.loading {
+            return;
+        }
+        let Some(id) = self.id.clone() else {
+            return;
+        };
+        self.script.loading = true;
+        self.script.failed = false;
+        cx.notify();
+        let client = self.client.clone();
+        let asked = Some(id.clone());
+        let request = self.io.spawn(async move { client.transcript(&id).await });
+        self.script.task = Some(cx.spawn(async move |this, cx| {
+            let loaded = join(request).await;
+            this.update(cx, |this, cx| {
+                if this.id != asked {
+                    return;
+                }
+                this.script.loading = false;
+                match loaded {
+                    Ok(lines) => this.script.lines = Some(Arc::new(lines)),
+                    Err(error) => {
+                        log::warn!("video: cannot read the transcript: {error:#}");
+                        this.script.failed = true;
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// Fetches the next page of comments, unless one is already on its way.

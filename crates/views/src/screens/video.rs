@@ -6,12 +6,12 @@ use std::time::Duration;
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, FontWeight, MouseUpEvent, Pixels, Render, ScrollHandle,
-    SharedString, Task, Window, div, px,
+    AnyElement, App, ClipboardItem, Context, Entity, FontWeight, MouseUpEvent, Pixels, Render,
+    ScrollHandle, SharedString, Task, Window, div, px,
 };
 use i18n::t;
 use router::{Destination, navigate};
-use state::{Subscriptions, VideoList, VideoSearch, Watching};
+use state::{Outcome, Subscriptions, Toasts, VideoList, VideoSearch, Watching};
 use tube::{Channel, Comment, Found, Playlist, Video};
 use ui::{
     ActiveTheme as _, Artwork, Avatar, Button, Input, Room, Scrollbar, Scroller, Scrubber,
@@ -41,6 +41,8 @@ const ROW_PICTURE: Pixels = px(360.);
 const ROW_SHARE: f32 = 0.42;
 /// The widest the list of search results gets, so a row's text stays next to its picture.
 const ROWS_MAX: Pixels = px(1100.);
+/// How tall the transcript panel is when it sits under the video rather than beside it.
+const SCRIPT_HEIGHT: Pixels = px(320.);
 const STEADY: Pixels = px(0.5);
 /// How often the watch page redraws its clock and scrubber while a video plays.
 const TICK: Duration = Duration::from_millis(250);
@@ -564,7 +566,6 @@ impl VideoSearchView {
         let search = self.search.read(cx);
         let found = search.found();
         let tiles = Tiles::new(self.width, cx);
-        let total = found.len();
 
         if search.query().is_empty() {
             let label = t!("video-search-prompt");
@@ -805,6 +806,7 @@ impl WatchView {
         let seekable = total > 0.;
         let (level, muted, captions) = (watching.volume(), watching.muted(), watching.captions());
         let (captioned, silenced) = (self.watching.clone(), self.watching.clone());
+        let (scripted, script) = (watching.transcript_open(), self.watching.clone());
         let fraction = match self.pending {
             Some(pending) => pending,
             None if seekable => (position / total).clamp(0., 1.) as f32,
@@ -873,6 +875,20 @@ impl WatchView {
             .child(time(ends))
             .child(div().flex_1())
             .child(
+                Button::new("video-transcript")
+                    .icon("icons/text-select.svg")
+                    .label(t!("video-transcript"))
+                    .ghost()
+                    .selected(scripted)
+                    .tooltip(match scripted {
+                        true => "video-transcript-hide",
+                        false => "video-transcript-show",
+                    })
+                    .on_click(move |_, _, cx| {
+                        script.update(cx, |watching, cx| watching.toggle_transcript(cx));
+                    }),
+            )
+            .child(
                 Button::new("video-captions")
                     .label(t!("video-captions"))
                     .ghost()
@@ -938,6 +954,176 @@ impl WatchView {
                 ),
             )
             .child(buttons)
+    }
+
+    /// The transcript panel, `height` tall: its heading with the buttons to copy and close it,
+    /// then every line with its time, the one being spoken lit. A line seeks to its time.
+    fn transcript(&self, height: Pixels, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
+        let theme = *cx.theme();
+        let watching = self.watching.read(cx);
+        if !watching.transcript_open() {
+            return None;
+        }
+        let lines = watching.transcript();
+        let now = watching
+            .player()
+            .and_then(|player| player.position())
+            .unwrap_or(0.);
+        let title = t!("video-transcript");
+        let (closed, retried) = (self.watching.clone(), self.watching.clone());
+        let copied = lines.clone().filter(|lines| !lines.is_empty());
+        let note = |id: &'static str, label: SharedString| {
+            div()
+                .id(id)
+                .role(Role::Status)
+                .aria_label(label.clone())
+                .p_3()
+                .text_size(theme.text(Text::Small))
+                .text_color(theme.muted_foreground)
+                .child(label)
+        };
+        let body = match lines {
+            None if watching.transcript_failed() => div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .child(note("video-transcript-lost", t!("video-transcript-lost")))
+                .child(
+                    div().px_3().child(
+                        Button::new("video-transcript-retry")
+                            .label(t!("video-transcript-retry"))
+                            .on_click(move |_, _, cx| {
+                                retried.update(cx, |watching, cx| watching.load_transcript(cx));
+                            }),
+                    ),
+                )
+                .into_any_element(),
+            None => waiting("video-transcript-waiting").into_any_element(),
+            Some(lines) if lines.is_empty() => {
+                note("video-transcript-none", t!("video-transcript-none")).into_any_element()
+            }
+            Some(lines) => {
+                let spoken = lines.iter().rposition(|line| line.start <= now);
+                let total = lines.len();
+                div()
+                    .flex()
+                    .flex_col()
+                    .p_1()
+                    .children(lines.iter().enumerate().map(|(place, line)| {
+                        let (sought, start) = (self.watching.clone(), line.start);
+                        let text = SharedString::from(line.text.clone());
+                        let lit = spoken == Some(place);
+                        div()
+                            .id(("video-transcript-line", (start * 1000.) as usize))
+                            .role(Role::Button)
+                            .aria_label(text.clone())
+                            .aria_position_in_set(place + 1)
+                            .aria_size_of_set(total)
+                            .flex()
+                            .gap_3()
+                            .px_2()
+                            .py_1()
+                            .rounded(theme.radius)
+                            .cursor_pointer()
+                            .text_size(theme.text(Text::Small))
+                            .when(lit, |this| this.bg(theme.secondary))
+                            .hover(|this| this.bg(theme.secondary_hover))
+                            .on_click(move |_, _, cx| {
+                                sought.update(cx, |watching, cx| watching.seek_to(start, cx));
+                            })
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(theme.muted_foreground)
+                                    .child(clock(Duration::from_secs_f64(start.max(0.)))),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_color(match lit {
+                                        true => theme.foreground,
+                                        false => theme.muted_foreground,
+                                    })
+                                    .child(text),
+                            )
+                    }))
+                    .into_any_element()
+            }
+        };
+
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .h(height)
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.sidebar)
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap_1()
+                        .pl_3()
+                        .pr_1()
+                        .py_1()
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(
+                            div()
+                                .id("video-transcript-heading")
+                                .role(Role::Heading)
+                                .aria_level(2)
+                                .aria_label(title.clone())
+                                .flex_1()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_size(theme.text(Text::Label))
+                                .text_color(theme.foreground)
+                                .child(title),
+                        )
+                        .when_some(copied, |this, lines| {
+                            this.child(
+                                Button::new("video-transcript-copy")
+                                    .icon("icons/copy.svg")
+                                    .ghost()
+                                    .tooltip("video-transcript-copy")
+                                    .on_click(move |_, _, cx| {
+                                        let text = lines
+                                            .iter()
+                                            .map(|line| line.text.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join("\n");
+                                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                        Toasts::show(Outcome::Done, "toast-transcript-copied", cx);
+                                    }),
+                            )
+                        })
+                        .child(
+                            Button::new("video-transcript-close")
+                                .icon("icons/x.svg")
+                                .ghost()
+                                .tooltip("video-transcript-hide")
+                                .on_click(move |_, _, cx| {
+                                    closed.update(cx, |watching, cx| {
+                                        watching.toggle_transcript(cx);
+                                    });
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("video-transcript-lines")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(body),
+                ),
+        )
     }
 
     /// The title, the numbers under it, the channel and the description.
@@ -1297,15 +1483,22 @@ impl Render for WatchView {
                                     this.child(self.comments(cx))
                                 }),
                         )
-                        .children(self.related(cx).map(|next| {
+                        .child(
                             div()
+                                .flex()
+                                .flex_col()
                                 .flex_none()
+                                .gap_6()
                                 .w(match beside {
                                     true => NEXT_WIDTH,
                                     false => self.width,
                                 })
-                                .child(next)
-                        })),
+                                .when(beside, |this| {
+                                    let height = (self.width * 9. / 16.).floor();
+                                    this.children(self.transcript(height, cx))
+                                })
+                                .children(self.related(cx)),
+                        ),
                 ),
         )
     }

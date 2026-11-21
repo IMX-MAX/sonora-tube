@@ -113,6 +113,13 @@ pub struct Watch {
     pub comments: Option<String>,
 }
 
+/// One line of a video's transcript and the second it is spoken at.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Line {
+    pub start: f64,
+    pub text: String,
+}
+
 /// A comment or a reply under a video.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Comment {
