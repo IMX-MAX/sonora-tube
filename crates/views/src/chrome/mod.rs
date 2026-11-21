@@ -4,6 +4,9 @@ mod jam;
 mod members;
 mod notice;
 mod output_picker;
+// The music player's bar. The workspace no longer shows it; it stays until the music side of
+// the app is taken out.
+#[allow(dead_code)]
 mod player_bar;
 mod session;
 mod sessions_button;

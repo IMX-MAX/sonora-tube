@@ -11,7 +11,7 @@ use gpui::{
 };
 use i18n::t;
 use router::{Destination, navigate};
-use state::{VideoList, VideoSearch, Watching};
+use state::{Subscriptions, VideoList, VideoSearch, Watching};
 use tube::{Channel, Comment, Found, Playlist, Video};
 use ui::{
     ActiveTheme as _, Artwork, Avatar, Button, Input, Scrollbar, Scroller, Scrubber, ScrubberState,
@@ -21,6 +21,7 @@ use ui::{
 use crate::chrome::Chrome;
 use crate::shared::cells;
 use crate::shared::hero::{HeroMetaStrip, PageHero};
+use crate::shared::transport::{percent, volume_icon};
 use crate::shared::trouble;
 
 const CHANNEL_ICON: &str = "icons/user.svg";
@@ -34,6 +35,8 @@ const STEADY: Pixels = px(0.5);
 const TICK: Duration = Duration::from_millis(250);
 /// How far the skip buttons move the video, in seconds.
 const SKIP: f64 = 10.;
+/// How wide the volume slider under the video is.
+const VOLUME_WIDTH: Pixels = px(110.);
 
 /// The width of one tile and how many fit across `available`.
 #[derive(Clone, Copy)]
@@ -228,6 +231,30 @@ fn more(id: &'static str, on_click: impl Fn(&mut App) + 'static) -> impl IntoEle
     )
 }
 
+/// The button that subscribes to a channel, or drops the subscription it already has.
+fn subscribe(
+    id: &'static str,
+    channel: &Channel,
+    subscriptions: &Entity<Subscriptions>,
+    cx: &App,
+) -> impl IntoElement + use<> {
+    let subscribed = subscriptions.read(cx).follows(&channel.id);
+    let (channel, subscriptions) = (channel.clone(), subscriptions.clone());
+    Button::new(id)
+        .label(match subscribed {
+            true => t!("video-subscribed"),
+            false => t!("video-subscribe"),
+        })
+        .map(|button| match subscribed {
+            true => button.secondary(),
+            false => button,
+        })
+        .on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            subscriptions.update(cx, |kept, cx| kept.toggle(&channel, cx));
+        })
+}
+
 /// The results of a video search.
 pub(crate) struct VideoSearchView {
     search: Entity<VideoSearch>,
@@ -400,8 +427,10 @@ impl Render for VideoSearchView {
 /// watch next.
 pub(crate) struct WatchView {
     watching: Entity<Watching>,
+    subscriptions: Entity<Subscriptions>,
     scrollbar: Entity<Scrollbar>,
     seek: ScrubberState,
+    volume: ScrubberState,
     /// Where a drag of the scrubber stands, until its release seeks there.
     pending: Option<f32>,
     width: Pixels,
@@ -409,9 +438,14 @@ pub(crate) struct WatchView {
 }
 
 impl WatchView {
-    pub(crate) fn new(watching: Entity<Watching>, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        watching: Entity<Watching>,
+        subscriptions: Entity<Subscriptions>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let id = cx.entity_id();
         cx.observe(&watching, |_, _, cx| cx.notify()).detach();
+        cx.observe(&subscriptions, |_, _, cx| cx.notify()).detach();
         let chrome = Chrome::entity(cx);
         cx.observe(&chrome, |_, _, cx| cx.notify()).detach();
 
@@ -436,8 +470,10 @@ impl WatchView {
 
         Self {
             watching,
+            subscriptions,
             scrollbar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id)),
             seek: ScrubberState::new("video-seek"),
+            volume: ScrubberState::new("video-volume"),
             pending: None,
             width: Pixels::ZERO,
             _tick: tick,
@@ -471,6 +507,8 @@ impl WatchView {
         let position = player.and_then(|player| player.position()).unwrap_or(0.);
         let total = player.and_then(|player| player.duration()).unwrap_or(0.);
         let seekable = total > 0.;
+        let (level, muted, captions) = (watching.volume(), watching.muted(), watching.captions());
+        let (captioned, silenced) = (self.watching.clone(), self.watching.clone());
         let fraction = match self.pending {
             Some(pending) => pending,
             None if seekable => (position / total).clamp(0., 1.) as f32,
@@ -555,6 +593,44 @@ impl WatchView {
                 ),
             )
             .child(time(clock(Duration::from_secs_f64(total.max(0.)))))
+            .child(
+                Button::new("video-captions")
+                    .label(t!("video-captions"))
+                    .ghost()
+                    .selected(captions)
+                    .tooltip(match captions {
+                        true => "video-captions-hide",
+                        false => "video-captions-show",
+                    })
+                    .on_click(move |_, _, cx| {
+                        captioned.update(cx, |watching, cx| watching.toggle_captions(cx));
+                    }),
+            )
+            .child(
+                Button::new("video-mute")
+                    .icon(volume_icon(level))
+                    .ghost()
+                    .tooltip(match muted {
+                        true => "video-unmute",
+                        false => "video-mute",
+                    })
+                    .on_click(move |_, _, cx| {
+                        silenced.update(cx, |watching, cx| watching.toggle_muted(cx));
+                    }),
+            )
+            .child(
+                div().w(VOLUME_WIDTH).flex_none().child(
+                    Scrubber::new(&self.volume, level)
+                        .name(t!("video-volume"))
+                        .value(percent(level))
+                        .colors(theme.progress_bar, theme.muted, theme.foreground)
+                        .on_move(cx.listener(|this, fraction: &f32, _, cx| {
+                            let level = *fraction;
+                            this.watching
+                                .update(cx, |watching, cx| watching.set_volume(level, cx));
+                        })),
+                ),
+            )
     }
 
     /// The title, the numbers under it, the channel and the description.
@@ -595,6 +671,7 @@ impl WatchView {
                 .when_some(watch.channel.as_ref(), |this, channel| {
                     let name = SharedString::from(channel.name.clone());
                     let opened = SharedString::from(channel.id.clone());
+                    let button = subscribe("video-subscribe", channel, &self.subscriptions, cx);
                     this.child(
                         div()
                             .id("video-channel")
@@ -626,7 +703,8 @@ impl WatchView {
                                                 .child(count),
                                         )
                                     }),
-                            ),
+                            )
+                            .child(button),
                     )
                 })
                 .when(!watch.description.is_empty(), |this| {
@@ -889,19 +967,26 @@ impl Render for WatchView {
 /// The page of a channel or a playlist: a header and its videos.
 pub(crate) struct VideoListView {
     list: Entity<VideoList>,
+    subscriptions: Entity<Subscriptions>,
     scrollbar: Entity<Scrollbar>,
     width: Pixels,
 }
 
 impl VideoListView {
-    pub(crate) fn new(list: Entity<VideoList>, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        list: Entity<VideoList>,
+        subscriptions: Entity<Subscriptions>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let id = cx.entity_id();
         cx.observe(&list, |_, _, cx| cx.notify()).detach();
+        cx.observe(&subscriptions, |_, _, cx| cx.notify()).detach();
         let chrome = Chrome::entity(cx);
         cx.observe(&chrome, |_, _, cx| cx.notify()).detach();
 
         Self {
             list,
+            subscriptions,
             scrollbar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id)),
             width: Pixels::ZERO,
         }
@@ -990,6 +1075,14 @@ impl Render for VideoListView {
                             .flex_col()
                             .gap_8()
                             .child(self.header(cx))
+                            .when_some(list.channel(), |this, channel| {
+                                this.child(div().flex().child(subscribe(
+                                    "video-list-subscribe",
+                                    channel,
+                                    &self.subscriptions,
+                                    cx,
+                                )))
+                            })
                             .child(tiles.grid(cards))
                             .when(empty, |this| {
                                 let label = t!("video-list-empty");
@@ -1010,5 +1103,136 @@ impl Render for VideoListView {
                     ),
             )
             .into_any_element()
+    }
+}
+
+/// Which of the two pages kept on this machine a [`VideoFeedView`] shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Feed {
+    /// The newest uploads of the channels subscribed to.
+    Subscriptions,
+    /// The videos watched, the latest first.
+    History,
+}
+
+/// The home page and the watch history: a heading and a grid of videos.
+pub(crate) struct VideoFeedView {
+    subscriptions: Entity<Subscriptions>,
+    feed: Feed,
+    scrollbar: Entity<Scrollbar>,
+    width: Pixels,
+}
+
+impl VideoFeedView {
+    pub(crate) fn new(
+        subscriptions: Entity<Subscriptions>,
+        feed: Feed,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let id = cx.entity_id();
+        cx.observe(&subscriptions, |_, _, cx| cx.notify()).detach();
+        let chrome = Chrome::entity(cx);
+        cx.observe(&chrome, |_, _, cx| cx.notify()).detach();
+
+        Self {
+            subscriptions,
+            feed,
+            scrollbar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id)),
+            width: Pixels::ZERO,
+        }
+    }
+}
+
+impl Render for VideoFeedView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pad = cx.theme().metrics.inset;
+        let room = cells::content_width(window, pad * 2., cx);
+        if (room - self.width).abs() >= STEADY {
+            self.width = room;
+        }
+        let kept = self.subscriptions.read(cx);
+        let tiles = Tiles::new(self.width, cx);
+        let (kind, title, hint, videos) = match self.feed {
+            Feed::Subscriptions => (
+                "feed",
+                t!("video-feed"),
+                t!("video-feed-empty"),
+                kept.feed(),
+            ),
+            Feed::History => (
+                "watched",
+                t!("video-history"),
+                t!("video-history-empty"),
+                kept.watched(),
+            ),
+        };
+        let loading = self.feed == Feed::Subscriptions && kept.is_loading();
+        let total = videos.len();
+        let cards: Vec<AnyElement> = videos
+            .iter()
+            .enumerate()
+            .map(|(place, video)| video_tile(kind, video, (place, total), tiles, cx))
+            .collect();
+        let empty = cards.is_empty() && !loading;
+        let channels = match self.feed {
+            Feed::Subscriptions => kept.channels(),
+            Feed::History => &[],
+        };
+        let followed = channels.len();
+        let channels: Vec<AnyElement> = channels
+            .iter()
+            .enumerate()
+            .map(|(place, channel)| channel_tile("followed", channel, (place, followed), tiles, cx))
+            .collect();
+        let clearable = self.feed == Feed::History && !empty;
+        let cleared = self.subscriptions.clone();
+
+        div().flex().flex_col().size_full().child(
+            Scroller::new("video-feed-page", &self.scrollbar)
+                .hold()
+                .bottom_inset(Chrome::bottom(cx))
+                .py(pad)
+                .px(pad + Chrome::margin(window, cx))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_6()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(heading(title, cx))
+                                .when(clearable, |this| {
+                                    this.child(
+                                        Button::new("video-history-clear")
+                                            .label(t!("video-history-clear"))
+                                            .secondary()
+                                            .on_click(move |_, _, cx| {
+                                                cleared.update(cx, |kept, cx| {
+                                                    kept.forget_watched(cx);
+                                                });
+                                            }),
+                                    )
+                                }),
+                        )
+                        .child(tiles.grid(cards))
+                        .when(empty, |this| {
+                            this.child(
+                                div()
+                                    .id("video-feed-empty")
+                                    .role(Role::Status)
+                                    .aria_label(hint.clone())
+                                    .child(vacant(hint, cx)),
+                            )
+                        })
+                        .when(loading, |this| this.child(waiting("video-feed-waiting")))
+                        .when(!channels.is_empty(), |this| {
+                            this.child(heading(t!("video-feed-channels"), cx))
+                                .child(tiles.grid(channels))
+                        }),
+                ),
+        )
     }
 }

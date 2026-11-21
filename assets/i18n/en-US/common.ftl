@@ -53,7 +53,7 @@ runtime-minutes = { $minutes }m { $seconds }s
 runtime-hours = { $hours }h { $minutes }m
 
 # navigation
-nav-history = Recents
+nav-history = History
 nav-home = Home
 nav-search = Search
 nav-library = Your Library

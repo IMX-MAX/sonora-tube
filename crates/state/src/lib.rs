@@ -101,7 +101,7 @@ pub use sponsorblock::SponsorBlock;
 pub use stations::Stations;
 pub use tags::{TagState, Tags};
 pub use toast::{Outcome, Target, Toast, ToastAction, Toasts};
-pub use tube::{Shelf as VideoShelf, VideoList, VideoSearch, Watching};
+pub use tube::{Shelf as VideoShelf, Subscriptions, VideoList, VideoSearch, Watching};
 pub use updates::{
     Channel, Release, UpdateState, Updates, commit, start_staged, updates_itself, version,
 };

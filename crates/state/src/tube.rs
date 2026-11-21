@@ -2,6 +2,7 @@
 //! and the channel or playlist that is open.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Context, Entity, Task};
@@ -142,6 +143,7 @@ pub struct Watching {
     client: Client,
     io: Io,
     playback: Entity<Playback>,
+    subscriptions: Entity<Subscriptions>,
     id: Option<String>,
     watch: Option<Arc<Watch>>,
     loading: bool,
@@ -149,21 +151,34 @@ pub struct Watching {
     thread: Thread,
     /// Made on the first video and kept, so one mpv serves every video after it.
     screen: Option<(Arc<Player>, Entity<VideoView>)>,
+    /// The volume from 0 to 1, as the slider shows it.
+    volume: f32,
+    muted: bool,
+    captions: bool,
     task: Option<Task<()>>,
 }
 
 impl Watching {
-    pub fn new(client: Client, io: Io, playback: Entity<Playback>) -> Self {
+    pub fn new(
+        client: Client,
+        io: Io,
+        playback: Entity<Playback>,
+        subscriptions: Entity<Subscriptions>,
+    ) -> Self {
         Self {
             client,
             io,
             playback,
+            subscriptions,
             id: None,
             watch: None,
             loading: false,
             error: None,
             thread: Thread::default(),
             screen: None,
+            volume: 1.,
+            muted: false,
+            captions: false,
             task: None,
         }
     }
@@ -249,6 +264,17 @@ impl Watching {
                 match crate::settled(loaded, cx) {
                     Ok(watch) => {
                         this.thread.more = watch.comments.clone();
+                        let seen = Video {
+                            id: watch.id.clone(),
+                            title: watch.title.clone(),
+                            channel: watch.channel.as_ref().map(|channel| tube::ChannelRef {
+                                id: channel.id.clone(),
+                                name: channel.name.clone(),
+                            }),
+                            ..Video::default()
+                        };
+                        this.subscriptions
+                            .update(cx, |kept, cx| kept.watched_now(seen, cx));
                         this.watch = Some(Arc::new(watch));
                         this.load_comments(cx);
                     }
@@ -285,6 +311,51 @@ impl Watching {
     pub fn toggle(&mut self, cx: &mut Context<Self>) {
         let paused = self.player().is_some_and(|player| player.paused());
         self.set_paused(!paused, cx);
+    }
+
+    /// The volume from 0 to 1, which is 0 while muted.
+    pub fn volume(&self) -> f32 {
+        match self.muted {
+            true => 0.,
+            false => self.volume,
+        }
+    }
+
+    pub fn muted(&self) -> bool {
+        self.muted
+    }
+
+    /// Sets the volume from 0 to 1, which also ends a mute.
+    pub fn set_volume(&mut self, volume: f32, cx: &mut Context<Self>) {
+        self.volume = volume.clamp(0., 1.);
+        self.muted = false;
+        self.sound();
+        cx.notify();
+    }
+
+    pub fn toggle_muted(&mut self, cx: &mut Context<Self>) {
+        self.muted = !self.muted;
+        self.sound();
+        cx.notify();
+    }
+
+    pub fn captions(&self) -> bool {
+        self.captions
+    }
+
+    pub fn toggle_captions(&mut self, cx: &mut Context<Self>) {
+        self.captions = !self.captions;
+        if let Some(player) = self.player() {
+            player.set_captions(self.captions);
+        }
+        cx.notify();
+    }
+
+    /// Hands the volume to the player.
+    fn sound(&self) {
+        if let Some(player) = self.player() {
+            player.set_volume(f64::from(self.volume()) * 100.);
+        }
     }
 
     pub fn seek_to(&mut self, seconds: f64, cx: &mut Context<Self>) {
@@ -388,6 +459,8 @@ impl Watching {
             return Ok(());
         };
         player.load(&tube::watch_url(id))?;
+        player.set_volume(f64::from(self.volume()) * 100.);
+        player.set_captions(self.captions);
         player.set_paused(false);
         Ok(())
     }
@@ -579,5 +652,180 @@ impl VideoList {
             })
             .ok();
         }));
+    }
+}
+
+/// How many watched videos the history keeps.
+const HISTORY_CAP: usize = 500;
+/// How many of a channel's newest uploads go into the feed.
+const FEED_PER_CHANNEL: usize = 12;
+
+/// What is kept on disk between runs: the channels followed and the videos watched, newest first.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Kept {
+    #[serde(default)]
+    channels: Vec<Channel>,
+    #[serde(default)]
+    watched: Vec<Video>,
+}
+
+/// The channels the user follows, the feed of their newest uploads and the videos watched. All
+/// of it lives on this machine, so nothing here needs a YouTube account.
+pub struct Subscriptions {
+    client: Client,
+    io: Io,
+    path: PathBuf,
+    kept: Kept,
+    feed: Vec<Video>,
+    loaded: bool,
+    loading: bool,
+    task: Option<Task<()>>,
+}
+
+impl Subscriptions {
+    pub fn new(client: Client, io: Io) -> Self {
+        let path = dirs::data_local_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("sonora")
+            .join("videos.json");
+        let kept = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        Self {
+            client,
+            io,
+            path,
+            kept,
+            feed: Vec::new(),
+            loaded: false,
+            loading: false,
+            task: None,
+        }
+    }
+
+    pub fn channels(&self) -> &[Channel] {
+        &self.kept.channels
+    }
+
+    /// The videos watched, the latest first.
+    pub fn watched(&self) -> &[Video] {
+        &self.kept.watched
+    }
+
+    /// The newest uploads of the followed channels, the latest first.
+    pub fn feed(&self) -> &[Video] {
+        &self.feed
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+
+    pub fn follows(&self, channel: &str) -> bool {
+        self.kept.channels.iter().any(|kept| kept.id == channel)
+    }
+
+    /// Follows the channel, or stops following it.
+    pub fn toggle(&mut self, channel: &Channel, cx: &mut Context<Self>) {
+        match self.follows(&channel.id) {
+            true => {
+                self.kept.channels.retain(|kept| kept.id != channel.id);
+                self.feed
+                    .retain(|video| video.channel.as_ref().is_none_or(|by| by.id != channel.id));
+            }
+            false => {
+                self.kept.channels.push(channel.clone());
+                self.loaded = false;
+            }
+        }
+        self.save();
+        cx.notify();
+    }
+
+    /// Puts the video at the top of the history.
+    pub fn watched_now(&mut self, video: Video, cx: &mut Context<Self>) {
+        self.kept.watched.retain(|kept| kept.id != video.id);
+        self.kept.watched.insert(0, video);
+        self.kept.watched.truncate(HISTORY_CAP);
+        self.save();
+        cx.notify();
+    }
+
+    pub fn forget_watched(&mut self, cx: &mut Context<Self>) {
+        self.kept.watched.clear();
+        self.save();
+        cx.notify();
+    }
+
+    /// Fetches the feed unless it is already here or on its way.
+    pub fn open(&mut self, cx: &mut Context<Self>) {
+        if !self.loaded && !self.loading {
+            self.refresh(cx);
+        }
+    }
+
+    /// Fetches the newest uploads of every followed channel again.
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.kept.channels.is_empty() {
+            self.feed.clear();
+            self.loaded = true;
+            cx.notify();
+            return;
+        }
+        self.loading = true;
+        cx.notify();
+        let client = self.client.clone();
+        let channels = self.kept.channels.clone();
+        let request = self.io.spawn(async move {
+            let pages = channels.iter().map(|channel| client.channel(&channel.id));
+            let mut feed = Vec::new();
+            for (channel, page) in channels.iter().zip(futures::future::join_all(pages).await) {
+                match page {
+                    Ok(page) => {
+                        let by = tube::ChannelRef {
+                            id: channel.id.clone(),
+                            name: channel.name.clone(),
+                        };
+                        feed.extend(page.videos.items.into_iter().take(FEED_PER_CHANNEL).map(
+                            |mut video| {
+                                video.channel.get_or_insert_with(|| by.clone());
+                                video
+                            },
+                        ));
+                    }
+                    Err(error) => log::warn!("video: cannot read {}: {error:#}", channel.name),
+                }
+            }
+            feed.sort_by_key(|video| video.age().unwrap_or(u64::MAX));
+            Ok(feed)
+        });
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let loaded = join(request).await;
+            this.update(cx, |this, cx| {
+                this.loading = false;
+                this.loaded = true;
+                match crate::settled(loaded, cx) {
+                    Ok(feed) => this.feed = feed,
+                    Err(reason) => log::warn!("video: cannot read the feed: {reason}"),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn save(&self) {
+        let written = serde_json::to_vec(&self.kept)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| {
+                if let Some(folder) = self.path.parent() {
+                    std::fs::create_dir_all(folder)?;
+                }
+                Ok(std::fs::write(&self.path, bytes)?)
+            });
+        if let Err(error) = written {
+            log::warn!("video: cannot save the followed channels: {error:#}");
+        }
     }
 }

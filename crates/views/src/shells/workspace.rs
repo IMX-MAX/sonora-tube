@@ -5,22 +5,18 @@ use gpui::prelude::*;
 use gpui::{AnyView, App, Context, Entity, FocusHandle, Pixels, Render, StyleRefinement};
 use gpui::{Window, deferred, div};
 use input::WORKSPACE_CONTEXT;
-use state::{AppSettings, Playback, Queue, SideTab, Sonora};
+use state::{Playback, Queue, SideTab, Sonora};
 use ui::{
     Activate, ActiveTheme as _, Deselect, Entrance, Remove, SelectNext, SelectPrevious, entering,
     shown_listing, veiled,
 };
 
-use crate::chrome::{
-    AppNotice, Chrome, PlayerBar, SidebarLeft, SidebarRight, SwipeCue, TitleBarOptions,
-};
+use crate::chrome::{AppNotice, Chrome, SidebarLeft, SidebarRight, SwipeCue, TitleBarOptions};
 use crate::shared::menus::CardMenu;
 use crate::shells::Shell;
 
 pub(crate) struct Workspace {
     sidebar: Entity<SidebarLeft>,
-    player_bar: Entity<PlayerBar>,
-    settings: Entity<AppSettings>,
     sidebar_right: Entity<SidebarRight>,
     card_menu: Entity<CardMenu>,
     notice: Entity<AppNotice>,
@@ -46,14 +42,11 @@ impl Workspace {
     ) -> Self {
         let sidebar = cx.new(SidebarLeft::new);
         let sidebar_right = cx.new(|cx| SidebarRight::new(queue.clone(), playback.clone(), cx));
-        let player_bar = cx.new(|cx| PlayerBar::new(playback.clone(), queue, cx));
         let settings = Sonora::global(cx).settings.clone();
         cx.observe(&settings, |_, _, cx| cx.notify()).detach();
 
         Self {
             sidebar,
-            player_bar,
-            settings,
             sidebar_right,
             card_menu: CardMenu::entity(cx),
             notice: cx.new(AppNotice::new),
@@ -161,13 +154,7 @@ impl Render for Workspace {
         Chrome::publish(left, right, reserved, cx);
         let covered = self.sidebar_right.read(cx).covers_content(window);
         let overlay = self.sidebar.read(cx).overlays();
-        let bar_height = PlayerBar::height(window, cx);
-        let underlap = self.settings.read(cx).player_bar_translucent();
-        let bottom = match underlap {
-            true => bar_height,
-            false => Pixels::ZERO,
-        };
-        Chrome::set_bottom(bottom, cx);
+        Chrome::set_bottom(Pixels::ZERO, cx);
         // A cached view is laid out from the style given here and its own root
         // style is never consulted, so it can only be cached while it is in the
         // flow at a width this knows: an overlaid sidebar places itself, and a
@@ -342,16 +329,6 @@ impl Render for Workspace {
                     )
                     .child(self.sidebar_right.clone())
                     .when(overlay, |this| this.child(self.sidebar.clone())),
-            )
-            .child(
-                div()
-                    .relative()
-                    .when(underlap, |bar| bar.absolute().left_0().right_0().bottom_0())
-                    .child(
-                        self.player_bar
-                            .clone()
-                            .cached(StyleRefinement::default().w_full().h(bar_height)),
-                    ),
             )
             // Deferred so the cards sit above the sidebars' resize grips. The root draws the
             // dialogs after the shell, so those still cover them.

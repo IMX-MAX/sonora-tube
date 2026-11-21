@@ -12,8 +12,6 @@ use screens::artist::ArtistView;
 use screens::detail::DetailView;
 use screens::equalizer::EqualizerView;
 use screens::genre::GenreView;
-use screens::history::HistoryView;
-use screens::home::HomeView;
 pub use screens::library::LibraryView;
 pub use screens::login::LoginView;
 pub use screens::settings::SettingsView;

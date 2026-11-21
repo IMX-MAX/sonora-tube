@@ -10,7 +10,7 @@ pub use client::Client;
 
 /// A video as a list shows it. The counts and dates stay the text YouTube wrote, since that is
 /// already abbreviated and localised.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Video {
     pub id: String,
     pub title: String,
@@ -39,14 +39,14 @@ pub fn watch_url(id: &str) -> String {
 }
 
 /// The channel a video or a comment belongs to.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChannelRef {
     pub id: String,
     pub name: String,
 }
 
 /// A channel as a search result or a watch page shows it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Channel {
     pub id: String,
     pub name: String,
@@ -140,4 +140,24 @@ pub struct PlaylistPage {
     pub id: String,
     pub title: String,
     pub videos: Page<Video>,
+}
+
+impl Video {
+    /// Roughly how many seconds ago the video was published, read from wording such as
+    /// "3 days ago". `None` when the wording is missing or not understood.
+    pub fn age(&self) -> Option<u64> {
+        let mut words = self.published.as_deref()?.split_whitespace();
+        let count = words.find_map(|word| word.parse::<u64>().ok())?;
+        let unit = match words.next()?.trim_end_matches('s') {
+            "second" => 1,
+            "minute" => 60,
+            "hour" => 3_600,
+            "day" => 86_400,
+            "week" => 604_800,
+            "month" => 2_592_000,
+            "year" => 31_536_000,
+            _ => return None,
+        };
+        Some(count * unit)
+    }
 }

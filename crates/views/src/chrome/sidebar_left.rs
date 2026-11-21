@@ -15,8 +15,7 @@ use gpui::{
 use gpui::{Window, div, px};
 use music::Shape;
 use router::{
-    Destination, LibraryTab, NavEntry, Navigation, NavigationEvent, SettingsPage, navigate,
-    open_settings,
+    Destination, NavEntry, Navigation, NavigationEvent, SettingsPage, navigate, open_settings,
 };
 use state::{
     AppSettings, Leaving, Library, Origin, PinSort, Pins, Playback, Session, Shelf, Sonora,
@@ -31,11 +30,9 @@ use crate::shared::playlist_editor::{Edit, PlaylistEditor};
 const PINS: &str = "sidebar-pins";
 
 /// The sidebar's navigation rows in order: the entry that can hide each, its icon and where it goes.
-/// Recents and then Settings sit right under Search, and the four library rows after them each
-/// open one page of the merged streaming and local library, with Radio after them for a provider
-/// that lists stations. Settings lives in the account menu of the title bar and shows here only
-/// when added. It opens on the settings page last visited rather than on the one named here.
-pub(crate) const NAV: [(NavEntry, &str, Destination); 9] = [
+/// Settings also lives in the account menu of the title bar and shows here only when added. It
+/// opens on the settings page last visited rather than on the one named here.
+pub(crate) const NAV: [(NavEntry, &str, Destination); 4] = [
     (NavEntry::Home, "icons/house.svg", Destination::Home),
     (NavEntry::Search, "icons/search.svg", Destination::Search),
     (
@@ -48,27 +45,6 @@ pub(crate) const NAV: [(NavEntry, &str, Destination); 9] = [
         "icons/settings.svg",
         Destination::Settings(SettingsPage::Providers),
     ),
-    (
-        NavEntry::Songs,
-        LibraryTab::Songs.icon(),
-        Destination::Library(LibraryTab::Songs),
-    ),
-    (
-        NavEntry::Albums,
-        LibraryTab::Albums.icon(),
-        Destination::Library(LibraryTab::Albums),
-    ),
-    (
-        NavEntry::Artists,
-        LibraryTab::Artists.icon(),
-        Destination::Library(LibraryTab::Artists),
-    ),
-    (
-        NavEntry::Playlists,
-        LibraryTab::Playlists.icon(),
-        Destination::Library(LibraryTab::Playlists),
-    ),
-    (NavEntry::Radio, "icons/radio.svg", Destination::Radio),
 ];
 
 const MIN_WIDTH: Pixels = px(160.);

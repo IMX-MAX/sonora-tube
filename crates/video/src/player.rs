@@ -70,6 +70,13 @@ impl Player {
             ("vo", "libmpv"),
             ("hwdec", "auto-copy"),
             ("ytdl", "yes"),
+            // Fetch the captions with the video, written ones before generated ones, and keep
+            // them hidden until asked for.
+            (
+                "ytdl-raw-options",
+                "write-subs=,write-auto-subs=,sub-langs=\"en.*\"",
+            ),
+            ("sub-visibility", "no"),
             ("ytdl-format", "bestvideo[height<=?1080]+bestaudio/best"),
             ("terminal", "no"),
             ("keep-open", "yes"),
@@ -157,6 +164,17 @@ impl Player {
             .command(&["seek", &seconds.to_string(), "absolute"])
         {
             log::warn!("video: cannot seek: {error:#}");
+        }
+    }
+
+    /// Shows or hides the captions, for a video that has any.
+    pub fn set_captions(&self, shown: bool) {
+        let value = match shown {
+            true => "yes",
+            false => "no",
+        };
+        if let Err(error) = self.core.set("sub-visibility", value) {
+            log::warn!("video: cannot switch the captions: {error:#}");
         }
     }
 
