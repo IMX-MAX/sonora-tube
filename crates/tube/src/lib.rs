@@ -1,7 +1,8 @@
 //! YouTube's own data, read anonymously from the InnerTube endpoints the website calls.
 //!
 //! Only what a watching app needs is modelled: search, the watch page, comments, channels and
-//! playlists. Shorts, ads and promoted shelves are dropped while parsing and never reach a caller.
+//! playlists. Ads and promoted shelves are dropped while parsing and never reach a caller, and
+//! Shorts come back as ordinary videos unless the client is told to leave them out.
 
 mod client;
 mod parse;
@@ -19,6 +20,9 @@ pub struct Video {
     pub length: Option<String>,
     pub views: Option<String>,
     pub published: Option<String>,
+    /// Whether YouTube lists it as a Short. It plays like any other video.
+    #[serde(default)]
+    pub short: bool,
 }
 
 impl Video {

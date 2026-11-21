@@ -1,5 +1,8 @@
 //! The requests: one POST per page, each answered with a JSON tree `parse` reads.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::{Context as _, Result, ensure};
 use serde_json::{Value, json};
 
@@ -21,6 +24,8 @@ pub struct Client {
     http: reqwest::Client,
     language: String,
     region: String,
+    /// Whether Shorts are left out of every list, shared by the clones of a client.
+    no_shorts: Arc<AtomicBool>,
 }
 
 impl Client {
@@ -29,7 +34,13 @@ impl Client {
             http: reqwest::Client::new(),
             language: "en".to_owned(),
             region: "US".to_owned(),
+            no_shorts: Arc::default(),
         }
+    }
+
+    /// Leaves Shorts out of every list fetched from now on, or lists them as videos again.
+    pub fn hide_shorts(&self, hidden: bool) {
+        self.no_shorts.store(hidden, Ordering::Relaxed);
     }
 
     /// Searches videos, channels and playlists together.
@@ -106,10 +117,14 @@ impl Client {
             .context("cannot reach youtube")?;
         let status = response.status();
         ensure!(status.is_success(), "youtube answered {status}");
-        response
+        let mut answer = response
             .json()
             .await
-            .context("cannot read youtube's answer")
+            .context("cannot read youtube's answer")?;
+        if self.no_shorts.load(Ordering::Relaxed) {
+            parse::drop_shorts(&mut answer);
+        }
+        Ok(answer)
     }
 }
 

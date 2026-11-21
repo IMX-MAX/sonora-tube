@@ -12,12 +12,9 @@ use crate::{
     Video, Watch,
 };
 
-/// Containers whose contents are never listed: Shorts, ads, the side card of a search and the
-/// chapter and summary strips under a result.
-const CLUTTER: [&str; 12] = [
-    "reelShelfRenderer",
-    "shortsLockupViewModel",
-    "gridShelfViewModel",
+/// Containers whose contents are never listed: ads, the side card of a search and the chapter
+/// and summary strips under a result.
+const CLUTTER: [&str; 9] = [
     "adSlotRenderer",
     "promotedSparkleWebRenderer",
     "statementBannerRenderer",
@@ -28,6 +25,8 @@ const CLUTTER: [&str; 12] = [
     "playerOverlays",
     "topbar",
 ];
+/// The renderer of one Short.
+const SHORT: &str = "shortsLockupViewModel";
 const COMMENTS_SECTION: &str = "comment-item-section";
 
 /// Every video, channel and playlist in an answer, in the order the page shows them.
@@ -35,6 +34,18 @@ pub(crate) fn listing(answer: &Value) -> Page<Found> {
     let mut page = Page::default();
     walk(answer, &mut page);
     page
+}
+
+/// Takes every Short out of an answer, wherever it sits.
+pub(crate) fn drop_shorts(node: &mut Value) {
+    match node {
+        Value::Array(entries) => entries.iter_mut().for_each(drop_shorts),
+        Value::Object(fields) => {
+            fields.remove(SHORT);
+            fields.values_mut().for_each(drop_shorts);
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
 }
 
 /// Only the videos of an answer.
@@ -214,6 +225,7 @@ fn walk(node: &Value, page: &mut Page<Found>) {
                     | "playlistVideoRenderer" => video(value).map(Found::Video),
                     "channelRenderer" => channel_card(value).map(Found::Channel),
                     "lockupViewModel" => lockup(value),
+                    SHORT => short(value).map(Found::Video),
                     "continuationItemRenderer" | "continuationItemViewModel" => {
                         if let Some(token) = token(value) {
                             page.more = Some(token);
@@ -236,6 +248,21 @@ fn walk(node: &Value, page: &mut Page<Found>) {
     }
 }
 
+/// A Short, which is listed with little more than its title and views.
+fn short(node: &Value) -> Option<Video> {
+    let id = first(node, "reelWatchEndpoint")?["videoId"].as_str()?;
+    let words = &node["overlayMetadata"];
+    Some(Video {
+        id: id.to_owned(),
+        title: words["primaryText"]["content"].as_str()?.to_owned(),
+        views: words["secondaryText"]["content"]
+            .as_str()
+            .map(str::to_owned),
+        short: true,
+        ..Video::default()
+    })
+}
+
 /// A video from the older renderers, which name each field.
 fn video(node: &Value) -> Option<Video> {
     let byline = ["longBylineText", "shortBylineText", "ownerText"]
@@ -249,6 +276,7 @@ fn video(node: &Value) -> Option<Video> {
         length: text(&node["lengthText"]),
         views: text(&node["shortViewCountText"]).or_else(|| text(&node["viewCountText"])),
         published: text(&node["publishedTimeText"]),
+        short: false,
     })
 }
 
@@ -279,6 +307,7 @@ fn lockup(node: &Value) -> Option<Found> {
                     .filter(|length| length.contains(':')),
                 views: rest.first().cloned(),
                 published: rest.get(1).cloned(),
+                short: false,
             }))
         }
         "LOCKUP_CONTENT_TYPE_PLAYLIST" | "LOCKUP_CONTENT_TYPE_PODCAST" => {

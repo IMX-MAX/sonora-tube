@@ -21,7 +21,7 @@ settings-player-bar-time-left = Show time left
 settings-player-bar-time-left-detail = Count down the time left in the song instead of showing its length
 settings-page-now-playing = Now playing
 settings-page-lyrics = Lyrics
-settings-page-playback = Playback
+settings-page-playback = Video
 settings-page-sound = Sound
 settings-page-storage = Storage
 settings-page-discord = Discord
@@ -552,3 +552,8 @@ settings-downloading = Downloading…
 settings-installing = Installing…
 
 settings-space-used = Space used
+settings-group-videos = Videos
+settings-hide-shorts = Hide Shorts
+settings-hide-shorts-detail = Leaves Shorts out of search results and channels instead of listing them as ordinary videos
+settings-captions = Show captions
+settings-captions-detail = Starts a video with its captions on when it has any

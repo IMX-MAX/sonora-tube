@@ -17,22 +17,16 @@ const ENTRIES: &str = "entries";
 impl SettingsView {
     pub(super) fn general_groups(&self, cx: &App) -> Vec<Group> {
         vec![
-            Group::new("settings-group-startup", "icons/house.svg").rows([
-                Slot::Startup,
-                Slot::Provider,
-                Slot::Entries,
-                Slot::Language,
-            ]),
+            Group::new("settings-group-startup", "icons/house.svg")
+                .rows([Slot::Startup, Slot::Language]),
             Group::new("settings-group-window", "icons/panel-left-open.svg")
-                .rows([Slot::Tray, Slot::TrayIcon, Slot::NowPlayingOnFileOpen])
-                .rows(self.decoration_slots(cx))
-                .rows(taskbar_slots()),
+                .rows([Slot::Tray, Slot::TrayIcon])
+                .rows(self.decoration_slots(cx)),
             Group::new("settings-group-motion", "icons/loader-circle.svg").rows([
                 Slot::Motion,
                 Slot::Pace,
                 Slot::Saver,
             ]),
-            Group::new("settings-group-context-menus", "icons/list.svg").rows([Slot::AdaptiveMenu]),
         ]
     }
 
@@ -410,6 +404,36 @@ impl SettingsView {
         )
         .detail(t!("settings-saver-detail"))
         .into_any_element()
+    }
+
+    pub(super) fn hide_shorts_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.settings.read(cx).hide_shorts();
+
+        self.row(
+            t!("settings-hide-shorts"),
+            Switch::new("hide-shorts", on)
+                .name(t!("settings-hide-shorts"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings
+                        .update(cx, |settings, cx| settings.set_hide_shorts(!on, cx));
+                }))
+                .into_any_element(),
+        )
+    }
+
+    pub(super) fn captions_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.settings.read(cx).captions();
+
+        self.row(
+            t!("settings-captions"),
+            Switch::new("captions", on)
+                .name(t!("settings-captions"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings
+                        .update(cx, |settings, cx| settings.set_captions(!on, cx));
+                }))
+                .into_any_element(),
+        )
     }
 
     pub(super) fn adaptive_menu_row(&self, cx: &mut Context<Self>) -> AnyElement {

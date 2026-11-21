@@ -170,6 +170,8 @@ enum Slot {
     Pace,
     Saver,
     AdaptiveMenu,
+    HideShorts,
+    Captions,
     Version,
     Updates,
     AutoUpdate,
@@ -718,8 +720,9 @@ impl SettingsView {
     /// lives on. Ties keep the order of the pages. Only titles and details are read and no row
     /// is built.
     fn found(&self, cx: &App) -> Vec<(SettingsPage, Slot)> {
-        let mut hits: Vec<(u32, SettingsPage, Slot)> = SettingsPage::ALL
+        let mut hits: Vec<(u32, SettingsPage, Slot)> = SettingsTab::ALL
             .into_iter()
+            .flat_map(|tab| tab.sections().iter().copied())
             .flat_map(|page| {
                 self.groups(page, cx)
                     .into_iter()
@@ -882,6 +885,11 @@ impl SettingsView {
                 t!("settings-window-rounding"),
                 t!("settings-window-rounding-detail"),
             ),
+            Slot::HideShorts => (
+                t!("settings-hide-shorts"),
+                t!("settings-hide-shorts-detail"),
+            ),
+            Slot::Captions => (t!("settings-captions"), t!("settings-captions-detail")),
             Slot::AdaptiveMenu => (
                 t!("settings-adaptive-menu"),
                 t!("settings-adaptive-menu-detail"),
@@ -1107,6 +1115,8 @@ impl SettingsView {
             ))]
             Slot::WindowRounding => self.window_rounding_row(window, cx),
             Slot::AdaptiveMenu => self.adaptive_menu_row(cx),
+            Slot::HideShorts => self.hide_shorts_row(cx),
+            Slot::Captions => self.captions_row(cx),
             Slot::Normalisation => self.playback_row(cx),
             Slot::Gapless => self.gapless_row(cx),
             Slot::SponsorBlock => self.sponsorblock_row(cx),

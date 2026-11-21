@@ -291,8 +291,9 @@ impl Root {
 
         let tube = tube::Client::new();
         let video_search = cx.new(|_| VideoSearch::new(tube.clone(), io.clone()));
-        let videos = cx.new(|cx| VideoSearchView::new(video_search.clone(), cx));
         let subscriptions = cx.new(|_| Subscriptions::new(tube.clone(), io.clone()));
+        let videos =
+            cx.new(|cx| VideoSearchView::new(video_search.clone(), subscriptions.clone(), cx));
         let watching = cx.new(|_| {
             Watching::new(
                 tube.clone(),
@@ -302,6 +303,27 @@ impl Root {
             )
         });
         let watch = cx.new(|cx| WatchView::new(watching.clone(), subscriptions.clone(), cx));
+        // The video settings reach the client and the player from here, now and on every change.
+        let video_settings = Sonora::global(cx).settings.clone();
+        let apply = {
+            let (tube, watching) = (tube.clone(), watching.clone());
+            let last = std::cell::Cell::new(None);
+            move |settings: Entity<state::AppSettings>, cx: &mut App| {
+                let (hidden, captions) = {
+                    let settings = settings.read(cx);
+                    (settings.hide_shorts(), settings.captions())
+                };
+                tube.hide_shorts(hidden);
+                // Only a change of the setting moves the captions, so that another setting saved
+                // does not undo what the button under the video chose.
+                if last.replace(Some(captions)) != Some(captions) {
+                    watching.update(cx, |watching, cx| watching.show_captions(captions, cx));
+                }
+            }
+        };
+        apply(video_settings.clone(), cx);
+        cx.observe(&video_settings, move |_, settings, cx| apply(settings, cx))
+            .detach();
         let video_shelf = cx.new(|_| VideoList::new(tube, io.clone()));
         let video_home =
             cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::Subscriptions, cx));

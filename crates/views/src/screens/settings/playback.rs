@@ -31,45 +31,11 @@ const SLEEP_LAST: usize = (SLEEP_MAX_MINUTES - SLEEP_MIN_MINUTES + 1) as usize
     + 1;
 
 impl SettingsView {
-    pub(super) fn playback_groups(&self, cx: &App) -> Vec<Group> {
-        let capabilities = self.session.read(cx).capabilities();
-        let mut playing = vec![Slot::Normalisation, Slot::Gapless];
-        if self.session.read(cx).provider_slug() == Some("youtube") {
-            playing.push(Slot::SponsorBlock);
-        }
-        playing.extend([Slot::Sleep, Slot::StayAwake]);
-        let mut groups = vec![Group::new("settings-group-playing", "icons/play.svg").rows(playing)];
-        // one level is nothing to choose between, so it is stated in a row rather than offered
-        match capabilities.qualities.len() {
-            0 => {}
-            1 => groups.push(
-                Group::new("settings-stream-quality", "icons/disc-3.svg")
-                    .rows([Slot::StreamQuality]),
-            ),
-            _ => groups.push(
-                Group::new("settings-stream-quality", "icons/disc-3.svg")
-                    .cards(Slot::StreamQuality),
-            ),
-        }
-        if capabilities.transcode {
-            groups.push(
-                Group::new("settings-group-streaming", "icons/refresh-cw.svg")
-                    .rows([Slot::StreamFormat, Slot::StreamBitrate]),
-            );
-        }
-        if self.drm.read(cx).shown(cx) {
-            groups.push(
-                Group::new("settings-group-protected", "icons/lock.svg").rows([Slot::Widevine]),
-            );
-        }
-        if self.soloist.read(cx).shown(cx) {
-            groups.push(
-                Group::new("settings-group-soloist", "icons/headphones.svg").rows([Slot::Soloist]),
-            );
-        }
-        groups.extend(self.sessions_groups(cx));
-        groups.extend(self.connect_groups(cx));
-        groups
+    pub(super) fn playback_groups(&self, _: &App) -> Vec<Group> {
+        vec![
+            Group::new("settings-group-videos", "icons/play.svg")
+                .rows([Slot::HideShorts, Slot::Captions]),
+        ]
     }
 
     /// The detail of the Widevine row for its state, which a search reads.

@@ -494,6 +494,8 @@ struct Values {
     fullscreen_lyrics_scale: f32,
     romanization_scripts: RomanizationScripts,
     adaptive_menu: bool,
+    hide_shorts: bool,
+    captions: bool,
     check_updates: bool,
     /// Whether a release found is downloaded in the background and installed the next time
     /// Sonora starts, rather than only offered.
@@ -784,6 +786,8 @@ impl Default for Values {
             fullscreen_lyrics_scale: DEFAULT_LYRICS_SCALE,
             romanization_scripts: RomanizationScripts::default(),
             adaptive_menu: false,
+            hide_shorts: false,
+            captions: false,
             check_updates: cfg!(target_os = "windows") || updates_itself(),
             auto_update: true,
             update_channel: String::new(),
@@ -1341,6 +1345,16 @@ impl AppSettings {
 
     pub fn adaptive_menu(&self) -> bool {
         self.values.adaptive_menu
+    }
+
+    /// Whether Shorts are left out of every list rather than shown as ordinary videos.
+    pub fn hide_shorts(&self) -> bool {
+        self.values.hide_shorts
+    }
+
+    /// Whether a video starts with its captions showing.
+    pub fn captions(&self) -> bool {
+        self.values.captions
     }
 
     pub fn update_channel(&self) -> Channel {
@@ -1991,6 +2005,16 @@ impl AppSettings {
         self.values
             .romanization_scripts
             .set(writing_system, enabled);
+        self.schedule_save(cx);
+    }
+
+    pub fn set_hide_shorts(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        self.values.hide_shorts = hidden;
+        self.schedule_save(cx);
+    }
+
+    pub fn set_captions(&mut self, captions: bool, cx: &mut Context<Self>) {
+        self.values.captions = captions;
         self.schedule_save(cx);
     }
 

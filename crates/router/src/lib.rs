@@ -287,12 +287,10 @@ pub enum SettingsTab {
 
 impl SettingsTab {
     /// Every tab, in the order the header shows them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 4] = [
         Self::General,
         Self::Appearance,
-        Self::Lyrics,
         Self::Playback,
-        Self::Integrations,
         Self::Keybinds,
     ];
 
@@ -334,22 +332,10 @@ impl SettingsTab {
     /// The pages the tab shows, top to bottom. The first is the one the tab opens on.
     pub fn sections(self) -> &'static [SettingsPage] {
         match self {
-            Self::General => &[
-                SettingsPage::Providers,
-                SettingsPage::General,
-                SettingsPage::About,
-            ],
-            Self::Appearance => &[
-                SettingsPage::Appearance,
-                SettingsPage::PlayerBar,
-                SettingsPage::NowPlaying,
-            ],
+            Self::General => &[SettingsPage::General, SettingsPage::About],
+            Self::Appearance => &[SettingsPage::Appearance],
             Self::Lyrics => &[SettingsPage::Lyrics],
-            Self::Playback => &[
-                SettingsPage::Playback,
-                SettingsPage::Sound,
-                SettingsPage::Storage,
-            ],
+            Self::Playback => &[SettingsPage::Playback],
             Self::Integrations => &[SettingsPage::Discord, SettingsPage::Scrobbling],
             Self::Keybinds => &[SettingsPage::Keybinds],
         }

@@ -344,7 +344,15 @@ impl Watching {
     }
 
     pub fn toggle_captions(&mut self, cx: &mut Context<Self>) {
-        self.captions = !self.captions;
+        self.show_captions(!self.captions, cx);
+    }
+
+    /// Shows or hides the captions of this video and the ones after it.
+    pub fn show_captions(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.captions == shown {
+            return;
+        }
+        self.captions = shown;
         if let Some(player) = self.player() {
             player.set_captions(self.captions);
         }

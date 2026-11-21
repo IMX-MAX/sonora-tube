@@ -35,6 +35,8 @@ const STEADY: Pixels = px(0.5);
 const TICK: Duration = Duration::from_millis(250);
 /// How far the skip buttons move the video, in seconds.
 const SKIP: f64 = 10.;
+/// How large a channel's avatar is among search results, against a control's height.
+const CHIP_AVATAR: f32 = 1.5;
 /// How wide the volume slider under the video is.
 const VOLUME_WIDTH: Pixels = px(110.);
 
@@ -79,12 +81,14 @@ fn caption(parts: impl IntoIterator<Item = Option<String>>) -> SharedString {
         .into()
 }
 
-/// A tile: a picture, a two-line title and a caption, opening `destination` when pressed.
+/// A tile: a picture with a `badge` in its corner, a two-line title and up to two dimmed `lines`,
+/// opening `destination` when pressed.
 fn tile(
     id: SharedString,
     picture: Artwork,
+    badge: Option<SharedString>,
     title: &str,
-    caption: SharedString,
+    lines: [SharedString; 2],
     place: (usize, usize),
     destination: Destination,
     tiles: Tiles,
@@ -92,6 +96,8 @@ fn tile(
 ) -> AnyElement {
     let theme = cx.theme();
     let title = SharedString::from(title.to_owned());
+    let caption = caption(lines.iter().map(|line| Some(line.to_string())));
+    let radius = theme.radius;
 
     div()
         .id(id)
@@ -107,12 +113,32 @@ fn tile(
         .gap_2()
         .cursor_pointer()
         .on_click(move |_, _, cx| navigate(destination.clone(), cx))
-        .child(picture)
+        .child(
+            div()
+                .relative()
+                .child(picture)
+                .when_some(badge, |this, badge| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .right_1p5()
+                            .bottom_1p5()
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded(radius)
+                            .bg(theme.overlay)
+                            .text_size(theme.text(Text::Small))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.overlay_foreground)
+                            .child(badge),
+                    )
+                }),
+        )
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap_1()
+                .gap_0p5()
                 .child(
                     div()
                         .line_clamp(2)
@@ -121,18 +147,24 @@ fn tile(
                         .text_color(theme.foreground)
                         .child(title),
                 )
-                .child(
-                    div()
-                        .line_clamp(2)
-                        .text_size(theme.text(Text::Small))
-                        .text_color(theme.muted_foreground)
-                        .child(caption),
+                .children(
+                    lines
+                        .into_iter()
+                        .filter(|line| !line.is_empty())
+                        .map(|line| {
+                            div()
+                                .truncate()
+                                .text_size(theme.text(Text::Small))
+                                .text_color(theme.muted_foreground)
+                                .child(line)
+                        }),
                 ),
         )
         .into_any_element()
 }
 
-/// The tile of one video: its thumbnail with the length in the caption.
+/// The tile of one video: its thumbnail with the length in the corner, then who made it and how
+/// it has done.
 fn video_tile(
     scope: &str,
     video: &Video,
@@ -143,17 +175,17 @@ fn video_tile(
     let picture = Artwork::new(Some(video.thumbnail()))
         .size(tiles.width)
         .wide((tiles.width * 9. / 16.).floor());
-    let caption = caption([
-        video.channel.as_ref().map(|channel| channel.name.clone()),
-        video.views.clone(),
-        video.published.clone(),
-        video.length.clone(),
-    ]);
+    let channel = video.channel.as_ref().map(|channel| channel.name.clone());
+    let lines = [
+        channel.unwrap_or_default().into(),
+        caption([video.views.clone(), video.published.clone()]),
+    ];
     tile(
         format!("{scope}-video-{}", video.id).into(),
         picture,
+        video.length.clone().map(Into::into),
         &video.title,
-        caption,
+        lines,
         place,
         Destination::Watch(video.id.clone().into()),
         tiles,
@@ -176,11 +208,12 @@ fn channel_tile(
     tile(
         format!("{scope}-channel-{}", channel.id).into(),
         picture,
+        None,
         &channel.name,
-        caption([
-            Some(t!("video-channel").to_string()),
-            channel.subscribers.clone(),
-        ]),
+        [
+            channel.subscribers.clone().unwrap_or_default().into(),
+            SharedString::default(),
+        ],
         place,
         Destination::Channel(channel.id.clone().into()),
         tiles,
@@ -202,13 +235,90 @@ fn playlist_tile(
     tile(
         format!("{scope}-playlist-{}", playlist.id).into(),
         picture,
+        Some(t!("video-playlist")),
         &playlist.title,
-        caption([playlist.detail.clone()]),
+        [
+            playlist.detail.clone().unwrap_or_default().into(),
+            SharedString::default(),
+        ],
         place,
         Destination::Videos(playlist.id.clone().into()),
         tiles,
         cx,
     )
+}
+
+/// A channel among search results: its avatar, name and following on one line, with the button to
+/// subscribe, opening the channel when pressed.
+fn channel_chip(
+    channel: &Channel,
+    place: (usize, usize),
+    subscriptions: &Entity<Subscriptions>,
+    cx: &App,
+) -> AnyElement {
+    let theme = cx.theme();
+    let name = SharedString::from(channel.name.clone());
+    let destination = Destination::Channel(channel.id.clone().into());
+    let subscribed = subscriptions.read(cx).follows(&channel.id);
+    let (kept, followed) = (subscriptions.clone(), channel.clone());
+
+    div()
+        .id(SharedString::from(format!("search-channel-{}", channel.id)))
+        .role(Role::Link)
+        .aria_label(name.clone())
+        .aria_position_in_set(place.0 + 1)
+        .aria_size_of_set(place.1)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_3()
+        .p_2()
+        .pr_3()
+        .rounded(theme.radius)
+        .bg(theme.secondary)
+        .hover(|this| this.bg(theme.secondary_hover))
+        .cursor_pointer()
+        .on_click(move |_, _, cx| navigate(destination.clone(), cx))
+        .child(Avatar::new(channel.avatar.clone()).size(theme.metrics.control * CHIP_AVATAR))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .text_size(theme.text(Text::Label))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.foreground)
+                        .child(name),
+                )
+                .when_some(channel.subscribers.clone(), |this, subscribers| {
+                    this.child(
+                        div()
+                            .text_size(theme.text(Text::Small))
+                            .text_color(theme.muted_foreground)
+                            .child(subscribers),
+                    )
+                }),
+        )
+        .child(
+            Button::new(SharedString::from(format!(
+                "search-subscribe-{}",
+                channel.id
+            )))
+            .label(match subscribed {
+                true => t!("video-subscribed"),
+                false => t!("video-subscribe"),
+            })
+            .map(|button| match subscribed {
+                true => button.ghost(),
+                false => button,
+            })
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                kept.update(cx, |kept, cx| kept.toggle(&followed, cx));
+            }),
+        )
+        .into_any_element()
 }
 
 /// The spinner a page shows while its first or next stretch is on its way.
@@ -258,15 +368,21 @@ fn subscribe(
 /// The results of a video search.
 pub(crate) struct VideoSearchView {
     search: Entity<VideoSearch>,
+    subscriptions: Entity<Subscriptions>,
     input: Entity<Input>,
     scrollbar: Entity<Scrollbar>,
     width: Pixels,
 }
 
 impl VideoSearchView {
-    pub(crate) fn new(search: Entity<VideoSearch>, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        search: Entity<VideoSearch>,
+        subscriptions: Entity<Subscriptions>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let id = cx.entity_id();
         cx.observe(&search, |_, _, cx| cx.notify()).detach();
+        cx.observe(&subscriptions, |_, _, cx| cx.notify()).detach();
         let chrome = Chrome::entity(cx);
         cx.observe(&chrome, |_, _, cx| cx.notify()).detach();
 
@@ -278,6 +394,7 @@ impl VideoSearchView {
 
         Self {
             search,
+            subscriptions,
             input,
             scrollbar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id)),
             width: Pixels::ZERO,
@@ -329,20 +446,42 @@ impl VideoSearchView {
                 .into_any_element();
         }
 
-        let cards = found
+        // Channels go in a row of their own above the videos, rather than as odd round tiles
+        // scattered among them.
+        let channels: Vec<&Channel> = found
             .iter()
-            .enumerate()
-            .map(|(place, found)| match found {
-                Found::Video(video) => video_tile("search", video, (place, total), tiles, cx),
-                Found::Channel(channel) => {
-                    channel_tile("search", channel, (place, total), tiles, cx)
-                }
-                Found::Playlist(playlist) => {
-                    playlist_tile("search", playlist, (place, total), tiles, cx)
-                }
+            .filter_map(|found| match found {
+                Found::Channel(channel) => Some(channel),
+                _ => None,
             })
             .collect();
-        tiles.grid(cards).into_any_element()
+        let count = channels.len();
+        let chips = channels
+            .into_iter()
+            .enumerate()
+            .map(|(place, channel)| channel_chip(channel, (place, count), &self.subscriptions, cx));
+        let rest = total - count;
+        let cards = found
+            .iter()
+            .filter(|found| !matches!(found, Found::Channel(_)))
+            .enumerate()
+            .filter_map(|(place, found)| match found {
+                Found::Video(video) => Some(video_tile("search", video, (place, rest), tiles, cx)),
+                Found::Playlist(playlist) => {
+                    Some(playlist_tile("search", playlist, (place, rest), tiles, cx))
+                }
+                Found::Channel(_) => None,
+            })
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .gap_6()
+            .when(count > 0, |this| {
+                this.child(div().flex().flex_wrap().gap(tiles.gap).children(chips))
+            })
+            .child(tiles.grid(cards))
+            .into_any_element()
     }
 }
 
