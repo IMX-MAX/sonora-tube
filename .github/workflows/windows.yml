@@ -88,14 +88,16 @@ jobs:
           curl -fsSL -o extras/yt-dlp.exe \
             "https://github.com/yt-dlp/yt-dlp/releases/latest/download/$YTDLP"
 
+      # Not bash: with the MSVC environment loaded, its PATH puts the coreutils `link` ahead of
+      # the linker.
       - name: build
-        shell: bash
+        shell: pwsh
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          set -euo pipefail
-          export RUSTFLAGS="-L native=$(cygpath -m "$PWD/mpv")"
-          cargo build --release --locked --package sonora --target "$TARGET"
+          $env:RUSTFLAGS = "-L native=$((Resolve-Path mpv).Path)"
+          cargo build --release --locked --package sonora --target $env:TARGET
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: install Inno Setup
         shell: pwsh
