@@ -768,6 +768,10 @@ pub(crate) struct WatchView {
     pip: Option<AnyWindowHandle>,
     /// Whether the whole description shows rather than its opening lines.
     described: bool,
+    /// Whether the volume is being dragged, which keeps its slider open.
+    adjusting: bool,
+    /// Whether the pointer is over the speaker or its slider.
+    over_volume: bool,
     _tick: Task<()>,
 }
 
@@ -813,6 +817,8 @@ impl WatchView {
             beside: false,
             pip: None,
             described: false,
+            adjusting: false,
+            over_volume: false,
             _tick: tick,
         }
     }
@@ -979,7 +985,6 @@ impl WatchView {
             .child(
                 Button::new("video-transcript")
                     .icon("icons/text-select.svg")
-                    .label(t!("video-transcript"))
                     .ghost()
                     .selected(scripted)
                     .tooltip(match scripted {
@@ -1015,29 +1020,54 @@ impl WatchView {
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_pip(cx))),
             )
             .child(
-                Button::new("video-mute")
-                    .icon(volume_icon(level))
-                    .ghost()
-                    .tooltip(match muted {
-                        true => "video-unmute",
-                        false => "video-mute",
-                    })
-                    .on_click(move |_, _, cx| {
-                        silenced.update(cx, |watching, cx| watching.toggle_muted(cx));
-                    }),
-            )
-            .child(
-                div().w(VOLUME_WIDTH).flex_none().child(
-                    Scrubber::new(&self.volume, level)
-                        .name(t!("video-volume"))
-                        .value(percent(level))
-                        .colors(theme.progress_bar, theme.muted, theme.foreground)
-                        .on_move(cx.listener(|this, fraction: &f32, _, cx| {
-                            let level = *fraction;
-                            this.watching
-                                .update(cx, |watching, cx| watching.set_volume(level, cx));
-                        })),
-                ),
+                // The slider folds away until the pointer is over the speaker or dragging it.
+                div()
+                    .id("video-volume-fold")
+                    .on_hover(cx.listener(|this, over: &bool, _, cx| {
+                        this.over_volume = *over;
+                        cx.notify();
+                    }))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .child(
+                        Button::new("video-mute")
+                            .icon(volume_icon(level))
+                            .ghost()
+                            .tooltip(match muted {
+                                true => "video-unmute",
+                                false => "video-mute",
+                            })
+                            .on_click(move |_, _, cx| {
+                                silenced.update(cx, |watching, cx| watching.toggle_muted(cx));
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .overflow_hidden()
+                            .map(|slider| match self.adjusting || self.over_volume {
+                                true => slider.w(VOLUME_WIDTH).pl_2(),
+                                false => slider.w_0(),
+                            })
+                            .child(
+                                Scrubber::new(&self.volume, level)
+                                    .name(t!("video-volume"))
+                                    .value(percent(level))
+                                    .colors(theme.progress_bar, theme.muted, theme.foreground)
+                                    .on_move(cx.listener(|this, fraction: &f32, _, cx| {
+                                        let level = *fraction;
+                                        this.adjusting = true;
+                                        this.watching.update(cx, |watching, cx| {
+                                            watching.set_volume(level, cx)
+                                        });
+                                    }))
+                                    .on_release(cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                        this.adjusting = false;
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
             );
 
         div()
