@@ -29,7 +29,7 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             arch: x64compatible
-            setup: Sonora-Setup
+            setup: YouTubePlus-Setup
             mpv: x86_64
             machine: X64
             msvc: amd64
@@ -37,7 +37,7 @@ jobs:
           - target: aarch64-pc-windows-msvc
             os: windows-11-arm
             arch: arm64
-            setup: Sonora-Setup-arm64
+            setup: YouTubePlus-Setup-arm64
             mpv: aarch64
             machine: ARM64
             msvc: arm64
@@ -117,7 +117,7 @@ jobs:
           $env:SONORA_EXE = (Resolve-Path "target/$env:TARGET/release/sonora.exe").Path
           $env:SONORA_DIST = (Resolve-Path "dist").Path
           $env:SONORA_EXTRAS = (Resolve-Path "extras").Path
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "scripts/windows/sonora.iss"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "scripts/windows/youtube-plus.iss"
 
       - uses: actions/upload-artifact@v7
         with:

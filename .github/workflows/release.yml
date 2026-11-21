@@ -185,7 +185,7 @@ jobs:
           $env:SONORA_BUILD_METADATA = (Resolve-Path build.json).Path
           $env:SONORA_EXE = (Resolve-Path "target/$env:TARGET/release/sonora.exe").Path
           $env:SONORA_DIST = (Resolve-Path "dist").Path
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "scripts/windows/sonora.iss"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "scripts/windows/youtube-plus.iss"
 
       - uses: actions/upload-artifact@v7
         if: ${{ !inputs.reuse || runner.os != 'macOS' }}

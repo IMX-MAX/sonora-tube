@@ -59,7 +59,7 @@ equalizer-skipped-more = và { $count ->
        *[other] { $count } dòng khác
     }
 equalizer-skip-unknown-type = loại bộ lọc không xác định { $name }
-equalizer-skip-unreadable = không phải bộ lọc mà Sonora đọc được
+equalizer-skip-unreadable = không phải bộ lọc mà YouTube+ đọc được
 equalizer-skip-no-frequency = không có tần số
 equalizer-skip-no-gain = không có mức tăng
 equalizer-skip-no-width = không có Q hoặc băng thông
@@ -98,14 +98,14 @@ equalizer-overload-slight = Cắt đỉnh dưới 0,1 dB
 equalizer-lower-preamp = Giảm tiền khuếch đại
 equalizer-level = Mức
 equalizer-status-bit-perfect = Bit-perfect
-equalizer-status-bit-perfect-detail = Bit-perfect từ Sonora
+equalizer-status-bit-perfect-detail = Bit-perfect từ YouTube+
 equalizer-status-server = Sau đó máy chủ âm thanh chuyển đổi thành { $khz } kHz
 equalizer-status-altered = Không bit-perfect do:
 equalizer-status-separator = {", "}
 equalizer-status-equalized = EQ
 equalizer-status-volume = Âm lượng
 equalizer-status-normalized = Đã chuẩn hóa
-equalizer-status-direct = Phát qua Soloist, bỏ qua Sonora
+equalizer-status-direct = Phát qua Soloist, bỏ qua YouTube+
 equalizer-status-rate = { $from } → { $to } kHz
 equalizer-status-bits = { $from } → { $to } bit
 equalizer-status-float = Float → { $to } bit

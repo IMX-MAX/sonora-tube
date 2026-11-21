@@ -60,7 +60,7 @@ equalizer-skipped-more = ve { $count ->
        *[other] { $count } tane daha
     }
 equalizer-skip-unknown-type = bilinmeyen filtre türü { $name }
-equalizer-skip-unreadable = Sonora'nın okuyabildiği bir filtre değil
+equalizer-skip-unreadable = YouTube+'nın okuyabildiği bir filtre değil
 equalizer-skip-no-frequency = frekans yok
 equalizer-skip-no-gain = kazanç yok
 equalizer-skip-no-width = Q ya da bant genişliği yok
@@ -87,7 +87,7 @@ equalizer-overload-slight = 0,1 dB'den az kırpılma
 equalizer-lower-preamp = Ön kazancı düşür
 equalizer-level = Düzey
 equalizer-status-bit-perfect = Bit-perfect
-equalizer-status-bit-perfect-detail = Sonora'dan bit-perfect
+equalizer-status-bit-perfect-detail = YouTube+'dan bit-perfect
 equalizer-status-server = Ses sunucusu ardından bunu { $khz } kHz'e dönüştürür
 equalizer-status-altered = Bit-perfect değil, nedeni:
 equalizer-status-separator = {", "}
@@ -128,4 +128,4 @@ equalizer-graph-detail = { $count ->
    *[other] { $count } filtre
     }, ön kazanç { $db } dB
 equalizer-rule-device = Cihaz
-equalizer-status-direct = Sonora devreye girmeden Soloist tarafından çalınıyor
+equalizer-status-direct = YouTube+ devreye girmeden Soloist tarafından çalınıyor

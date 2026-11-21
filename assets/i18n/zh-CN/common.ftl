@@ -27,7 +27,7 @@ common-server-address = 服务器地址
 common-api-key = API 密钥
 common-not-now = 以后再说
 common-not-connected = 未连接
-common-sonora = Sonora
+common-sonora = YouTube+
 common-more-count = +{ $count }
 number-group = { "," }
 
@@ -87,7 +87,7 @@ app-refresh = 刷新
 app-sign-out = 退出登录
 app-quit = 退出
 app-settings = 设置…
-app-hide = 隐藏 Sonora
+app-hide = 隐藏 YouTube+
 app-hide-others = 隐藏其他
 app-show-all = 显示全部
 app-edit = 编辑
@@ -98,7 +98,7 @@ app-minimize = 最小化
 app-zoom = 缩放
 
 # tray menu
-tray-show = 显示 Sonora
+tray-show = 显示 YouTube+
 tray-play = 播放
 tray-pause = 暂停
 

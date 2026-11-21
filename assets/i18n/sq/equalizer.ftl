@@ -60,7 +60,7 @@ equalizer-skipped-more = dhe { $count ->
        *[other] { $count } të tjerë
     }
 equalizer-skip-unknown-type = lloj i panjohur filtri { $name }
-equalizer-skip-unreadable = nuk është filtër që Sonora mund ta lexojë
+equalizer-skip-unreadable = nuk është filtër që YouTube+ mund ta lexojë
 equalizer-skip-no-frequency = pa frekuencë
 equalizer-skip-no-gain = pa përforcim
 equalizer-skip-no-width = pa Q ose gjerësi brezi
@@ -87,7 +87,7 @@ equalizer-overload-slight = Prerje nën 0,1 dB
 equalizer-lower-preamp = Ul paraamplifikimin
 equalizer-level = Niveli
 equalizer-status-bit-perfect = Bit-perfect
-equalizer-status-bit-perfect-detail = Bit-perfect nga Sonora
+equalizer-status-bit-perfect-detail = Bit-perfect nga YouTube+
 equalizer-status-server = Serveri i zërit pastaj e konverton në { $khz } kHz
 equalizer-status-altered = Jo bit-perfect për shkak të:
 equalizer-status-separator = {", "}

@@ -27,7 +27,7 @@ common-server-address = Server address
 common-api-key = API key
 common-not-now = Not now
 common-not-connected = Not connected
-common-sonora = Sonora
+common-sonora = YouTube+
 common-more-count = +{ $count }
 option-variants = Variants of { $name }
 table-sorted-ascending = Sorted ascending
@@ -107,7 +107,7 @@ downloads-cancel-all = Cancel all downloads
 app-sign-out = Sign Out
 app-quit = Quit
 app-settings = Settings…
-app-hide = Hide Sonora
+app-hide = Hide YouTube+
 app-hide-others = Hide Others
 app-show-all = Show All
 app-edit = Edit
@@ -120,7 +120,7 @@ window-maximize = Maximize
 window-restore = Restore
 
 # tray menu
-tray-show = Show Sonora
+tray-show = Show YouTube+
 tray-play = Play
 tray-pause = Pause
 
@@ -248,3 +248,5 @@ nav-return-top = Back to top
 
 # power
 wake-reason = Music is playing
+account-video-sign-in = Sign in to YouTube
+account-video-sign-out = Sign out of YouTube

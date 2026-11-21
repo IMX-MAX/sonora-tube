@@ -27,7 +27,7 @@ common-server-address = Adresa e serverit
 common-api-key = Çelësi API
 common-not-now = Jo tani
 common-not-connected = E palidhur
-common-sonora = Sonora
+common-sonora = YouTube+
 common-more-count = +{ $count }
 number-group = { "." }
 
@@ -87,7 +87,7 @@ app-refresh = Rifresko
 app-sign-out = Dil
 app-quit = Dil nga aplikacioni
 app-settings = Cilësimet…
-app-hide = Fshih Sonora
+app-hide = Fshih YouTube+
 app-hide-others = Fshih të tjerat
 app-show-all = Shfaq të gjitha
 app-edit = Ndrysho
@@ -98,7 +98,7 @@ app-minimize = Minimizo
 app-zoom = Zmadho
 
 # tray menu
-tray-show = Shfaq Sonora
+tray-show = Shfaq YouTube+
 tray-play = Luaj
 tray-pause = Pauzë
 

@@ -60,7 +60,7 @@ equalizer-skipped-more = 以及另外 { $count ->
        *[other] { $count } 行
     }
 equalizer-skip-unknown-type = 未知的滤波器类型 { $name }
-equalizer-skip-unreadable = 不是 Sonora 能读取的滤波器
+equalizer-skip-unreadable = 不是 YouTube+ 能读取的滤波器
 equalizer-skip-no-frequency = 缺少频率
 equalizer-skip-no-gain = 缺少增益
 equalizer-skip-no-width = 缺少 Q 值或带宽
@@ -87,7 +87,7 @@ equalizer-overload-slight = 削波不足 0.1 dB
 equalizer-lower-preamp = 降低前级放大
 equalizer-level = 电平
 equalizer-status-bit-perfect = 比特完美
-equalizer-status-bit-perfect-detail = Sonora 输出比特完美
+equalizer-status-bit-perfect-detail = YouTube+ 输出比特完美
 equalizer-status-server = 随后声音服务器会将其转换为 { $khz } kHz
 equalizer-status-altered = 非比特完美，原因：
 equalizer-status-separator = {", "}

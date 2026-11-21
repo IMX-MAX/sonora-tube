@@ -57,7 +57,7 @@ equalizer-skipped-more = ほか{ $count ->
        *[other] { $count }件
     }
 equalizer-skip-unknown-type = 不明なフィルタータイプ { $name }
-equalizer-skip-unreadable = Sonora が読み込めるフィルターではありません
+equalizer-skip-unreadable = YouTube+ が読み込めるフィルターではありません
 equalizer-skip-no-frequency = 周波数がありません
 equalizer-skip-no-gain = ゲインがありません
 equalizer-skip-no-width = Q または帯域幅がありません
@@ -84,7 +84,7 @@ equalizer-overload-slight = 0.1 dB 未満のクリッピング
 equalizer-lower-preamp = プリアンプを下げる
 equalizer-level = レベル
 equalizer-status-bit-perfect = ビットパーフェクト
-equalizer-status-bit-perfect-detail = Sonora からはビットパーフェクト
+equalizer-status-bit-perfect-detail = YouTube+ からはビットパーフェクト
 equalizer-status-server = その後サウンドサーバーが { $khz } kHz に変換します
 equalizer-status-altered = ビットパーフェクトでない理由:
 equalizer-status-separator = {", "}

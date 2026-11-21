@@ -84,7 +84,7 @@ const BUTTON_GAP: Pixels = px(8.);
 /// How far through the track the card starts, as a share of its length, before it counts on.
 const START_SHARE: f32 = 0.3;
 /// What the status calls itself when the setting names Sonora, Discord's name for the app.
-const SONORA: &str = "Sonora";
+const SONORA: &str = "YouTube+";
 
 /// What the Discord page's preview keeps between frames.
 pub(in crate::screens::settings) struct DiscordPreview {

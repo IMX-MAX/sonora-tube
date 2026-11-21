@@ -11,8 +11,8 @@ const UNINSTALLER: &str = "unins000.exe";
 const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{8D65C17E-79E8-46D7-9A37-42E85E73F738}_is1";
 #[cfg(target_os = "windows")]
 const INSTALLER: &str = match cfg!(target_arch = "aarch64") {
-    true => "Sonora-Setup-arm64.exe",
-    false => "Sonora-Setup.exe",
+    true => "YouTubePlus-Setup-arm64.exe",
+    false => "YouTubePlus-Setup.exe",
 };
 /// Where Homebrew keeps the stable and the nightly cask, on Apple silicon and on Intel. Any of
 /// them existing means Homebrew owns /Applications/Sonora.app, though not a copy installed

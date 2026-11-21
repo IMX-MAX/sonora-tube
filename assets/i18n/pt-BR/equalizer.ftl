@@ -62,7 +62,7 @@ equalizer-skipped-more = e { $count ->
        *[other] mais { $count }
     }
 equalizer-skip-unknown-type = tipo de filtro desconhecido { $name }
-equalizer-skip-unreadable = não é um filtro que o Sonora consegue ler
+equalizer-skip-unreadable = não é um filtro que o YouTube+ consegue ler
 equalizer-skip-no-frequency = sem frequência
 equalizer-skip-no-gain = sem ganho
 equalizer-skip-no-width = sem Q ou largura de banda
@@ -102,14 +102,14 @@ equalizer-overload-slight = Clipping abaixo de 0,1 dB
 equalizer-lower-preamp = Reduzir pré-amp
 equalizer-level = Nível
 equalizer-status-bit-perfect = Bit-perfect
-equalizer-status-bit-perfect-detail = Bit-perfect a partir do Sonora
+equalizer-status-bit-perfect-detail = Bit-perfect a partir do YouTube+
 equalizer-status-server = Depois, o servidor de som converte para { $khz } kHz
 equalizer-status-altered = Não é bit-perfect por causa de:
 equalizer-status-separator = {", "}
 equalizer-status-equalized = EQ
 equalizer-status-volume = Volume
 equalizer-status-normalized = Normalizado
-equalizer-status-direct = Reproduzido pelo Soloist, sem passar pelo Sonora
+equalizer-status-direct = Reproduzido pelo Soloist, sem passar pelo YouTube+
 equalizer-status-rate = { $from } → { $to } kHz
 equalizer-status-bits = { $from } → { $to } bits
 equalizer-status-float = Float → { $to } bits
