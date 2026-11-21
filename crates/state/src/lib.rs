@@ -24,6 +24,7 @@ mod pins;
 mod playback;
 mod potoken;
 mod profile;
+mod tube;
 mod queue;
 mod remote;
 mod requirements;
@@ -77,6 +78,7 @@ pub use playback::{
     Origin, Playback, PlaybackState, PositionTick, Sleep, Unreachable, VOLUME_STEP, Whence,
 };
 pub use profile::Profile;
+pub use tube::{Shelf as VideoShelf, VideoList, VideoSearch, Watching};
 pub use queue::{
     Queue, QueueKind, QueuePlacement, QueuePosition, QueueSections, QueueSlot, QueueView, Resume,
     Stub,
