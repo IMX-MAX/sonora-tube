@@ -1,0 +1,118 @@
+name: windows installers
+
+# Builds the Windows installers of a branch, with the mpv library and the yt-dlp the video
+# player needs placed beside the executable.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["devin/**"]
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_RELEASE_STRIP: symbols
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            arch: x64compatible
+            setup: Sonora-Setup
+            mpv: x86_64
+            machine: X64
+            msvc: amd64
+            ytdlp: yt-dlp.exe
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            arch: arm64
+            setup: Sonora-Setup-arm64
+            mpv: aarch64
+            machine: ARM64
+            msvc: arm64
+            ytdlp: yt-dlp_arm64.exe
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4.1.0
+        with:
+          drive-size: 40GB
+      - name: put the target directory on the Dev Drive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:DEV_DRIVE/target" | Out-Null
+          New-Item -ItemType Junction -Path target -Target "$env:DEV_DRIVE/target" | Out-Null
+
+      - name: rust toolchain
+        shell: bash
+        run: rustup toolchain install && rustup target add ${{ matrix.target }}
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914962c90ebc8c4fe5a1c94f1e6 # v1.13.0
+        with:
+          arch: ${{ matrix.msvc }}
+
+      # The mpv builds ship a MinGW import library, so the MSVC one is made from their .def file.
+      - name: fetch mpv and yt-dlp
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MPV: ${{ matrix.mpv }}
+          MACHINE: ${{ matrix.machine }}
+          YTDLP: ${{ matrix.ytdlp }}
+        run: |
+          set -euo pipefail
+          mkdir -p extras mpv
+          gh release download --repo shinchiro/mpv-winbuild-cmake \
+            --pattern "mpv-dev-$MPV-2*.7z" --output mpv/dev.7z
+          7z x mpv/dev.7z -ompv -y > /dev/null
+          ls mpv
+          (cd mpv && MSYS2_ARG_CONV_EXCL='*' lib /nologo /def:mpv.def /name:libmpv-2.dll /out:mpv.lib "/machine:$MACHINE")
+          cp mpv/libmpv-2.dll extras/
+          curl -fsSL -o extras/yt-dlp.exe \
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/$YTDLP"
+
+      - name: build
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          export RUSTFLAGS="-L native=$(cygpath -m "$PWD/mpv")"
+          cargo build --release --locked --package sonora --target "$TARGET"
+
+      - name: install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: build the Windows installer
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+          SONORA_ARCH: ${{ matrix.arch }}
+          SONORA_SETUP: ${{ matrix.setup }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $env:SONORA_VERSION = "0.0.0"
+          @{ version = "0.0.0"; channel = "nightly"; commit = $env:GITHUB_SHA } | ConvertTo-Json | Set-Content -Encoding utf8NoBOM build.json
+          $env:SONORA_BUILD_METADATA = (Resolve-Path build.json).Path
+          $env:SONORA_EXE = (Resolve-Path "target/$env:TARGET/release/sonora.exe").Path
+          $env:SONORA_DIST = (Resolve-Path "dist").Path
+          $env:SONORA_EXTRAS = (Resolve-Path "extras").Path
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "scripts/windows/sonora.iss"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: installer-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error

@@ -5,6 +5,8 @@
 #define SourceExe GetEnv("SONORA_EXE")
 #define OutputDir GetEnv("SONORA_DIST")
 #define BuildMetadata GetEnv("SONORA_BUILD_METADATA")
+; The folder holding what the video player loads beside the executable: libmpv and yt-dlp.
+#define Extras GetEnv("SONORA_EXTRAS")
 ; x64compatible for the x64 build, arm64 for the ARM one
 #define Arch GetEnv("SONORA_ARCH")
 ; Sonora-Setup for the x64 build, Sonora-Setup-arm64 for the ARM one
@@ -38,6 +40,9 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "{#AppExeName}"; Flags: ignoreversion
 #if BuildMetadata != ""
 Source: "{#BuildMetadata}"; DestDir: "{app}"; DestName: "sonora-build.json"; Flags: ignoreversion
+#endif
+#if Extras != ""
+Source: "{#Extras}\*"; DestDir: "{app}"; Flags: ignoreversion
 #endif
 Source: "..\..\COPYING"; DestDir: "{app}"; DestName: "LICENSE"; Flags: ignoreversion
 Source: "..\..\THIRD-PARTY.md"; DestDir: "{app}"; Flags: ignoreversion
