@@ -1,0 +1,405 @@
+//! The libmpv handle and the thread that renders its frames into memory.
+//!
+//! mpv is driven through its software render API, which writes each frame into a buffer this
+//! crate owns. That costs a copy per frame, and in exchange it needs nothing from the window's
+//! graphics backend, so it is the same code on Vulkan, Metal and DirectX.
+
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::ptr;
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use anyhow::{Context as _, Result, bail};
+use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use gpui::RenderImage;
+use image::{Frame, RgbaImage};
+use libmpv2_sys as sys;
+use smallvec::smallvec;
+
+/// The widest frame the renderer produces. A larger video is scaled down by mpv, since every
+/// frame is copied to the GPU and a 4K copy sixty times a second is more than the copy is worth.
+const WIDEST: i64 = 1920;
+/// How long the render thread sleeps between looks at its stop flag when no frame arrives.
+const IDLE: Duration = Duration::from_millis(250);
+/// `MPV_RENDER_UPDATE_FRAME`: a new frame is ready to be rendered.
+const UPDATE_FRAME: u64 = 1;
+
+/// The stream of "a new frame is ready" wake-ups a view waits on.
+pub type Frames = UnboundedReceiver<()>;
+
+/// What the render thread and the view share: the newest frame, replaced as each one lands.
+type Latest = Arc<Mutex<Option<Arc<RenderImage>>>>;
+
+/// The mpv core. Send and Sync because the mpv client API is safe to call from any thread.
+struct Core(*mut sys::mpv_handle);
+
+// SAFETY: mpv documents its client API as thread-safe for a single handle.
+unsafe impl Send for Core {}
+// SAFETY: as above.
+unsafe impl Sync for Core {}
+
+/// One video being played. Dropping it stops playback and frees mpv.
+pub struct Player {
+    core: Arc<Core>,
+    latest: Latest,
+    stop: Option<Sender<Wake>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+/// What wakes the render thread.
+enum Wake {
+    /// mpv has something new for the renderer.
+    Update,
+    /// The player is being dropped.
+    Stop,
+}
+
+impl Player {
+    /// Starts mpv and its render thread. The receiver gets one message per frame, which is what
+    /// a view awaits to know when to repaint.
+    pub fn new() -> Result<(Self, Frames)> {
+        // SAFETY: mpv_create has no preconditions.
+        let handle = unsafe { sys::mpv_create() };
+        if handle.is_null() {
+            bail!("cannot create the mpv core");
+        }
+        let core = Arc::new(Core(handle));
+        for (name, value) in [
+            ("vo", "libmpv"),
+            ("hwdec", "auto-copy"),
+            ("ytdl", "yes"),
+            ("ytdl-format", "bestvideo[height<=?1080]+bestaudio/best"),
+            ("terminal", "no"),
+            ("keep-open", "yes"),
+            ("audio-client-name", "sonora"),
+        ] {
+            core.option(name, value)?;
+        }
+        // SAFETY: the handle is live and not yet initialised.
+        check(unsafe { sys::mpv_initialize(core.0) }).context("cannot initialise mpv")?;
+
+        let latest = Latest::default();
+        let (wake, woken) = mpsc::channel();
+        let (frames, receiver) = unbounded();
+        let renderer = Renderer::new(&core, wake.clone())?;
+        let thread = std::thread::Builder::new()
+            .name("video-render".into())
+            .spawn({
+                let latest = latest.clone();
+                move || renderer.run(&woken, &latest, &frames)
+            })
+            .context("cannot start the video render thread")?;
+
+        Ok((
+            Self {
+                core,
+                latest,
+                stop: Some(wake),
+                thread: Some(thread),
+            },
+            receiver,
+        ))
+    }
+
+    /// Plays a file path or a url, replacing whatever was playing.
+    pub fn load(&self, source: &str) -> Result<()> {
+        self.core.command(&["loadfile", source])
+    }
+
+    /// The newest frame, if one has been rendered yet.
+    pub fn frame(&self) -> Option<Arc<RenderImage>> {
+        self.latest.lock().ok()?.clone()
+    }
+
+    pub fn paused(&self) -> bool {
+        self.core.flag("pause").unwrap_or(false)
+    }
+
+    pub fn set_paused(&self, paused: bool) {
+        let value = match paused {
+            true => "yes",
+            false => "no",
+        };
+        if let Err(error) = self.core.set("pause", value) {
+            log::warn!("video: cannot change pause: {error:#}");
+        }
+    }
+
+    /// Where playback is, in seconds.
+    pub fn position(&self) -> Option<f64> {
+        self.core.double("time-pos")
+    }
+
+    /// How long the video is, in seconds. None for a live stream or before the file has opened.
+    pub fn duration(&self) -> Option<f64> {
+        self.core.double("duration")
+    }
+
+    /// Moves by a number of seconds, negative for backwards.
+    pub fn seek_by(&self, seconds: f64) {
+        if let Err(error) = self
+            .core
+            .command(&["seek", &seconds.to_string(), "relative"])
+        {
+            log::warn!("video: cannot seek: {error:#}");
+        }
+    }
+
+    /// Moves to a position in seconds.
+    pub fn seek_to(&self, seconds: f64) {
+        if let Err(error) = self
+            .core
+            .command(&["seek", &seconds.to_string(), "absolute"])
+        {
+            log::warn!("video: cannot seek: {error:#}");
+        }
+    }
+
+    /// The volume from 0 to 100.
+    pub fn set_volume(&self, volume: f64) {
+        if let Err(error) = self
+            .core
+            .set("volume", &volume.clamp(0.0, 100.0).to_string())
+        {
+            log::warn!("video: cannot set the volume: {error:#}");
+        }
+    }
+}
+
+impl Drop for Player {
+    fn drop(&mut self) {
+        // The render context has to be freed before the core, and it lives on the render thread.
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(Wake::Stop);
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        // SAFETY: the render thread has exited and freed its context, and nothing else holds
+        // the handle past this point: `core` is only shared with that thread.
+        unsafe { sys::mpv_terminate_destroy(self.core.0) };
+    }
+}
+
+impl Core {
+    fn option(&self, name: &str, value: &str) -> Result<()> {
+        let (name_c, value_c) = (CString::new(name)?, CString::new(value)?);
+        // SAFETY: both strings are valid and NUL-terminated for the length of the call.
+        check(unsafe { sys::mpv_set_option_string(self.0, name_c.as_ptr(), value_c.as_ptr()) })
+            .with_context(|| format!("cannot set the mpv option {name}"))
+    }
+
+    fn set(&self, name: &str, value: &str) -> Result<()> {
+        let (name_c, value_c) = (CString::new(name)?, CString::new(value)?);
+        // SAFETY: both strings are valid and NUL-terminated for the length of the call.
+        check(unsafe { sys::mpv_set_property_string(self.0, name_c.as_ptr(), value_c.as_ptr()) })
+            .with_context(|| format!("cannot set the mpv property {name}"))
+    }
+
+    fn command(&self, args: &[&str]) -> Result<()> {
+        let owned = args
+            .iter()
+            .map(|arg| CString::new(*arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut pointers: Vec<*const c_char> = owned.iter().map(|arg| arg.as_ptr()).collect();
+        pointers.push(ptr::null());
+        // SAFETY: the array is NULL-terminated and its strings outlive the call.
+        check(unsafe { sys::mpv_command_async(self.0, 0, pointers.as_mut_ptr()) })
+            .with_context(|| format!("cannot run the mpv command {}", args[0]))
+    }
+
+    fn double(&self, name: &str) -> Option<f64> {
+        let name = CString::new(name).ok()?;
+        let mut value = 0f64;
+        // SAFETY: the out pointer is a live f64, the type MPV_FORMAT_DOUBLE writes.
+        let status = unsafe {
+            sys::mpv_get_property(
+                self.0,
+                name.as_ptr(),
+                sys::mpv_format_MPV_FORMAT_DOUBLE,
+                (&raw mut value).cast(),
+            )
+        };
+        (status >= 0).then_some(value)
+    }
+
+    fn int(&self, name: &str) -> Option<i64> {
+        let name = CString::new(name).ok()?;
+        let mut value = 0i64;
+        // SAFETY: the out pointer is a live i64, the type MPV_FORMAT_INT64 writes.
+        let status = unsafe {
+            sys::mpv_get_property(
+                self.0,
+                name.as_ptr(),
+                sys::mpv_format_MPV_FORMAT_INT64,
+                (&raw mut value).cast(),
+            )
+        };
+        (status >= 0).then_some(value)
+    }
+
+    fn flag(&self, name: &str) -> Option<bool> {
+        let name = CString::new(name).ok()?;
+        let mut value: c_int = 0;
+        // SAFETY: the out pointer is a live int, the type MPV_FORMAT_FLAG writes.
+        let status = unsafe {
+            sys::mpv_get_property(
+                self.0,
+                name.as_ptr(),
+                sys::mpv_format_MPV_FORMAT_FLAG,
+                (&raw mut value).cast(),
+            )
+        };
+        (status >= 0).then_some(value != 0)
+    }
+}
+
+/// mpv's software renderer, owned by the render thread.
+struct Renderer {
+    core: Arc<Core>,
+    context: *mut sys::mpv_render_context,
+    /// The sender mpv's update callback holds a pointer to. Freed after the context.
+    wake: *mut Sender<Wake>,
+}
+
+// SAFETY: the context is created on one thread and then used and freed only on the render
+// thread, which mpv allows as long as calls do not overlap.
+unsafe impl Send for Renderer {}
+
+impl Renderer {
+    fn new(core: &Arc<Core>, wake: Sender<Wake>) -> Result<Self> {
+        let mut params = [
+            sys::mpv_render_param {
+                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_API_TYPE,
+                data: sys::MPV_RENDER_API_TYPE_SW.as_ptr().cast_mut().cast(),
+            },
+            sys::mpv_render_param {
+                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_INVALID,
+                data: ptr::null_mut(),
+            },
+        ];
+        let mut context = ptr::null_mut();
+        // SAFETY: the params array ends with the INVALID entry mpv looks for.
+        check(unsafe {
+            sys::mpv_render_context_create(&raw mut context, core.0, params.as_mut_ptr())
+        })
+        .context("cannot create the mpv render context")?;
+
+        let wake = Box::into_raw(Box::new(wake));
+        // SAFETY: the pointer stays valid until `Drop` frees the context and then the box.
+        unsafe {
+            sys::mpv_render_context_set_update_callback(context, Some(on_update), wake.cast());
+        }
+        Ok(Self {
+            core: core.clone(),
+            context,
+            wake,
+        })
+    }
+
+    /// Renders every frame mpv announces until the player is dropped.
+    fn run(self, woken: &mpsc::Receiver<Wake>, latest: &Latest, frames: &UnboundedSender<()>) {
+        loop {
+            match woken.recv_timeout(IDLE) {
+                Ok(Wake::Stop) | Err(RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Ok(Wake::Update) => {}
+            }
+            // SAFETY: the context is live and only this thread calls into it.
+            let flags = unsafe { sys::mpv_render_context_update(self.context) };
+            if flags & UPDATE_FRAME == 0 {
+                continue;
+            }
+            let Some(image) = self.render() else { continue };
+            if let Ok(mut slot) = latest.lock() {
+                *slot = Some(Arc::new(image));
+            }
+            if frames.unbounded_send(()).is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Renders the current frame at the video's own size, capped at [`WIDEST`].
+    fn render(&self) -> Option<RenderImage> {
+        let (native_width, native_height) = (self.core.int("dwidth")?, self.core.int("dheight")?);
+        if native_width <= 0 || native_height <= 0 {
+            return None;
+        }
+        let width = native_width.min(WIDEST);
+        let height = (native_height * width / native_width).max(1);
+        let (width, height) = (c_int::try_from(width).ok()?, c_int::try_from(height).ok()?);
+        let stride = usize::try_from(width).ok()? * 4;
+        let mut pixels = vec![0u8; stride * usize::try_from(height).ok()?];
+
+        let mut size = [width, height];
+        let mut stride_param = stride;
+        let mut params = [
+            sys::mpv_render_param {
+                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_SW_SIZE,
+                data: size.as_mut_ptr().cast(),
+            },
+            sys::mpv_render_param {
+                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_SW_FORMAT,
+                data: c"bgr0".as_ptr().cast_mut().cast(),
+            },
+            sys::mpv_render_param {
+                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_SW_STRIDE,
+                data: (&raw mut stride_param).cast(),
+            },
+            sys::mpv_render_param {
+                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_SW_POINTER,
+                data: pixels.as_mut_ptr().cast(),
+            },
+            sys::mpv_render_param {
+                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_INVALID,
+                data: ptr::null_mut(),
+            },
+        ];
+        // SAFETY: the buffer is `stride * height` bytes, which is what the size, format and
+        // stride passed alongside it describe, and all of them outlive the call.
+        let status = unsafe { sys::mpv_render_context_render(self.context, params.as_mut_ptr()) };
+        if let Err(error) = check(status) {
+            log::warn!("video: cannot render a frame: {error:#}");
+            return None;
+        }
+        // mpv leaves the fourth byte as padding, and GPUI reads it as alpha.
+        for pixel in pixels.as_chunks_mut::<4>().0 {
+            pixel[3] = u8::MAX;
+        }
+        let buffer = RgbaImage::from_raw(width.cast_unsigned(), height.cast_unsigned(), pixels)?;
+        Some(RenderImage::new(smallvec![Frame::new(buffer)]))
+    }
+}
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        // SAFETY: the context is live, and once it is freed mpv no longer calls `on_update`,
+        // so the sender it pointed at can go.
+        unsafe {
+            sys::mpv_render_context_free(self.context);
+            drop(Box::from_raw(self.wake));
+        }
+    }
+}
+
+/// mpv's update callback. It runs on an mpv thread and may not call back into mpv, so it only
+/// wakes the render thread.
+unsafe extern "C" fn on_update(context: *mut c_void) {
+    // SAFETY: `context` is the boxed sender `Renderer::new` registered, alive until the render
+    // context is freed.
+    let wake = unsafe { &*context.cast::<Sender<Wake>>() };
+    let _ = wake.send(Wake::Update);
+}
+
+/// Turns an mpv status code into a result carrying mpv's own description of the error.
+fn check(status: c_int) -> Result<()> {
+    if status >= 0 {
+        return Ok(());
+    }
+    // SAFETY: mpv_error_string returns a static NUL-terminated string for any code.
+    let message = unsafe { CStr::from_ptr(sys::mpv_error_string(status)) };
+    bail!("{}", message.to_string_lossy())
+}

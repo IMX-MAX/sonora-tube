@@ -1,0 +1,17 @@
+[package]
+name = "tube"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+rustls.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

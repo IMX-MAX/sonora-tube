@@ -1,0 +1,21 @@
+[package]
+name = "video"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+gpui.workspace = true
+image.workspace = true
+libmpv2-sys.workspace = true
+log.workspace = true
+smallvec.workspace = true
+
+[dev-dependencies]
+env_logger.workspace = true
+gpui_platform.workspace = true
+
+[lints]
+workspace = true
