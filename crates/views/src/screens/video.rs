@@ -6,8 +6,9 @@ use std::time::Duration;
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, Entity, FontWeight, MouseUpEvent, Pixels, Render,
-    ScrollHandle, SharedString, Task, Window, div, px,
+    AnyElement, AnyView, AnyWindowHandle, App, Bounds, ClipboardItem, Context, Entity, FontWeight,
+    MouseButton, MouseUpEvent, Pixels, Render, ScrollHandle, SharedString, Size, Task, Window,
+    WindowBounds, WindowControlArea, WindowKind, WindowOptions, div, point, px, size,
 };
 use i18n::t;
 use router::{Destination, navigate};
@@ -43,6 +44,9 @@ const ROW_SHARE: f32 = 0.42;
 const ROWS_MAX: Pixels = px(1100.);
 /// How tall the transcript panel is when it sits under the video rather than beside it.
 const SCRIPT_HEIGHT: Pixels = px(320.);
+/// How large the picture-in-picture window opens, and how far from the screen's corner.
+const PIP_SIZE: Size<Pixels> = size(px(480.), px(270.));
+const PIP_MARGIN: Pixels = px(24.);
 const STEADY: Pixels = px(0.5);
 /// How often the watch page redraws its clock and scrubber while a video plays.
 const TICK: Duration = Duration::from_millis(250);
@@ -730,6 +734,8 @@ pub(crate) struct WatchView {
     width: Pixels,
     /// Whether there is room for the videos to watch next beside the picture.
     beside: bool,
+    /// The picture-in-picture window, while one is open.
+    pip: Option<AnyWindowHandle>,
     _tick: Task<()>,
 }
 
@@ -773,7 +779,58 @@ impl WatchView {
             pending: None,
             width: Pixels::ZERO,
             beside: false,
+            pip: None,
             _tick: tick,
+        }
+    }
+
+    /// Moves the picture into a small window that stays above the others, or brings it back.
+    fn toggle_pip(&mut self, cx: &mut Context<Self>) {
+        if self.watching.read(cx).floating() {
+            if let Some(pip) = self.pip.take() {
+                pip.update(cx, |_, window, _| window.remove_window()).ok();
+            }
+            self.watching
+                .update(cx, |watching, cx| watching.set_floating(false, cx));
+            return;
+        }
+        let Some(picture) = self.watching.update(cx, |watching, cx| watching.mirror(cx)) else {
+            return;
+        };
+        // The corner of the screen the main window is on, or wherever the platform puts it.
+        let corner = cx.primary_display().map(|display| {
+            let screen = display.bounds();
+            Bounds::new(
+                screen.bottom_right()
+                    - point(PIP_SIZE.width, PIP_SIZE.height)
+                    - point(PIP_MARGIN, PIP_MARGIN),
+                PIP_SIZE,
+            )
+        });
+        let watching = self.watching.clone();
+        let opened = cx.open_window(
+            WindowOptions {
+                window_bounds: corner.map(WindowBounds::Windowed),
+                titlebar: None,
+                kind: WindowKind::PopUp,
+                focus: false,
+                is_movable: true,
+                is_resizable: false,
+                is_minimizable: false,
+                ..Default::default()
+            },
+            |window, cx| {
+                window.set_rem_size(cx.theme().font_size);
+                cx.new(|cx| PipView::new(watching, picture, cx))
+            },
+        );
+        match opened {
+            Ok(pip) => {
+                self.pip = Some(pip.into());
+                self.watching
+                    .update(cx, |watching, cx| watching.set_floating(true, cx));
+            }
+            Err(error) => log::warn!("video: cannot open picture in picture: {error:#}"),
         }
     }
 
@@ -781,6 +838,7 @@ impl WatchView {
     fn stage(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let view = self.watching.read(cx).view();
+        let floating = self.watching.read(cx).floating();
         let toggled = self.watching.clone();
 
         div()
@@ -793,7 +851,16 @@ impl WatchView {
             .overflow_hidden()
             .bg(gpui::black())
             .on_click(move |_, _, cx| toggled.update(cx, |watching, cx| watching.toggle(cx)))
-            .when_some(view, |this, view| this.child(view))
+            .map(|stage| match floating {
+                true => stage
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(theme.text(Text::Label))
+                    .text_color(theme.overlay_foreground)
+                    .child(t!("video-pip-playing")),
+                false => stage.when_some(view, |this, view| this.child(view)),
+            })
     }
 
     fn controls(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -807,6 +874,7 @@ impl WatchView {
         let (level, muted, captions) = (watching.volume(), watching.muted(), watching.captions());
         let (captioned, silenced) = (self.watching.clone(), self.watching.clone());
         let (scripted, script) = (watching.transcript_open(), self.watching.clone());
+        let floating = watching.floating();
         let fraction = match self.pending {
             Some(pending) => pending,
             None if seekable => (position / total).clamp(0., 1.) as f32,
@@ -900,6 +968,17 @@ impl WatchView {
                     .on_click(move |_, _, cx| {
                         captioned.update(cx, |watching, cx| watching.toggle_captions(cx));
                     }),
+            )
+            .child(
+                Button::new("video-pip")
+                    .icon("icons/external-link.svg")
+                    .ghost()
+                    .selected(floating)
+                    .tooltip(match floating {
+                        true => "video-pip-close",
+                        false => "video-pip-open",
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_pip(cx))),
             )
             .child(
                 Button::new("video-mute")
@@ -1407,6 +1486,91 @@ impl WatchView {
                 )
                 .child(videos),
         )
+    }
+}
+
+/// The picture on its own in a small window above the others. It is dragged by the picture, and
+/// its buttons show while the pointer is over it.
+pub(crate) struct PipView {
+    watching: Entity<Watching>,
+    picture: AnyView,
+}
+
+impl PipView {
+    fn new(watching: Entity<Watching>, picture: AnyView, cx: &mut Context<Self>) -> Self {
+        cx.observe(&watching, |_, _, cx| cx.notify()).detach();
+        // However the window goes, the watch page gets its picture back.
+        let back = watching.downgrade();
+        cx.on_release(move |_, cx| {
+            back.update(cx, |watching, cx| watching.set_floating(false, cx))
+                .ok();
+        })
+        .detach();
+        Self { watching, picture }
+    }
+}
+
+impl Render for PipView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = *cx.theme();
+        let watching = self.watching.read(cx);
+        let paused = watching.player().is_none_or(|player| player.paused());
+        let (toggled, closed) = (self.watching.clone(), self.watching.clone());
+
+        div()
+            .id("video-pip")
+            .role(Role::Video)
+            .aria_label(t!("video-pip"))
+            .group("video-pip")
+            .relative()
+            .size_full()
+            .bg(gpui::black())
+            .window_control_area(WindowControlArea::Drag)
+            .on_mouse_down(MouseButton::Left, |_, window, _| {
+                window.start_window_move();
+            })
+            .child(self.picture.clone())
+            .child(
+                div()
+                    .absolute()
+                    .top_1()
+                    .right_1()
+                    .flex()
+                    .gap_1()
+                    .p_0p5()
+                    .rounded(theme.radius)
+                    .bg(theme.overlay)
+                    .invisible()
+                    .group_hover("video-pip", |this| this.visible())
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        Button::new("video-pip-toggle")
+                            .icon(match paused {
+                                true => "icons/play-filled.svg",
+                                false => "icons/pause-filled.svg",
+                            })
+                            .ghost()
+                            .tooltip(match paused {
+                                true => "video-play",
+                                false => "video-pause",
+                            })
+                            .on_click(move |_, _, cx| {
+                                toggled.update(cx, |watching, cx| watching.toggle(cx));
+                            }),
+                    )
+                    .child(
+                        Button::new("video-pip-back")
+                            .icon("icons/x.svg")
+                            .ghost()
+                            .tooltip("video-pip-close")
+                            .on_click(move |_, window, cx| {
+                                closed.update(cx, |watching, cx| {
+                                    watching.set_floating(false, cx);
+                                });
+                                window.remove_window();
+                            }),
+                    ),
+            )
     }
 }
 

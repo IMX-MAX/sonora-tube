@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui::{AppContext as _, Context, Entity, Task};
+use gpui::{AnyView, App, AppContext as _, Context, Entity, Task};
 use tube::{Channel, Client, Comment, Found, Line, Page, Video, Watch};
 use video::{Player, VideoView};
 
@@ -166,6 +166,8 @@ pub struct Watching {
     volume: f32,
     muted: bool,
     captions: bool,
+    /// Whether the picture is in its own small window rather than on the watch page.
+    floating: bool,
     task: Option<Task<()>>,
 }
 
@@ -191,6 +193,7 @@ impl Watching {
             volume: 1.,
             muted: false,
             captions: false,
+            floating: false,
             task: None,
         }
     }
@@ -325,6 +328,23 @@ impl Watching {
             player.set_paused(paused);
         }
         cx.notify();
+    }
+
+    /// Whether the picture is in its own small window.
+    pub fn floating(&self) -> bool {
+        self.floating
+    }
+
+    /// Records that the picture moved to its own window or came back from it.
+    pub fn set_floating(&mut self, floating: bool, cx: &mut Context<Self>) {
+        self.floating = floating;
+        cx.notify();
+    }
+
+    /// A second picture of the video for another window, once there is a player.
+    pub fn mirror(&self, cx: &mut App) -> Option<AnyView> {
+        let (_, view) = self.screen.as_ref()?;
+        Some(cx.new(|cx| VideoView::mirror(view, cx)).into())
     }
 
     pub fn toggle(&mut self, cx: &mut Context<Self>) {

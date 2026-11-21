@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use futures::StreamExt as _;
 use gpui::prelude::*;
-use gpui::{Context, ObjectFit, RenderImage, Task, Window, div, img};
+use gpui::{Context, Entity, ObjectFit, RenderImage, Subscription, Task, Window, div, img};
 
 use crate::{Frames, Player};
 
@@ -13,7 +13,13 @@ pub struct VideoView {
     player: Arc<Player>,
     /// The frame painted last, kept so its texture can be freed once a newer one replaces it.
     shown: Option<Arc<RenderImage>>,
-    _frames: Task<()>,
+    _feed: Feed,
+}
+
+/// What tells a view to repaint: the player's own frames, or the view that is told by them.
+enum Feed {
+    Frames(Task<()>),
+    Mirror(Subscription),
 }
 
 impl VideoView {
@@ -28,7 +34,17 @@ impl VideoView {
         Self {
             player,
             shown: None,
-            _frames: task,
+            _feed: Feed::Frames(task),
+        }
+    }
+
+    /// A second picture of `source`'s player for another window, repainted whenever `source` is.
+    /// A frame's texture belongs to the window it was painted in, so each window needs its own.
+    pub fn mirror(source: &Entity<Self>, cx: &mut Context<Self>) -> Self {
+        Self {
+            player: source.read(cx).player.clone(),
+            shown: None,
+            _feed: Feed::Mirror(cx.observe(source, |_, _, cx| cx.notify())),
         }
     }
 
