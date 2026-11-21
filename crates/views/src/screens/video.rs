@@ -36,17 +36,20 @@ const WATCH_MAX: Pixels = px(1680.);
 /// How wide the column of videos to watch next is when it sits beside the picture.
 const NEXT_WIDTH: Pixels = px(400.);
 /// How wide a thumbnail is in that column.
-const NEXT_PICTURE: Pixels = px(168.);
 /// The widest a thumbnail gets in a row of search results, and the share of the row it may take.
 const ROW_PICTURE: Pixels = px(360.);
 const ROW_SHARE: f32 = 0.42;
 /// The widest the list of search results gets, so a row's text stays next to its picture.
+/// How wide the search field grows before it stops and sits centred above the results.
+const FIELD_MAX: Pixels = px(640.);
 const ROWS_MAX: Pixels = px(1100.);
 /// How tall the transcript panel is when it sits under the video rather than beside it.
 const SCRIPT_HEIGHT: Pixels = px(320.);
 /// How large the picture-in-picture window opens, and how far from the screen's corner.
 const PIP_SIZE: Size<Pixels> = size(px(480.), px(270.));
 const PIP_MARGIN: Pixels = px(24.);
+/// How many lines of a description show before it is opened.
+const OPENING: usize = 3;
 const STEADY: Pixels = px(0.5);
 /// How often the watch page redraws its clock and scrubber while a video plays.
 const TICK: Duration = Duration::from_millis(250);
@@ -98,19 +101,30 @@ fn caption(parts: impl IntoIterator<Item = Option<String>>) -> SharedString {
         .into()
 }
 
-/// A tile: a picture with a `badge` in its corner, a two-line title and up to two dimmed `lines`,
-/// opening `destination` when pressed.
-fn tile(
-    id: SharedString,
+/// What a tile shows: a picture with a `badge` in its corner, a two-line title and up to two
+/// dimmed `lines`.
+struct Card<'a> {
     picture: Artwork,
     badge: Option<SharedString>,
-    title: &str,
+    title: &'a str,
     lines: [SharedString; 2],
+}
+
+/// A tile showing `card`, opening `destination` when pressed.
+fn tile(
+    id: SharedString,
+    card: Card<'_>,
     place: (usize, usize),
     destination: Destination,
     tiles: Tiles,
     cx: &App,
 ) -> AnyElement {
+    let Card {
+        picture,
+        badge,
+        title,
+        lines,
+    } = card;
     let theme = cx.theme();
     let title = SharedString::from(title.to_owned());
     let caption = caption(lines.iter().map(|line| Some(line.to_string())));
@@ -120,7 +134,7 @@ fn tile(
         .id(id)
         .role(Role::Link)
         .aria_label(title.clone())
-        .aria_description(caption.clone())
+        .aria_description(caption)
         .aria_position_in_set(place.0 + 1)
         .aria_size_of_set(place.1)
         .flex()
@@ -199,10 +213,12 @@ fn video_tile(
     ];
     tile(
         format!("{scope}-video-{}", video.id).into(),
-        picture,
-        video.length.clone().map(Into::into),
-        &video.title,
-        lines,
+        Card {
+            picture,
+            badge: video.length.clone().map(Into::into),
+            title: &video.title,
+            lines,
+        },
         place,
         Destination::Watch(video.id.clone().into()),
         tiles,
@@ -352,13 +368,15 @@ fn channel_tile(
         .fallback(CHANNEL_ICON);
     tile(
         format!("{scope}-channel-{}", channel.id).into(),
-        picture,
-        None,
-        &channel.name,
-        [
-            channel.subscribers.clone().unwrap_or_default().into(),
-            SharedString::default(),
-        ],
+        Card {
+            picture,
+            badge: None,
+            title: &channel.name,
+            lines: [
+                channel.subscribers.clone().unwrap_or_default().into(),
+                SharedString::default(),
+            ],
+        },
         place,
         Destination::Channel(channel.id.clone().into()),
         tiles,
@@ -379,13 +397,15 @@ fn playlist_tile(
         .fallback(PLAYLIST_ICON);
     tile(
         format!("{scope}-playlist-{}", playlist.id).into(),
-        picture,
-        Some(t!("video-playlist")),
-        &playlist.title,
-        [
-            playlist.detail.clone().unwrap_or_default().into(),
-            SharedString::default(),
-        ],
+        Card {
+            picture,
+            badge: Some(t!("video-playlist")),
+            title: &playlist.title,
+            lines: [
+                playlist.detail.clone().unwrap_or_default().into(),
+                SharedString::default(),
+            ],
+        },
         place,
         Destination::Videos(playlist.id.clone().into()),
         tiles,
@@ -700,13 +720,16 @@ impl Render for VideoSearchView {
                             .flex()
                             .flex_col()
                             .gap_6()
-                            .child(self.input.clone())
                             .child(
-                                heading(title.clone(), cx)
-                                    .id("video-search-heading")
-                                    .role(Role::Heading)
-                                    .aria_level(1)
-                                    .aria_label(title),
+                                div().flex().justify_center().child(
+                                    div()
+                                        .id("video-search-field")
+                                        .role(Role::Search)
+                                        .aria_label(title)
+                                        .w_full()
+                                        .max_w(FIELD_MAX)
+                                        .child(self.input.clone()),
+                                ),
                             )
                             .child(self.results(cx))
                             .when(loading, |this| this.child(waiting("video-search-waiting")))
@@ -736,6 +759,8 @@ pub(crate) struct WatchView {
     beside: bool,
     /// The picture-in-picture window, while one is open.
     pip: Option<AnyWindowHandle>,
+    /// Whether the whole description shows rather than its opening lines.
+    described: bool,
     _tick: Task<()>,
 }
 
@@ -780,6 +805,7 @@ impl WatchView {
             width: Pixels::ZERO,
             beside: false,
             pip: None,
+            described: false,
             _tick: tick,
         }
     }
@@ -1218,6 +1244,8 @@ impl WatchView {
                 .as_ref()
                 .map(|likes| t!("video-likes", likes = likes.as_str()).to_string()),
         ]);
+        let opening: Vec<&str> = watch.description.lines().take(OPENING).collect();
+        let long = watch.description.lines().count() > OPENING;
 
         Some(
             div()
@@ -1285,9 +1313,29 @@ impl WatchView {
                             .p(theme.metrics.pad)
                             .rounded(theme.radius)
                             .bg(theme.secondary)
+                            .flex()
+                            .flex_col()
+                            .items_start()
+                            .gap_1()
                             .text_size(theme.text(Text::Label))
-                            .line_clamp(6)
-                            .child(SharedString::from(watch.description.clone())),
+                            .child(SharedString::from(match long && !self.described {
+                                true => opening.join("\n"),
+                                false => watch.description.clone(),
+                            }))
+                            .when(long, |this| {
+                                this.child(
+                                    Button::new("video-description-more")
+                                        .label(match self.described {
+                                            true => t!("common-show-less"),
+                                            false => t!("video-more"),
+                                        })
+                                        .ghost()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.described = !this.described;
+                                            cx.notify();
+                                        })),
+                                )
+                            }),
                     )
                 }),
         )
@@ -1451,26 +1499,13 @@ impl WatchView {
         let total = related.len();
         let title = t!("video-related");
         let tiles = Tiles::new(self.width, cx);
-        let listed = related.iter().enumerate();
-        let videos = match self.beside {
-            true => div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .children(listed.map(|(place, video)| {
-                    video_row("related", video, (place, total), NEXT_PICTURE, false, cx)
-                }))
-                .into_any_element(),
-            false => tiles
-                .grid(
-                    listed
-                        .map(|(place, video)| {
-                            video_tile("related", video, (place, total), tiles, cx)
-                        })
-                        .collect(),
-                )
-                .into_any_element(),
-        };
+        let videos = tiles.grid(
+            related
+                .iter()
+                .enumerate()
+                .map(|(place, video)| video_tile("related", video, (place, total), tiles, cx))
+                .collect(),
+        );
 
         Some(
             div()
@@ -1579,7 +1614,9 @@ impl Render for WatchView {
         let pad = cx.theme().metrics.inset;
         let gap = cx.theme().metrics.inset;
         let whole = cells::content_width(window, pad * 2., cx);
-        self.beside = Chrome::room(window, cx).fits(Room::Wide);
+        // Only the transcript sits beside the picture, and only once it is asked for.
+        self.beside =
+            Chrome::room(window, cx).fits(Room::Wide) && self.watching.read(cx).transcript_open();
         let room = match self.beside {
             true => whole.min(WATCH_MAX) - NEXT_WIDTH - gap,
             false => whole.min(STAGE_MAX),
@@ -1624,6 +1661,9 @@ impl Render for WatchView {
                                         .child(self.stage(cx))
                                         .child(self.controls(cx)),
                                 )
+                                .when(!beside, |this| {
+                                    this.children(self.transcript(SCRIPT_HEIGHT, cx))
+                                })
                                 .when(loading, |this| this.child(waiting("video-watch-waiting")))
                                 .when_some(failure, |this, reason| {
                                     this.child(
@@ -1643,26 +1683,20 @@ impl Render for WatchView {
                                     )
                                 })
                                 .children(self.about(cx))
+                                .children(self.related(cx))
                                 .when(self.watching.read(cx).watch().is_some(), |this| {
                                     this.child(self.comments(cx))
                                 }),
                         )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .flex_none()
-                                .gap_6()
-                                .w(match beside {
-                                    true => NEXT_WIDTH,
-                                    false => self.width,
-                                })
-                                .when(beside, |this| {
-                                    let height = (self.width * 9. / 16.).floor();
-                                    this.children(self.transcript(height, cx))
-                                })
-                                .children(self.related(cx)),
-                        ),
+                        .when(beside, |page| {
+                            let height = (self.width * 9. / 16.).floor();
+                            page.child(
+                                div()
+                                    .flex_none()
+                                    .w(NEXT_WIDTH)
+                                    .children(self.transcript(height, cx)),
+                            )
+                        }),
                 ),
         )
     }

@@ -13,13 +13,9 @@ pub struct VideoView {
     player: Arc<Player>,
     /// The frame painted last, kept so its texture can be freed once a newer one replaces it.
     shown: Option<Arc<RenderImage>>,
-    _feed: Feed,
-}
-
-/// What tells a view to repaint: the player's own frames, or the view that is told by them.
-enum Feed {
-    Frames(Task<()>),
-    Mirror(Subscription),
+    /// What repaints it: the player's own frames, or for a mirror the view they repaint.
+    _frames: Option<Task<()>>,
+    _source: Option<Subscription>,
 }
 
 impl VideoView {
@@ -34,7 +30,8 @@ impl VideoView {
         Self {
             player,
             shown: None,
-            _feed: Feed::Frames(task),
+            _frames: Some(task),
+            _source: None,
         }
     }
 
@@ -44,7 +41,8 @@ impl VideoView {
         Self {
             player: source.read(cx).player.clone(),
             shown: None,
-            _feed: Feed::Mirror(cx.observe(source, |_, _, cx| cx.notify())),
+            _frames: None,
+            _source: Some(cx.observe(source, |_, _, cx| cx.notify())),
         }
     }
 
