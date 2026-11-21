@@ -104,6 +104,9 @@ pub(crate) fn watch(id: &str, answer: &Value) -> Result<Watch> {
             .unwrap_or_default(),
         channel,
         related: videos(&columns["secondaryResults"]).items,
+        liked: first(primary, "likeStatus")
+            .and_then(Value::as_str)
+            .map(|status| status == "LIKE"),
         comments,
     })
 }
@@ -182,6 +185,7 @@ pub(crate) fn comments(answer: &Value) -> Comments {
         page: Page { items, more },
         total: first(answer, "commentsHeaderRenderer")
             .and_then(|header| text(&header["countText"])),
+        write: first(answer, "createCommentParams").and_then(string),
     }
 }
 

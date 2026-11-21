@@ -13,7 +13,7 @@ use gpui::{
 };
 use i18n::t;
 use router::{Destination, navigate};
-use state::{Outcome, Subscriptions, Toasts, VideoList, VideoSearch, Watching};
+use state::{Outcome, Subscriptions, Toasts, VideoAccount, VideoList, VideoSearch, Watching};
 use tube::{Channel, Comment, Found, Playlist, Video};
 use ui::{
     ActiveTheme as _, Artwork, Avatar, Button, Input, Room, Scrollbar, Scroller, Scrubber,
@@ -817,6 +817,8 @@ pub(crate) struct WatchView {
     over_volume: bool,
     /// Whether the comments show in a panel beside the picture rather than under the page.
     discussed: bool,
+    /// The field a comment is written in.
+    words: Entity<Input>,
     /// Whether the picture spans the page with everything else under it.
     theater: bool,
     /// Whether going full screen put the window into the system's full screen, so leaving undoes it.
@@ -871,6 +873,7 @@ impl WatchView {
             adjusting: false,
             over_volume: false,
             discussed: false,
+            words: cx.new(|cx| Input::new("video-comment-placeholder", cx)),
             theater: false,
             entered: false,
             stirred: Instant::now(),
@@ -1551,6 +1554,32 @@ impl WatchView {
                     let name = SharedString::from(channel.name.clone());
                     let opened = SharedString::from(channel.id.clone());
                     let button = subscribe("video-subscribe", channel, &self.subscriptions, cx);
+                    let account = VideoAccount::entity(cx);
+                    let liked = self.watching.read(cx).liked();
+                    let page = self.watching.clone();
+                    let like = Button::new("video-like")
+                        .icon("icons/thumbs-up.svg")
+                        .label(match &watch.likes {
+                            Some(likes) => SharedString::from(likes.clone()),
+                            None => t!("video-like"),
+                        })
+                        .secondary()
+                        .selected(liked == Some(true))
+                        .tooltip(match liked {
+                            Some(true) => "video-like-remove",
+                            Some(false) => "video-like",
+                            None => "video-like-sign-in",
+                        })
+                        .on_click(move |_, _, cx| match liked {
+                            Some(_) => page.update(cx, |watching, cx| watching.toggle_like(cx)),
+                            None => {
+                                let title =
+                                    t!("login-choose-title", provider = "YouTube").to_string();
+                                if let Some(account) = &account {
+                                    account.update(cx, |account, cx| account.sign_in(title, cx));
+                                }
+                            }
+                        });
                     let saved = self.subscriptions.read(cx).saved(&watch.id);
                     let (kept, page) = (self.subscriptions.clone(), self.watching.clone());
                     let later = Button::new("video-later")
@@ -1604,6 +1633,7 @@ impl WatchView {
                                     }),
                             )
                             .child(button)
+                            .child(like)
                             .child(later),
                     )
                 })
@@ -1744,6 +1774,43 @@ impl WatchView {
     }
 
     /// The comments, under their count as a heading when `headed`.
+    /// Enter in the comment field or its button: posts what the field holds and empties it.
+    fn post(&mut self, _: &Submit, _: &mut Window, cx: &mut Context<Self>) {
+        let words = self.words.read(cx).text().to_owned();
+        if words.trim().is_empty() || self.watching.read(cx).posting() {
+            return;
+        }
+        self.watching
+            .update(cx, |watching, cx| watching.post(&words, cx));
+        self.words
+            .update(cx, |input, cx| input.set_text(String::new(), cx));
+    }
+
+    /// The field a signed-in account writes a comment in, with the button that posts it.
+    fn compose(&self, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
+        let watching = self.watching.read(cx);
+        if !watching.can_comment() {
+            return None;
+        }
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .on_action(cx.listener(Self::post))
+                .child(div().flex_1().min_w_0().child(self.words.clone()))
+                .child(
+                    Button::new("video-comment-post")
+                        .label(t!("video-comment-post"))
+                        .secondary()
+                        .disabled(watching.posting())
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.post(&Submit, window, cx)),
+                        ),
+                ),
+        )
+    }
+
     fn comments(&self, headed: bool, cx: &Context<Self>) -> impl IntoElement {
         let watching = self.watching.read(cx);
         let comments = watching.comments();
@@ -1769,6 +1836,7 @@ impl WatchView {
                         .aria_label(title),
                 )
             })
+            .children(self.compose(cx))
             .children(
                 comments
                     .iter()

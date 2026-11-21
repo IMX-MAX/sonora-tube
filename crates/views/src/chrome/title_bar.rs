@@ -2,7 +2,7 @@
 use gpui::Decorations;
 use gpui::accesskit::Role;
 use gpui::prelude::*;
-use gpui::{AnyElement, App, SharedString, Window, div, px};
+use gpui::{AnyElement, App, Window, div, px};
 use gpui::{
     AnyView, Context, Entity, EventEmitter, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Render,
@@ -15,7 +15,7 @@ use crate::chrome::SidebarRight;
 use crate::chrome::downloads::DownloadsButton;
 use i18n::t;
 use input::Refresh;
-use router::{Destination, Navigation, SettingsPage, navigate, open_settings};
+use router::{Destination, Navigation, navigate, open_settings};
 use state::{AppSettings, Sonora};
 
 const SYSTEM_ZOOMS: bool = cfg!(target_os = "windows");
@@ -230,32 +230,30 @@ impl TitleBar {
     /// way to manage them, then History and Settings. A guest session shows as guest mode, and
     /// only while it is the one in use.
     fn account(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let session = Sonora::global(cx).session.clone();
-        let guest = session
-            .read(cx)
-            .providers()
-            .any(|info| info.active && info.guest);
-        let mut services: Vec<MenuItem> = session
-            .read(cx)
-            .connected()
-            .map(|info| {
-                let slug = info.slug;
-                let session = session.clone();
-
-                MenuItem::new(SharedString::from(format!("account-{slug}")), info.name)
-                    .icon(crate::shared::provider_logo(slug))
-                    .selected(info.active)
+        let mut services: Vec<MenuItem> = Vec::new();
+        if let Some(account) = state::VideoAccount::entity(cx) {
+            let held = account.read(cx);
+            let item = match held.signed_in() {
+                true => MenuItem::new("account-video-out", t!("account-video-sign-out"))
+                    .icon("icons/log-out.svg")
                     .on_click(move |_, _, cx| {
-                        session.update(cx, |session, cx| session.switch(slug, cx));
-                    })
-            })
-            .collect();
-        if guest {
-            services.push(
-                MenuItem::new("account-guest", t!("login-guest-title"))
-                    .icon("icons/hat-glasses.svg")
-                    .selected(true),
-            );
+                        account.update(cx, |account, cx| account.sign_out(cx));
+                    }),
+                false => {
+                    let idle = held.supported() && !held.signing_in();
+                    let item = MenuItem::new("account-video-in", t!("account-video-sign-in"))
+                        .icon("icons/log-in.svg")
+                        .on_click(move |_, _, cx| {
+                            let title = t!("login-choose-title", provider = "YouTube").to_string();
+                            account.update(cx, |account, cx| account.sign_in(title, cx));
+                        });
+                    match idle {
+                        true => item,
+                        false => item.disabled(),
+                    }
+                }
+            };
+            services.insert(0, item);
         }
 
         div()
@@ -269,14 +267,6 @@ impl TitleBar {
                     .tooltip("tool-account")
                     .width(Picker::REGULAR)
                     .items(services)
-                    .item(MenuItem::separator("account-services"))
-                    .item(
-                        MenuItem::new("account-manage", t!("account-manage"))
-                            .icon("icons/user-round.svg")
-                            .on_click(|_, _, cx| {
-                                navigate(Destination::Settings(SettingsPage::Providers), cx)
-                            }),
-                    )
                     .item(MenuItem::separator("account-pages"))
                     .item(
                         MenuItem::new("account-history", t!("nav-history"))

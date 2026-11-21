@@ -1,14 +1,19 @@
 //! The requests: one POST per page, each answered with a JSON tree `parse` reads.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, ensure};
 use serde_json::{Value, json};
+use sha1::{Digest as _, Sha1};
 
 use crate::parse;
 use crate::{ChannelPage, Comments, Found, Line, Page, PlaylistPage, Video, Watch};
 
+const ORIGIN: &str = "https://www.youtube.com";
+/// The cookies that tell a signed-in session from a guest one, the first found signs requests.
+pub const PROOF: &[&str] = &["SAPISID", "__Secure-3PAPISID"];
 const HOST: &str = "https://www.youtube.com/youtubei/v1";
 /// The web client YouTube's own site reports. The answers this crate parses are that client's.
 const CLIENT_NAME: &str = "WEB";
@@ -40,7 +45,7 @@ struct Guise {
     agent: &'static str,
 }
 
-/// Reads YouTube without an account. Cheap to clone, and every method is one round trip.
+/// Reads YouTube, as a guest until [`Client::sign_in`] hands it an account's cookies. Cheap to clone, and every method is one round trip.
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -48,6 +53,8 @@ pub struct Client {
     region: String,
     /// Whether Shorts are left out of every list, shared by the clones of a client.
     no_shorts: Arc<AtomicBool>,
+    /// The `Cookie` header of the signed-in account, shared by the clones of a client.
+    cookies: Arc<RwLock<Option<String>>>,
 }
 
 impl Client {
@@ -57,7 +64,62 @@ impl Client {
             language: "en".to_owned(),
             region: "US".to_owned(),
             no_shorts: Arc::default(),
+            cookies: Arc::default(),
         }
+    }
+
+    /// Signs every later request with an account's `Cookie` header, or with none to go back to
+    /// a guest. It fails when the cookies carry no proof of a session.
+    pub fn sign_in(&self, cookies: Option<String>) -> Result<()> {
+        if let Some(cookies) = &cookies {
+            secret(cookies).context("the cookies carry no signed-in session")?;
+        }
+        *self
+            .cookies
+            .write()
+            .unwrap_or_else(|held| held.into_inner()) = cookies;
+        Ok(())
+    }
+
+    /// Whether requests go out as an account rather than as a guest.
+    pub fn signed_in(&self) -> bool {
+        self.account().is_some()
+    }
+
+    fn account(&self) -> Option<String> {
+        self.cookies
+            .read()
+            .unwrap_or_else(|held| held.into_inner())
+            .clone()
+    }
+
+    /// Likes a video as the signed-in account, or takes the like back.
+    pub async fn like(&self, id: &str, liked: bool) -> Result<()> {
+        ensure!(self.signed_in(), "liking needs an account");
+        let endpoint = match liked {
+            true => "like/like",
+            false => "like/removelike",
+        };
+        self.call(endpoint, json!({ "target": { "videoId": id } }))
+            .await?;
+        Ok(())
+    }
+
+    /// Posts a comment under a video, with the `write` its first page of [`Comments`] carried.
+    pub async fn comment(&self, write: &str, words: &str) -> Result<()> {
+        ensure!(self.signed_in(), "commenting needs an account");
+        let answer = self
+            .call(
+                "comment/create_comment",
+                json!({ "createCommentParams": write, "commentText": words }),
+            )
+            .await?;
+        let status = answer["actionResult"]["status"].as_str();
+        ensure!(
+            status.is_none_or(|status| status == "STATUS_SUCCEEDED"),
+            "youtube refused the comment"
+        );
+        Ok(())
     }
 
     /// Leaves Shorts out of every list fetched from now on, or lists them as videos again.
@@ -155,13 +217,29 @@ impl Client {
                 "gl": self.region,
             }
         });
-        let response = self
+        let mut request = self
             .http
             .post(format!("{HOST}/{endpoint}?prettyPrint=false"))
             .header("User-Agent", guise.agent)
-            .header("Origin", "https://www.youtube.com")
+            .header("Origin", ORIGIN)
             .header("X-Youtube-Client-Name", guise.number)
-            .header("X-Youtube-Client-Version", guise.version)
+            .header("X-Youtube-Client-Version", guise.version);
+        // Only the web client is the one the account signed in to.
+        let account = self.account().filter(|_| guise.name == CLIENT_NAME);
+        if let Some((cookies, key)) = account
+            .as_deref()
+            .and_then(|held| Some((held, secret(held)?)))
+        {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs());
+            request = request
+                .header("Cookie", cookies)
+                .header("Authorization", proof(now, key))
+                .header("X-Origin", ORIGIN)
+                .header("X-Goog-AuthUser", "0");
+        }
+        let response = request
             .json(&body)
             .send()
             .await
@@ -177,6 +255,24 @@ impl Client {
         }
         Ok(answer)
     }
+}
+
+/// The value of the first proof cookie in a `Cookie` header.
+fn secret(cookies: &str) -> Option<&str> {
+    PROOF.iter().find_map(|name| {
+        cookies
+            .split(';')
+            .filter_map(|pair| pair.trim().split_once('='))
+            .find(|(held, value)| held == name && !value.is_empty())
+            .map(|(_, value)| value)
+    })
+}
+
+/// The `Authorization` header YouTube's own pages sign a request with at second `now`.
+fn proof(now: u64, key: &str) -> String {
+    let digest = Sha1::digest(format!("{now} {key} {ORIGIN}"));
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("SAPISIDHASH {now}_{hex}")
 }
 
 impl Default for Client {

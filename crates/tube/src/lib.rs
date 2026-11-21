@@ -7,7 +7,7 @@
 mod client;
 mod parse;
 
-pub use client::Client;
+pub use client::{Client, PROOF};
 
 /// A video as a list shows it. The counts and dates stay the text YouTube wrote, since that is
 /// already abbreviated and localised.
@@ -111,6 +111,8 @@ pub struct Watch {
     pub related: Vec<Video>,
     /// The token of the first page of comments, absent when comments are turned off.
     pub comments: Option<String>,
+    /// Whether the signed-in account liked the video. `None` without an account.
+    pub liked: Option<bool>,
 }
 
 /// One line of a video's transcript and the second it is spoken at.
@@ -141,6 +143,9 @@ pub struct Comment {
 pub struct Comments {
     pub page: Page<Comment>,
     pub total: Option<String>,
+    /// What posting a comment under the video has to send back, present only when the
+    /// signed-in account may write one.
+    pub write: Option<String>,
 }
 
 /// A channel's own page: who it is and what it uploaded, newest first.

@@ -291,6 +291,7 @@ impl Root {
         let genres = cx.new(|cx| Genres::new(session.clone(), io.clone(), cx));
 
         let tube = tube::Client::new();
+        let account = state::VideoAccount::install(tube.clone(), cx);
         let video_search = cx.new(|_| VideoSearch::new(tube.clone(), io.clone()));
         let subscriptions = cx.new(|_| Subscriptions::new(tube.clone(), io.clone()));
         let videos =
@@ -304,6 +305,16 @@ impl Root {
             )
         });
         let watch = cx.new(|cx| WatchView::new(watching.clone(), subscriptions.clone(), cx));
+        // The page of the video on screen is read again as the account, or as a guest again.
+        cx.observe(&account, {
+            let watching = watching.clone();
+            move |_, account, cx| {
+                if !account.read(cx).signing_in() {
+                    watching.update(cx, |watching, cx| watching.refresh(cx));
+                }
+            }
+        })
+        .detach();
         // The video settings reach the client and the player from here, now and on every change.
         let video_settings = Sonora::global(cx).settings.clone();
         let apply = {

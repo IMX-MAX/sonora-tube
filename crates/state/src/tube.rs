@@ -4,8 +4,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use gpui::{AnyView, App, AppContext as _, Context, Entity, Task};
+use gpui::{AnyView, App, AppContext as _, Context, Entity, Global, Task};
 use tube::{Channel, Client, Comment, Found, Line, Page, Video, Watch};
 use video::{Player, VideoView};
 
@@ -134,6 +135,10 @@ struct Thread {
     more: Option<String>,
     loading: bool,
     replies: HashMap<String, Vec<Comment>>,
+    /// What posting a comment sends back, held once the first page came for an account.
+    write: Option<String>,
+    posting: bool,
+    post: Option<Task<()>>,
     task: Option<Task<()>>,
     reply_tasks: Vec<Task<()>>,
 }
@@ -170,6 +175,9 @@ pub struct Watching {
     floating: bool,
     /// Whether the picture fills the whole screen.
     full: bool,
+    /// Whether the account liked the video, `None` as a guest.
+    liked: Option<bool>,
+    like: Option<Task<()>>,
     task: Option<Task<()>>,
 }
 
@@ -197,6 +205,8 @@ impl Watching {
             captions: false,
             floating: false,
             full: false,
+            liked: None,
+            like: None,
             task: None,
         }
     }
@@ -303,6 +313,7 @@ impl Watching {
                 match crate::settled(loaded, cx) {
                     Ok(watch) => {
                         this.thread.more = watch.comments.clone();
+                        this.liked = watch.liked;
                         this.watch = Some(Arc::new(watch));
                         if let Some(seen) = this.video() {
                             this.subscriptions
@@ -502,6 +513,89 @@ impl Watching {
         }));
     }
 
+    /// Whether the account liked the video, `None` as a guest or before the page came.
+    pub fn liked(&self) -> Option<bool> {
+        self.liked
+    }
+
+    /// Likes the video as the account, or takes the like back. The button turns at once and
+    /// turns back when YouTube refuses.
+    pub fn toggle_like(&mut self, cx: &mut Context<Self>) {
+        let (Some(id), Some(before)) = (self.id.clone(), self.liked) else {
+            return;
+        };
+        self.liked = Some(!before);
+        cx.notify();
+        let client = self.client.clone();
+        let asked = id.clone();
+        let request = self
+            .io
+            .spawn(async move { client.like(&id, !before).await });
+        self.like = Some(cx.spawn(async move |this, cx| {
+            let Err(error) = join(request).await else {
+                return;
+            };
+            log::warn!("video: cannot like: {error:#}");
+            this.update(cx, |this, cx| {
+                if this.id.as_deref() == Some(asked.as_str()) {
+                    this.liked = Some(before);
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Whether the account may write a comment under the video.
+    pub fn can_comment(&self) -> bool {
+        self.thread.write.is_some()
+    }
+
+    /// Whether a comment is on its way to YouTube.
+    pub fn posting(&self) -> bool {
+        self.thread.posting
+    }
+
+    /// Posts a comment under the video, then reads the comments again so it shows among them.
+    pub fn post(&mut self, words: &str, cx: &mut Context<Self>) {
+        let words = words.trim().to_owned();
+        let Some(write) = self.thread.write.clone() else {
+            return;
+        };
+        if words.is_empty() || self.thread.posting {
+            return;
+        }
+        self.thread.posting = true;
+        cx.notify();
+        let client = self.client.clone();
+        let asked = self.id.clone();
+        let request = self
+            .io
+            .spawn(async move { client.comment(&write, &words).await });
+        self.thread.post = Some(cx.spawn(async move |this, cx| {
+            let posted = join(request).await;
+            this.update(cx, |this, cx| {
+                if this.id != asked {
+                    return;
+                }
+                this.thread.posting = false;
+                match posted {
+                    Ok(()) => {
+                        let first = this.watch.as_ref().and_then(|watch| watch.comments.clone());
+                        this.thread.comments.clear();
+                        this.thread.replies.clear();
+                        this.thread.loading = false;
+                        this.thread.more = first;
+                        this.load_comments(cx);
+                    }
+                    Err(error) => log::warn!("video: cannot post the comment: {error:#}"),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
     /// Fetches the next page of comments, unless one is already on its way.
     pub fn load_comments(&mut self, cx: &mut Context<Self>) {
         if self.thread.loading {
@@ -528,6 +622,9 @@ impl Watching {
                         this.thread.more = comments.page.more;
                         if comments.total.is_some() {
                             this.thread.total = comments.total;
+                        }
+                        if comments.write.is_some() {
+                            this.thread.write = comments.write;
                         }
                     }
                     Err(error) => log::warn!("video: cannot read comments: {error:#}"),
@@ -786,6 +883,175 @@ impl VideoList {
 }
 
 /// How many watched videos the history keeps.
+/// How often the sign-in window is asked whether the account is in.
+const WINDOW_POLL: Duration = Duration::from_millis(300);
+const SIGN_IN_URL: &str = "https://accounts.google.com/ServiceLogin?service=youtube&passive=true&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26next%3Dhttps%253A%252F%252Fwww.youtube.com%252F";
+const LANDING: &str = "www.youtube.com";
+const COOKIE_DOMAIN: &str = "youtube.com";
+
+/// The one [`Account`] of the app, where the chrome finds it.
+struct Held(Entity<Account>);
+
+impl Global for Held {}
+
+/// The YouTube account the client acts as: signed in through a browser window, kept as its
+/// cookies in a file only the owner reads, and handed to the [`Client`] so likes and comments
+/// go out under it.
+pub struct Account {
+    client: Client,
+    path: Option<PathBuf>,
+    window: Option<webview::Page>,
+    failed: bool,
+    task: Option<Task<()>>,
+}
+
+impl Account {
+    /// Makes the account, signs it in from the kept cookies and registers it for
+    /// [`Account::entity`].
+    pub fn install(client: Client, cx: &mut App) -> Entity<Self> {
+        let path = dirs::data_local_dir().map(|root| {
+            root.join("sonora")
+                .join("accounts")
+                .join("tube")
+                .join("cookies")
+        });
+        let kept = path
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok());
+        if let Some(cookies) = kept
+            && let Err(error) = client.sign_in(Some(cookies))
+        {
+            log::warn!("video: cannot use the kept account: {error:#}");
+        }
+        let account = cx.new(|_| Self {
+            client,
+            path,
+            window: None,
+            failed: false,
+            task: None,
+        });
+        cx.set_global(Held(account.clone()));
+        account
+    }
+
+    /// The app's account, once [`Account::install`] ran.
+    pub fn entity(cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<Held>().map(|held| held.0.clone())
+    }
+
+    pub fn signed_in(&self) -> bool {
+        self.client.signed_in()
+    }
+
+    /// Whether the sign-in window is open.
+    pub fn signing_in(&self) -> bool {
+        self.window.is_some()
+    }
+
+    /// Whether the last sign-in could not open its window or keep its cookies.
+    pub fn failed(&self) -> bool {
+        self.failed
+    }
+
+    /// Whether this platform has a browser window to sign in through.
+    pub fn supported(&self) -> bool {
+        webview::supported()
+    }
+
+    /// Opens YouTube's own sign-in in a browser window named `title` and takes the session's
+    /// cookies once the account is in.
+    pub fn sign_in(&mut self, title: String, cx: &mut Context<Self>) {
+        if self.window.is_some() {
+            return;
+        }
+        self.failed = false;
+        let target = webview::Target {
+            url: SIGN_IN_URL.to_owned(),
+            landing: LANDING.to_owned(),
+            domain: COOKIE_DOMAIN.to_owned(),
+            proof: tube::PROOF.iter().map(ToString::to_string).collect(),
+            title,
+            agent: None,
+            script: None,
+        };
+        match webview::Page::open(target) {
+            Ok(window) => self.window = Some(window),
+            Err(error) => {
+                log::warn!("video: cannot open the sign-in window: {error:#}");
+                self.failed = true;
+                return cx.notify();
+            }
+        }
+        cx.notify();
+        self.task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(WINDOW_POLL).await;
+                let open = this.update(cx, |this, cx| {
+                    let Some(window) = this.window.as_mut() else {
+                        return false;
+                    };
+                    let cookies = match window.poll() {
+                        webview::Poll::Pending => return true,
+                        webview::Poll::Closed => None,
+                        webview::Poll::Cookies(cookies) => Some(cookies),
+                    };
+                    this.window = None;
+                    if let Some(cookies) = cookies {
+                        this.keep(cookies);
+                    }
+                    cx.notify();
+                    false
+                });
+                if !open.unwrap_or(false) {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Goes back to a guest and forgets the kept cookies.
+    pub fn sign_out(&mut self, cx: &mut Context<Self>) {
+        self.window = None;
+        self.client.sign_in(None).ok();
+        if let Some(path) = &self.path {
+            std::fs::remove_file(path).ok();
+        }
+        cx.notify();
+    }
+
+    /// Hands the cookies to the client and writes them where the next launch finds them.
+    fn keep(&mut self, cookies: String) {
+        if let Err(error) = self.client.sign_in(Some(cookies.clone())) {
+            log::warn!("video: cannot sign in: {error:#}");
+            self.failed = true;
+            return;
+        }
+        let Some(path) = &self.path else {
+            return;
+        };
+        if let Err(error) = write_private(path, cookies.as_bytes()) {
+            log::warn!("video: cannot keep the account: {error:#}");
+        }
+    }
+}
+
+/// Writes a file only its owner can read, making its folder first.
+fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(contents)
+}
+
 const HISTORY_CAP: usize = 500;
 /// How many of a channel's newest uploads go into the feed.
 const FEED_PER_CHANNEL: usize = 12;
