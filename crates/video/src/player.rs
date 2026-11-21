@@ -77,6 +77,9 @@ impl Player {
         ] {
             core.option(name, value)?;
         }
+        if let Some(bundled) = bundled_ytdl() {
+            core.option("script-opts", &format!("ytdl_hook-ytdl_path={bundled}"))?;
+        }
         // SAFETY: the handle is live and not yet initialised.
         check(unsafe { sys::mpv_initialize(core.0) }).context("cannot initialise mpv")?;
 
@@ -402,4 +405,17 @@ fn check(status: c_int) -> Result<()> {
     // SAFETY: mpv_error_string returns a static NUL-terminated string for any code.
     let message = unsafe { CStr::from_ptr(sys::mpv_error_string(status)) };
     bail!("{}", message.to_string_lossy())
+}
+
+/// The yt-dlp shipped beside the executable, which the Windows installer puts there. Without one
+/// mpv looks for yt-dlp on the PATH.
+fn bundled_ytdl() -> Option<String> {
+    let name = match cfg!(windows) {
+        true => "yt-dlp.exe",
+        false => "yt-dlp",
+    };
+    let bundled = std::env::current_exe().ok()?.parent()?.join(name);
+    bundled
+        .is_file()
+        .then(|| bundled.to_string_lossy().into_owned())
 }
