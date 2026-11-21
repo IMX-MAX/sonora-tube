@@ -277,6 +277,11 @@ fn video(node: &Value) -> Option<Video> {
         views: text(&node["shortViewCountText"]).or_else(|| text(&node["viewCountText"])),
         published: text(&node["publishedTimeText"]),
         short: false,
+        snippet: node["detailedMetadataSnippets"][0]
+            .get("snippetText")
+            .and_then(text)
+            .or_else(|| text(&node["descriptionSnippet"])),
+        avatar: first(&node["channelThumbnailSupportedRenderers"], "thumbnail").and_then(thumbnail),
     })
 }
 
@@ -308,6 +313,8 @@ fn lockup(node: &Value) -> Option<Found> {
                 views: rest.first().cloned(),
                 published: rest.get(1).cloned(),
                 short: false,
+                snippet: None,
+                avatar: None,
             }))
         }
         "LOCKUP_CONTENT_TYPE_PLAYLIST" | "LOCKUP_CONTENT_TYPE_PODCAST" => {

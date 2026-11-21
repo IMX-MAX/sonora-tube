@@ -14,8 +14,8 @@ use router::{Destination, navigate};
 use state::{Subscriptions, VideoList, VideoSearch, Watching};
 use tube::{Channel, Comment, Found, Playlist, Video};
 use ui::{
-    ActiveTheme as _, Artwork, Avatar, Button, Input, Scrollbar, Scroller, Scrubber, ScrubberState,
-    Spinner, Submit, Text, clock, heading, vacant,
+    ActiveTheme as _, Artwork, Avatar, Button, Input, Room, Scrollbar, Scroller, Scrubber,
+    ScrubberState, Spinner, Submit, Text, clock, heading, vacant,
 };
 
 use crate::chrome::Chrome;
@@ -30,6 +30,17 @@ const PLAYLIST_ICON: &str = "icons/list.svg";
 const TILE_MIN: Pixels = px(220.);
 /// How wide the picture and the text under it may grow on the watch page.
 const STAGE_MAX: Pixels = px(1120.);
+/// How wide the whole watch page may grow once the videos to watch next sit beside the picture.
+const WATCH_MAX: Pixels = px(1680.);
+/// How wide the column of videos to watch next is when it sits beside the picture.
+const NEXT_WIDTH: Pixels = px(400.);
+/// How wide a thumbnail is in that column.
+const NEXT_PICTURE: Pixels = px(168.);
+/// The widest a thumbnail gets in a row of search results, and the share of the row it may take.
+const ROW_PICTURE: Pixels = px(360.);
+const ROW_SHARE: f32 = 0.42;
+/// The widest the list of search results gets, so a row's text stays next to its picture.
+const ROWS_MAX: Pixels = px(1100.);
 const STEADY: Pixels = px(0.5);
 /// How often the watch page redraws its clock and scrubber while a video plays.
 const TICK: Duration = Duration::from_millis(250);
@@ -191,6 +202,134 @@ fn video_tile(
         tiles,
         cx,
     )
+}
+
+/// The length of a video over the corner of its thumbnail.
+fn length_badge(length: SharedString, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+
+    div()
+        .absolute()
+        .right_1p5()
+        .bottom_1p5()
+        .px_1p5()
+        .py_0p5()
+        .rounded(theme.radius)
+        .bg(theme.overlay)
+        .text_size(theme.text(Text::Small))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.overlay_foreground)
+        .child(length)
+}
+
+/// One video as a row: its thumbnail `picture` wide on the left and what is known about it on the
+/// right. A `roomy` row is a search result, with the channel's avatar and a line of the
+/// description; the other is the short one beside a playing video.
+fn video_row(
+    scope: &str,
+    video: &Video,
+    place: (usize, usize),
+    picture: Pixels,
+    roomy: bool,
+    cx: &App,
+) -> AnyElement {
+    let theme = cx.theme();
+    let title = SharedString::from(video.title.clone());
+    let channel = video.channel.as_ref().map(|channel| channel.name.clone());
+    let numbers = caption([video.views.clone(), video.published.clone()]);
+    let spoken = caption([channel.clone(), Some(numbers.to_string())]);
+    let destination = Destination::Watch(video.id.clone().into());
+    let dim = |line: SharedString| {
+        div()
+            .truncate()
+            .text_size(theme.text(Text::Small))
+            .text_color(theme.muted_foreground)
+            .child(line)
+    };
+    let channel = channel.map(SharedString::from);
+
+    div()
+        .id(SharedString::from(format!("{scope}-video-{}", video.id)))
+        .role(Role::Link)
+        .aria_label(title.clone())
+        .aria_description(spoken)
+        .aria_position_in_set(place.0 + 1)
+        .aria_size_of_set(place.1)
+        .flex()
+        .w_full()
+        .rounded(theme.radius)
+        .cursor_pointer()
+        .hover(|this| this.bg(theme.secondary))
+        .on_click(move |_, _, cx| navigate(destination.clone(), cx))
+        .map(|row| match roomy {
+            true => row.gap_4().p_2(),
+            false => row.gap_2().p_1(),
+        })
+        .child(
+            div()
+                .relative()
+                .flex_none()
+                .child(
+                    Artwork::new(Some(video.thumbnail()))
+                        .size(picture)
+                        .wide((picture * 9. / 16.).floor()),
+                )
+                .when_some(video.length.clone(), |this, length| {
+                    this.child(length_badge(length.into(), cx))
+                }),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .map(|column| match roomy {
+                    true => column.gap_2().py_1(),
+                    false => column.gap_0p5(),
+                })
+                .child(
+                    div()
+                        .line_clamp(2)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.foreground)
+                        .text_size(theme.text(match roomy {
+                            true => Text::Body,
+                            false => Text::Label,
+                        }))
+                        .child(title),
+                )
+                .map(|column| match roomy {
+                    true => column
+                        .when(!numbers.is_empty(), |this| this.child(dim(numbers.clone())))
+                        .when_some(channel.clone(), |this, name| {
+                            this.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        Avatar::new(video.avatar.clone())
+                                            .size(theme.metrics.control_small),
+                                    )
+                                    .child(dim(name)),
+                            )
+                        })
+                        .when_some(video.snippet.clone(), |this, snippet| {
+                            this.child(
+                                div()
+                                    .line_clamp(2)
+                                    .text_size(theme.text(Text::Small))
+                                    .text_color(theme.muted_foreground)
+                                    .child(SharedString::from(snippet)),
+                            )
+                        }),
+                    false => column
+                        .when_some(channel.clone(), |this, name| this.child(dim(name)))
+                        .when(!numbers.is_empty(), |this| this.child(dim(numbers.clone()))),
+                }),
+        )
+        .into_any_element()
 }
 
 fn channel_tile(
@@ -460,18 +599,32 @@ impl VideoSearchView {
             .into_iter()
             .enumerate()
             .map(|(place, channel)| channel_chip(channel, (place, count), &self.subscriptions, cx));
-        let rest = total - count;
-        let cards = found
+        let rows = self.width.min(ROWS_MAX);
+        let picture = (rows * ROW_SHARE).min(ROW_PICTURE).floor();
+        let videos: Vec<&Video> = found
             .iter()
-            .filter(|found| !matches!(found, Found::Channel(_)))
-            .enumerate()
-            .filter_map(|(place, found)| match found {
-                Found::Video(video) => Some(video_tile("search", video, (place, rest), tiles, cx)),
-                Found::Playlist(playlist) => {
-                    Some(playlist_tile("search", playlist, (place, rest), tiles, cx))
-                }
-                Found::Channel(_) => None,
+            .filter_map(|found| match found {
+                Found::Video(video) => Some(video),
+                _ => None,
             })
+            .collect();
+        let listed = videos.len();
+        let videos = videos
+            .into_iter()
+            .enumerate()
+            .map(|(place, video)| video_row("search", video, (place, listed), picture, true, cx));
+        let playlists: Vec<&Playlist> = found
+            .iter()
+            .filter_map(|found| match found {
+                Found::Playlist(playlist) => Some(playlist),
+                _ => None,
+            })
+            .collect();
+        let held = playlists.len();
+        let playlists: Vec<AnyElement> = playlists
+            .into_iter()
+            .enumerate()
+            .map(|(place, playlist)| playlist_tile("search", playlist, (place, held), tiles, cx))
             .collect();
         div()
             .flex()
@@ -480,7 +633,8 @@ impl VideoSearchView {
             .when(count > 0, |this| {
                 this.child(div().flex().flex_wrap().gap(tiles.gap).children(chips))
             })
-            .child(tiles.grid(cards))
+            .child(div().flex().flex_col().w(rows).gap_1().children(videos))
+            .when(held > 0, |this| this.child(tiles.grid(playlists)))
             .into_any_element()
     }
 }
@@ -573,6 +727,8 @@ pub(crate) struct WatchView {
     /// Where a drag of the scrubber stands, until its release seeks there.
     pending: Option<f32>,
     width: Pixels,
+    /// Whether there is room for the videos to watch next beside the picture.
+    beside: bool,
     _tick: Task<()>,
 }
 
@@ -615,6 +771,7 @@ impl WatchView {
             volume: ScrubberState::new("video-volume"),
             pending: None,
             width: Pixels::ZERO,
+            beside: false,
             _tick: tick,
         }
     }
@@ -671,7 +828,11 @@ impl WatchView {
                 .child(text)
         };
 
-        div()
+        let ends = SharedString::from(format!(
+            "{elapsed} / {}",
+            clock(Duration::from_secs_f64(total.max(0.)))
+        ));
+        let buttons = div()
             .flex()
             .w_full()
             .items_center()
@@ -709,29 +870,8 @@ impl WatchView {
                         ahead.update(cx, |watching, cx| watching.seek_by(SKIP, cx));
                     }),
             )
-            .child(time(elapsed.clone()))
-            .child(
-                div().flex_1().min_w_0().child(
-                    Scrubber::new(&self.seek, fraction)
-                        .name(t!("video-position"))
-                        .value(elapsed)
-                        .colors(theme.progress_bar, theme.muted, theme.foreground)
-                        .enabled(seekable)
-                        .on_move(cx.listener(|this, fraction: &f32, _, cx| {
-                            this.pending = Some(*fraction);
-                            cx.notify();
-                        }))
-                        .on_release(cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                            let Some(fraction) = this.pending.take() else {
-                                return;
-                            };
-                            this.watching.update(cx, |watching, cx| {
-                                watching.seek_to(f64::from(fraction) * total, cx);
-                            });
-                        })),
-                ),
-            )
-            .child(time(clock(Duration::from_secs_f64(total.max(0.)))))
+            .child(time(ends))
+            .child(div().flex_1())
             .child(
                 Button::new("video-captions")
                     .label(t!("video-captions"))
@@ -769,7 +909,35 @@ impl WatchView {
                                 .update(cx, |watching, cx| watching.set_volume(level, cx));
                         })),
                 ),
+            );
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .gap_1()
+            .child(
+                div().w_full().child(
+                    Scrubber::new(&self.seek, fraction)
+                        .name(t!("video-position"))
+                        .value(elapsed)
+                        .colors(theme.progress_bar, theme.muted, theme.foreground)
+                        .enabled(seekable)
+                        .on_move(cx.listener(|this, fraction: &f32, _, cx| {
+                            this.pending = Some(*fraction);
+                            cx.notify();
+                        }))
+                        .on_release(cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                            let Some(fraction) = this.pending.take() else {
+                                return;
+                            };
+                            this.watching.update(cx, |watching, cx| {
+                                watching.seek_to(f64::from(fraction) * total, cx);
+                            });
+                        })),
+                ),
             )
+            .child(buttons)
     }
 
     /// The title, the numbers under it, the channel and the description.
@@ -1015,9 +1183,29 @@ impl WatchView {
         if related.is_empty() {
             return None;
         }
-        let tiles = Tiles::new(self.width, cx);
         let total = related.len();
         let title = t!("video-related");
+        let tiles = Tiles::new(self.width, cx);
+        let listed = related.iter().enumerate();
+        let videos = match self.beside {
+            true => div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .children(listed.map(|(place, video)| {
+                    video_row("related", video, (place, total), NEXT_PICTURE, false, cx)
+                }))
+                .into_any_element(),
+            false => tiles
+                .grid(
+                    listed
+                        .map(|(place, video)| {
+                            video_tile("related", video, (place, total), tiles, cx)
+                        })
+                        .collect(),
+                )
+                .into_any_element(),
+        };
 
         Some(
             div()
@@ -1031,17 +1219,7 @@ impl WatchView {
                         .aria_level(2)
                         .aria_label(title),
                 )
-                .child(
-                    tiles.grid(
-                        related
-                            .iter()
-                            .enumerate()
-                            .map(|(place, video)| {
-                                video_tile("related", video, (place, total), tiles, cx)
-                            })
-                            .collect(),
-                    ),
-                ),
+                .child(videos),
         )
     }
 }
@@ -1049,10 +1227,17 @@ impl WatchView {
 impl Render for WatchView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pad = cx.theme().metrics.inset;
-        let room = cells::content_width(window, pad * 2., cx).min(STAGE_MAX);
+        let gap = cx.theme().metrics.inset;
+        let whole = cells::content_width(window, pad * 2., cx);
+        self.beside = Chrome::room(window, cx).fits(Room::Wide);
+        let room = match self.beside {
+            true => whole.min(WATCH_MAX) - NEXT_WIDTH - gap,
+            false => whole.min(STAGE_MAX),
+        };
         if (room - self.width).abs() >= STEADY {
             self.width = room;
         }
+        let beside = self.beside;
         let watching = self.watching.read(cx);
         let loading = watching.is_loading();
         let failure = watching.error().map(str::to_owned);
@@ -1067,37 +1252,60 @@ impl Render for WatchView {
                 .child(
                     div()
                         .flex()
-                        .flex_col()
-                        .w(self.width)
-                        .mx_auto()
-                        .gap_6()
+                        .items_start()
+                        .justify_center()
+                        .gap(gap)
+                        .map(|page| match beside {
+                            true => page,
+                            false => page.flex_col().items_center(),
+                        })
                         .child(
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap_2()
-                                .child(self.stage(cx))
-                                .child(self.controls(cx)),
+                                .flex_none()
+                                .w(self.width)
+                                .gap_6()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_2()
+                                        .child(self.stage(cx))
+                                        .child(self.controls(cx)),
+                                )
+                                .when(loading, |this| this.child(waiting("video-watch-waiting")))
+                                .when_some(failure, |this, reason| {
+                                    this.child(
+                                        div().id("video-watch-failure").role(Role::Alert).child(
+                                            trouble::lost(
+                                                "video-watch-lost",
+                                                t!("trouble-not-loaded"),
+                                                Some(&reason),
+                                                move |_, _, cx| {
+                                                    retried.update(cx, |watching, cx| {
+                                                        watching.refresh(cx)
+                                                    });
+                                                },
+                                                cx,
+                                            ),
+                                        ),
+                                    )
+                                })
+                                .children(self.about(cx))
+                                .when(self.watching.read(cx).watch().is_some(), |this| {
+                                    this.child(self.comments(cx))
+                                }),
                         )
-                        .when(loading, |this| this.child(waiting("video-watch-waiting")))
-                        .when_some(failure, |this, reason| {
-                            this.child(div().id("video-watch-failure").role(Role::Alert).child(
-                                trouble::lost(
-                                    "video-watch-lost",
-                                    t!("trouble-not-loaded"),
-                                    Some(&reason),
-                                    move |_, _, cx| {
-                                        retried.update(cx, |watching, cx| watching.refresh(cx));
-                                    },
-                                    cx,
-                                ),
-                            ))
-                        })
-                        .children(self.about(cx))
-                        .when(self.watching.read(cx).watch().is_some(), |this| {
-                            this.child(self.comments(cx))
-                        })
-                        .children(self.related(cx)),
+                        .children(self.related(cx).map(|next| {
+                            div()
+                                .flex_none()
+                                .w(match beside {
+                                    true => NEXT_WIDTH,
+                                    false => self.width,
+                                })
+                                .child(next)
+                        })),
                 ),
         )
     }

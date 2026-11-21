@@ -23,6 +23,12 @@ pub struct Video {
     /// Whether YouTube lists it as a Short. It plays like any other video.
     #[serde(default)]
     pub short: bool,
+    /// A line or two of its description, which only search results carry.
+    #[serde(default)]
+    pub snippet: Option<String>,
+    /// The picture of the channel that made it, where the listing has one.
+    #[serde(default)]
+    pub avatar: Option<String>,
 }
 
 impl Video {
