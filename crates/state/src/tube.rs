@@ -910,7 +910,7 @@ impl Account {
     /// [`Account::entity`].
     pub fn install(client: Client, cx: &mut App) -> Entity<Self> {
         let path = dirs::data_local_dir().map(|root| {
-            root.join("sonora")
+            root.join("youtube-plus")
                 .join("accounts")
                 .join("tube")
                 .join("cookies")
@@ -1084,7 +1084,7 @@ impl Subscriptions {
     pub fn new(client: Client, io: Io) -> Self {
         let path = dirs::data_local_dir()
             .unwrap_or_else(std::env::temp_dir)
-            .join("sonora")
+            .join("youtube-plus")
             .join("videos.json");
         let kept = std::fs::read(&path)
             .ok()

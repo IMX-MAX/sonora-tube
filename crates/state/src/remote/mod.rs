@@ -20,7 +20,7 @@ use self::souvlaki::Controls;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use mpris::Controls;
 
-const BUS_NAME: &str = "sonora";
+const BUS_NAME: &str = "youtube-plus";
 const DISPLAY_NAME: &str = "YouTube+";
 /// How far the position may stray from where steady playback would have put it before the
 /// widget is told the track was seeked.
@@ -307,7 +307,7 @@ fn is_remote(cover: &str) -> bool {
 async fn artwork(url: &str) -> Result<PathBuf> {
     let dir = dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("sonora")
+        .join("youtube-plus")
         .join(ARTWORK);
     let mut hasher = DefaultHasher::new();
     url.hash(&mut hasher);

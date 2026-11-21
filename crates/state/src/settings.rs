@@ -3303,7 +3303,7 @@ fn write_settings(path: &Path, bytes: &[u8]) -> Result<()> {
 fn settings_path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("sonora")
+        .join("youtube-plus")
         .join("settings.json")
 }
 

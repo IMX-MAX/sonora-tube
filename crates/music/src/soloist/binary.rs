@@ -96,7 +96,7 @@ pub(crate) fn archive() -> Option<&'static str> {
 pub(crate) fn store() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("sonora")
+        .join("youtube-plus")
         .join("soloist")
 }
 
