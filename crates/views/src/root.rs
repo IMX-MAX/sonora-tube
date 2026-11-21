@@ -350,6 +350,7 @@ impl Root {
                 playback.clone(),
                 queue.clone(),
                 library_view.clone().into(),
+                subscriptions.clone(),
                 cx,
             )
         });

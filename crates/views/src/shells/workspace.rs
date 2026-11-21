@@ -38,9 +38,10 @@ impl Workspace {
         playback: Entity<Playback>,
         queue: Entity<Queue>,
         content: AnyView,
+        subscriptions: Entity<state::Subscriptions>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let sidebar = cx.new(SidebarLeft::new);
+        let sidebar = cx.new(|cx| SidebarLeft::new(subscriptions, cx));
         let sidebar_right = cx.new(|cx| SidebarRight::new(queue.clone(), playback.clone(), cx));
         let settings = Sonora::global(cx).settings.clone();
         cx.observe(&settings, |_, _, cx| cx.notify()).detach();

@@ -1,9 +1,9 @@
 use std::rc::Rc;
 
 use ui::{
-    ActiveTheme as _, Card, Deck, DraggedPin, Edge, MenuItem, Panel, Picker, Pin, PinKind,
-    Pinnable as _, Popup, SNUG, Scroller, Shield, Side, Spot, Text, Vacancy, drop_gap, drop_into,
-    drop_marker,
+    ActiveTheme as _, Avatar, Button, Card, Deck, DraggedPin, Edge, MenuItem, Panel, Picker, Pin,
+    PinKind, Pinnable as _, Popup, SNUG, Scroller, Shield, Side, Spot, Text, Vacancy, drop_gap,
+    drop_into, drop_marker,
 };
 
 use gpui::accesskit::Role;
@@ -19,6 +19,7 @@ use router::{
 };
 use state::{
     AppSettings, Leaving, Library, Origin, PinSort, Pins, Playback, Session, Shelf, Sonora,
+    Subscriptions,
 };
 
 use crate::shared::menus::{ItemMenu, item_menu};
@@ -88,6 +89,7 @@ pub(crate) struct SidebarLeft {
     pins: Entity<Pins>,
     library: Entity<Library>,
     session: Entity<Session>,
+    subscriptions: Entity<Subscriptions>,
     track_menu: ItemMenu,
     context_menu: Option<(Pin, Point<Pixels>)>,
     scrollbar: Entity<ui::Scrollbar>,
@@ -95,7 +97,8 @@ pub(crate) struct SidebarLeft {
 }
 
 impl SidebarLeft {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(subscriptions: Entity<Subscriptions>, cx: &mut Context<Self>) -> Self {
+        cx.observe(&subscriptions, |_, _, cx| cx.notify()).detach();
         let settings = Sonora::global(cx).settings.clone();
         let playback = Sonora::global(cx).playback.clone();
         let pins = Sonora::global(cx).pins.clone();
@@ -148,6 +151,7 @@ impl SidebarLeft {
             pins,
             library,
             session,
+            subscriptions,
             track_menu: ItemMenu::new(playlist_scrollbar, cx),
             context_menu: None,
             scrollbar,
@@ -376,7 +380,55 @@ impl SidebarLeft {
             .into_any_element()
     }
 
+    /// The channels the viewer follows, each opening its page: a heading and a row apiece in the
+    /// full sidebar, the avatars alone under a rule on the rail.
+    fn channels(&self, cx: &App) -> Vec<AnyElement> {
+        let theme = *cx.theme();
+        let accent = theme.sidebar_accent;
+        let followed = self.subscriptions.read(cx).channels();
+        if followed.is_empty() {
+            return Vec::new();
+        }
+        let current = self.trail.read(cx).current();
+        let folded = self.folded();
+        let total = followed.len();
+        let lead = match folded {
+            true => self.divider(cx),
+            false => self.section("video-feed-channels", cx),
+        };
+        let rows = followed.iter().enumerate().map(|(place, channel)| {
+            let destination = Destination::Channel(channel.id.clone().into());
+            let active = destination == current;
+            let name = SharedString::from(channel.name.clone());
+            let avatar = Avatar::new(channel.avatar.clone()).size(theme.metrics.control_small);
+            let row = Button::new(SharedString::from(format!(
+                "sidebar-channel-{}",
+                channel.id
+            )))
+            .ghost()
+            .leading(avatar)
+            .name(name.clone())
+            .tint(match active {
+                true => theme.foreground,
+                false => theme.muted_foreground,
+            })
+            .lit(active, accent)
+            .active(move |style| style.bg(accent))
+            .when(active, |button| button.aria_selected(true))
+            .aria_position_in_set(place + 1)
+            .aria_size_of_set(total)
+            .on_click(move |_, _, cx| navigate(destination.clone(), cx));
+            match folded {
+                true => row.w_full(),
+                false => row.label(name).gap_2p5().justify_start(),
+            }
+            .into_any_element()
+        });
+        std::iter::once(lead).chain(rows).collect()
+    }
+
     /// The pinned section: its header, and its entries once it is expanded.
+    #[allow(dead_code)]
     fn pins(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         if !self.settings.read(cx).nav_shown(NavEntry::Pins.id()) {
             return Vec::new();
@@ -789,7 +841,7 @@ impl Render for SidebarLeft {
         let closing = self.closing;
 
         let mut rows = self.navigation(cx);
-        rows.extend(self.pins(window, cx));
+        rows.extend(self.channels(cx));
 
         let overlaid = self.overlays();
         let rail = self.folded();
