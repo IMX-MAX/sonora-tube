@@ -58,7 +58,7 @@ jobs:
         shell: bash
         run: rustup toolchain install && rustup target add ${{ matrix.target }}
 
-      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914962c90ebc8c4fe5a1c94f1e6 # v1.13.0
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: ${{ matrix.msvc }}
 
