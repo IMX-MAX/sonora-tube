@@ -100,7 +100,6 @@ const BROWSE_HOLD: Duration = Duration::from_secs(4);
 /// How long the tray of player buttons stays open once the pointer has left it.
 const TRAY_LINGER: Duration = Duration::from_millis(450);
 /// The most the picture stands over its place on the page as it shrinks out of full screen.
-const SHRINK_FROM: f32 = 1.5;
 /// How wide a channel's post is at most, how many of its pictures show and how large, and how
 /// wide the thumbnail of a video it points at is.
 const POST_WIDTH: Pixels = px(720.);
@@ -1197,6 +1196,8 @@ pub(crate) struct WatchView {
     folding: Option<Task<()>>,
     /// When full screen was last entered or left, which the picture grows or shrinks from.
     turned: Instant,
+    /// Where the picture stands on the page, in the window, as last laid out.
+    slot: Rc<Cell<Bounds<Pixels>>>,
     /// Scrolls the transcript, which follows what is being said.
     script_scroll: ScrollHandle,
     /// The transcript line last scrolled to.
@@ -1303,6 +1304,7 @@ impl WatchView {
             loud: false,
             folding: None,
             turned: Instant::now(),
+            slot: Rc::default(),
             script_scroll: ScrollHandle::new(),
             said: Cell::new(None),
             browsed: Rc::new(Cell::new(None)),
@@ -2645,6 +2647,25 @@ impl WatchView {
         ui::ease_in_out_cubic((self.turned.elapsed().as_secs_f32() / span).min(1.))
     }
 
+    /// The place of the picture `back` of the way from the whole window, `room` large, to its
+    /// place on the page. A page that was never laid out has it grow out of the middle.
+    fn between(&self, room: Size<Pixels>, back: f32) -> Bounds<Pixels> {
+        let mut slot = self.slot.get();
+        if slot.size.width <= Pixels::ZERO {
+            slot = Bounds::new(
+                gpui::point(room.width / 2., room.height / 2.),
+                Size::default(),
+            );
+        }
+        Bounds::new(
+            gpui::point(slot.origin.x * back, slot.origin.y * back),
+            size(
+                (room.width + (slot.size.width - room.width) * back).floor(),
+                (room.height + (slot.size.height - room.height) * back).floor(),
+            ),
+        )
+    }
+
     /// How far the full screen controls have come in, from 0 to 1, as they rise and sink.
     fn strip_lit(&self, cx: &Context<Self>) -> f32 {
         let (shown, since) = self.strip;
@@ -2696,15 +2717,12 @@ impl WatchView {
                     }))
                     .child({
                         // The picture grows out of the place it had on the page.
-                        let from = (self.width / room.width).min(1.);
-                        let scale = from + (1. - from) * self.zoomed(cx);
+                        let at = self.between(room, 1. - self.zoomed(cx));
                         div()
-                            .w(room.width)
-                            .h(room.height)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(self.stage(room.map(|side| (side * scale).floor()), cx))
+                            .absolute()
+                            .left(at.origin.x)
+                            .top(at.origin.y)
+                            .child(self.stage(at.size, cx))
                     })
                     .when(lit > 0., |this| {
                         this.child(
@@ -3537,6 +3555,7 @@ impl Render for WatchView {
         let loading = watching.is_loading();
         let failure = watching.error().map(str::to_owned);
         let retried = self.watching.clone();
+        let shrinking = self.zoomed(cx) < 1.;
         let player = (!full).then(|| {
             div()
                 .flex()
@@ -3545,22 +3564,30 @@ impl Render for WatchView {
                 .w(stage.width)
                 .gap_2()
                 .child({
-                    // The picture shrinks into its place from the size it filled the screen at.
-                    let from = (viewport.width / stage.width).clamp(1., SHRINK_FROM);
-                    let scale = from + (1. - from) * self.zoomed(cx);
-                    let grown = stage.map(|side| (side * scale).floor());
+                    // The picture shrinks into its place from the whole window, over the page
+                    // and any panel beside it.
+                    let slot = self.slot.clone();
                     div()
                         .relative()
                         .w(stage.width)
                         .h(stage.height)
                         .flex_none()
                         .child(
-                            div()
+                            gpui::canvas(move |bounds, _, _| slot.set(bounds), |_, (), _, _| {})
                                 .absolute()
-                                .left((stage.width - grown.width) / 2.)
-                                .top((stage.height - grown.height) / 2.)
-                                .child(self.stage(grown, cx)),
+                                .size_full(),
                         )
+                        .map(|this| match shrinking {
+                            true => {
+                                let at = self.between(viewport, self.zoomed(cx));
+                                this.child(deferred(
+                                    anchored()
+                                        .position(at.origin)
+                                        .child(div().occlude().child(self.stage(at.size, cx))),
+                                ))
+                            }
+                            false => this.child(self.stage(stage, cx)),
+                        })
                 })
                 .child(self.controls(cx))
         });
