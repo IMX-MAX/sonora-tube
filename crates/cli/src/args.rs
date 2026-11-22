@@ -268,13 +268,18 @@ pub fn parse(args: Vec<OsString>, version: &'static str) -> Result<CommandType, 
     into_command(parsed, &mut command).map_err(Refusal)
 }
 
-/// Writes the completion script for `shell` to stdout. It is built whole first, since clap
+/// Writes the completion script for `shell` to stdout, for the executable under its own name. It is built whole first, since clap
 /// panics when stdout closes under it, as it does when piped into `head`.
 pub fn completions(shell: Shell) {
     // the version only has to be there for `-v` to build, a script never shows it
     let mut command = Args::command().version(env!("CARGO_PKG_VERSION"));
     let mut script = Vec::new();
-    clap_complete::generate(shell, &mut command, "youtube-plus", &mut script);
+    // The script completes the executable as it is installed, whatever it was renamed to.
+    let name = std::env::current_exe()
+        .ok()
+        .and_then(|path| Some(path.file_stem()?.to_str()?.to_owned()))
+        .unwrap_or_else(|| "youtube-plus".to_owned());
+    clap_complete::generate(shell, &mut command, name, &mut script);
     io::stdout().write_all(&script).ok();
 }
 
