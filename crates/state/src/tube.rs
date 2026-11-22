@@ -2081,6 +2081,8 @@ impl Subscriptions {
         self.find = None;
         self.sync(cx);
         self.refresh(cx);
+        // A screen showing the videos to find stays open, so they are picked for this history.
+        self.find_again(cx);
         cx.notify();
     }
 
