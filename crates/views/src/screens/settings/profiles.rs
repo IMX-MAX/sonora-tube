@@ -123,8 +123,9 @@ impl SettingsView {
             .iter()
             .enumerate()
             .map(|(place, identity)| {
+                let page = identity.page.as_deref().unwrap_or("own");
                 let entry = Entry {
-                    id: format!("google-{place}").into(),
+                    id: format!("google-{}-{page}", identity.user).into(),
                     name: identity.name.clone().into(),
                     detail: identity.detail.clone().map(SharedString::from),
                     avatar: identity.avatar.clone(),
@@ -158,7 +159,7 @@ impl SettingsView {
         let add = sign_in(
             "profile-google-add",
             t!("settings-google-add"),
-            "icons/plus.svg",
+            "icons/log-in.svg",
         )
         .outline();
         let leave = Button::new("profile-google-out")
