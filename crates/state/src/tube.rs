@@ -1722,7 +1722,12 @@ impl Account {
                                 .identities
                                 .iter()
                                 .any(|identity| this.acts_as(identity));
-                        if !known && !this.identities.is_empty() {
+                        // A kept choice whose account did not answer this time is left alone,
+                        // since the list then says nothing about its channels.
+                        let unheard = this.page.as_ref().is_some_and(|(user, _)| {
+                            !this.identities.iter().any(|held| held.user == *user)
+                        });
+                        if !known && !unheard && !this.identities.is_empty() {
                             let taken = this
                                 .identities
                                 .iter()
@@ -1879,6 +1884,34 @@ const FIND_FADE: f32 = 0.85;
 /// How much less a video counts when its channel was watched before, since it is not new.
 const FIND_KNOWN: f32 = 0.4;
 
+/// The file the first profile is kept in, the folder of the others and the file naming the
+/// one in use.
+const FIRST_PROFILE: usize = 1;
+const VIDEOS: &str = "videos.json";
+const PROFILES: &str = "profiles";
+const PROFILE: &str = "profile";
+
+/// The one [`Subscriptions`] of the app, where the chrome finds it.
+struct Following(Entity<Subscriptions>);
+
+impl Global for Following {}
+
+/// Where a profile is kept: the first in the file the app always had, the others beside it.
+fn profile_path(folder: &std::path::Path, profile: usize) -> PathBuf {
+    match profile == FIRST_PROFILE {
+        true => folder.join(VIDEOS),
+        false => folder.join(PROFILES).join(format!("{profile}.json")),
+    }
+}
+
+/// Reads what a profile kept, nothing when it has no file yet.
+fn read_kept(path: &std::path::Path) -> Kept {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
 /// What is kept on disk between runs: the channels followed and the videos watched, newest first.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Kept {
@@ -1903,6 +1936,11 @@ struct Kept {
 pub struct Subscriptions {
     client: Client,
     io: Io,
+    /// The folder the profiles are kept in.
+    folder: PathBuf,
+    /// The profile in use, counted from one, and every profile there is, in order.
+    profile: usize,
+    profiles: Vec<usize>,
     path: PathBuf,
     kept: Kept,
     feed: Vec<Video>,
@@ -1923,18 +1961,48 @@ pub struct Subscriptions {
 }
 
 impl Subscriptions {
+    /// The app's one set of followed channels, made on the first call and shared by every
+    /// window after it.
+    pub fn shared(client: Client, io: Io, cx: &mut App) -> Entity<Self> {
+        if let Some(following) = cx.try_global::<Following>() {
+            return following.0.clone();
+        }
+        let made = cx.new(|_| Self::new(client, io));
+        cx.set_global(Following(made.clone()));
+        made
+    }
+
+    /// The app's followed channels, once [`Subscriptions::shared`] ran.
+    pub fn entity(cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<Following>().map(|held| held.0.clone())
+    }
+
     pub fn new(client: Client, io: Io) -> Self {
-        let path = dirs::data_local_dir()
+        let folder = dirs::data_local_dir()
             .unwrap_or_else(std::env::temp_dir)
-            .join("youtube-plus")
-            .join("videos.json");
-        let kept = std::fs::read(&path)
+            .join("youtube-plus");
+        let mut profiles: Vec<usize> = std::fs::read_dir(folder.join(PROFILES))
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok()?.path().file_stem()?.to_str()?.parse().ok())
+            .filter(|profile| *profile > FIRST_PROFILE)
+            .collect();
+        profiles.push(FIRST_PROFILE);
+        profiles.sort_unstable();
+        profiles.dedup();
+        let profile = std::fs::read_to_string(folder.join(PROFILE))
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+            .and_then(|kept| kept.trim().parse().ok())
+            .filter(|profile| profiles.contains(profile))
+            .unwrap_or(FIRST_PROFILE);
+        let path = profile_path(&folder, profile);
+        let kept = read_kept(&path);
         Self {
             client,
             io,
+            folder,
+            profile,
+            profiles,
             path,
             kept,
             feed: Vec::new(),
@@ -1949,6 +2017,73 @@ impl Subscriptions {
             recommended: Vec::new(),
             syncing: None,
         }
+    }
+
+    /// The profile in use, counted from one.
+    pub fn profile(&self) -> usize {
+        self.profile
+    }
+
+    /// Every profile kept on this machine, in order.
+    pub fn profiles(&self) -> &[usize] {
+        &self.profiles
+    }
+
+    /// Uses another profile from now on: its followed channels, history, saved videos and
+    /// places. The one left stays on disk as it was.
+    pub fn use_profile(&mut self, profile: usize, cx: &mut Context<Self>) {
+        if profile == self.profile || !self.profiles.contains(&profile) {
+            return;
+        }
+        self.enter(profile, cx);
+    }
+
+    /// Starts an empty profile and uses it.
+    pub fn add_profile(&mut self, cx: &mut Context<Self>) {
+        let profile = self.profiles.last().map_or(FIRST_PROFILE, |last| last + 1);
+        self.profiles.push(profile);
+        self.enter(profile, cx);
+        self.save();
+    }
+
+    /// Deletes the profile in use with all it kept and goes back to the first one, which
+    /// cannot be deleted itself.
+    pub fn remove_profile(&mut self, cx: &mut Context<Self>) {
+        if self.profile == FIRST_PROFILE {
+            return;
+        }
+        let gone = self.profile;
+        self.profiles.retain(|profile| *profile != gone);
+        self.enter(FIRST_PROFILE, cx);
+        if let Err(error) = std::fs::remove_file(profile_path(&self.folder, gone)) {
+            log::warn!("video: cannot delete the profile: {error:#}");
+        }
+    }
+
+    /// Reads `profile` from disk in place of the one in use and remembers it for next launch.
+    fn enter(&mut self, profile: usize, cx: &mut Context<Self>) {
+        self.profile = profile;
+        self.path = profile_path(&self.folder, profile);
+        self.kept = read_kept(&self.path);
+        if let Err(error) = std::fs::create_dir_all(&self.folder)
+            .and_then(|()| std::fs::write(self.folder.join(PROFILE), profile.to_string()))
+        {
+            log::warn!("video: cannot keep the chosen profile: {error:#}");
+        }
+        self.feed.clear();
+        self.loaded = false;
+        self.loading = false;
+        self.task = None;
+        self.found.clear();
+        self.found_for = None;
+        self.dug = 0;
+        self.finding = false;
+        self.find = None;
+        self.sync(cx);
+        self.refresh(cx);
+        // A screen showing the videos to find stays open, so they are picked for this history.
+        self.find_again(cx);
+        cx.notify();
     }
 
     /// What YouTube recommends to the signed-in account, empty for a guest.

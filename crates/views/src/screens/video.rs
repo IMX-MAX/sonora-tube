@@ -485,6 +485,51 @@ fn watched_bar(width: Pixels, watched: f32, cx: &App) -> impl IntoElement + use<
         .child(div().h_full().w(width * watched).bg(theme.primary))
 }
 
+/// The account menu's entries for the profiles kept on this machine: one to use each, one to
+/// start another and, away from the first, one to delete the profile in use.
+fn profile_items(cx: &App) -> Vec<MenuItem> {
+    let Some(kept) = state::Subscriptions::entity(cx) else {
+        return Vec::new();
+    };
+    let held = kept.read(cx);
+    let used = held.profile();
+    let mut items: Vec<MenuItem> = held
+        .profiles()
+        .iter()
+        .map(|&profile| {
+            let kept = kept.clone();
+            MenuItem::new(
+                ("account-video-profile", profile),
+                t!("account-video-profile", number = profile),
+            )
+            .checked(profile == used)
+            .on_click(move |_, _, cx| {
+                kept.update(cx, |kept, cx| kept.use_profile(profile, cx));
+            })
+        })
+        .collect();
+    items.push(
+        MenuItem::new("account-video-profile-new", t!("account-video-profile-new"))
+            .icon("icons/plus.svg")
+            .on_click({
+                let kept = kept.clone();
+                move |_, _, cx| kept.update(cx, |kept, cx| kept.add_profile(cx))
+            }),
+    );
+    if held.profiles().first() != Some(&used) {
+        items.push(
+            MenuItem::new(
+                "account-video-profile-remove",
+                t!("account-video-profile-remove"),
+            )
+            .icon("icons/trash-2.svg")
+            .on_click(move |_, _, cx| kept.update(cx, |kept, cx| kept.remove_profile(cx))),
+        );
+    }
+    items.push(MenuItem::separator("account-video-profiles-end"));
+    items
+}
+
 /// The account menu's entries for YouTube: signing in or out, and with several channels under
 /// the Google account, one entry for each to act as.
 pub(crate) fn account_items(cx: &App) -> Vec<MenuItem> {
@@ -500,10 +545,12 @@ pub(crate) fn account_items(cx: &App) -> Vec<MenuItem> {
                 let title = t!("login-choose-title", provider = "YouTube").to_string();
                 account.update(cx, |account, cx| account.sign_in(title, cx));
             });
-        return vec![match idle {
+        let mut items = profile_items(cx);
+        items.push(match idle {
             true => item,
             false => item.disabled(),
-        }];
+        });
+        return items;
     }
     let identities = held.identities();
     let mut items: Vec<MenuItem> = match identities.len() {
@@ -524,6 +571,7 @@ pub(crate) fn account_items(cx: &App) -> Vec<MenuItem> {
             })
             .collect(),
     };
+    items.extend(profile_items(cx));
     items.push(
         MenuItem::new("account-video-out", t!("account-video-sign-out"))
             .icon("icons/log-out.svg")

@@ -32,6 +32,7 @@ const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
      (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 /// The iPhone app, a client YouTube still hands readable caption tracks to without a token.
 /// Who a request is made as: a Google account of the session and a channel under it.
+#[derive(Clone, Default)]
 struct Acting {
     user: usize,
     page: Option<String>,
@@ -99,10 +100,9 @@ pub struct Client {
     no_shorts: Arc<AtomicBool>,
     /// The `Cookie` header of the signed-in account, shared by the clones of a client.
     cookies: Arc<RwLock<Option<String>>>,
-    /// The channel of the account that requests act as, when it is not the account's own.
-    page: Arc<RwLock<Option<String>>>,
-    /// Which of the Google accounts in the session requests act as, counted from the first.
-    user: Arc<std::sync::atomic::AtomicUsize>,
+    /// The Google account of the session and the channel under it that requests act as, kept
+    /// together so that no request goes out with one of a former choice.
+    acting: Arc<RwLock<Acting>>,
     /// The name YouTube gave this guest, which it wants back before it hands out streams.
     visitor: Arc<RwLock<Option<String>>>,
 }
@@ -115,8 +115,7 @@ impl Client {
             region: "US".to_owned(),
             no_shorts: Arc::default(),
             cookies: Arc::default(),
-            page: Arc::default(),
-            user: Arc::default(),
+            acting: Arc::default(),
             visitor: Arc::default(),
         }
     }
@@ -137,8 +136,7 @@ impl Client {
     /// Makes every later request act as one channel of the signed-in account, a brand account
     /// by its page id or the account's own channel with none.
     pub fn act_as(&self, user: usize, page: Option<String>) {
-        self.user.store(user, Ordering::Relaxed);
-        *self.page.write().unwrap_or_else(|held| held.into_inner()) = page;
+        *self.acting.write().unwrap_or_else(|held| held.into_inner()) = Acting { user, page };
     }
 
     /// The channels the signed-in session can act as, over every Google account in it.
@@ -169,9 +167,11 @@ impl Client {
             }
             let known = found.len();
             for identity in listed {
-                let seen = found
-                    .iter()
-                    .any(|held| held.page == identity.page && held.name == identity.name);
+                let seen = found.iter().any(|held| {
+                    held.page == identity.page
+                        && held.name == identity.name
+                        && held.detail == identity.detail
+                });
                 if !seen {
                     found.push(identity);
                 }
@@ -467,13 +467,11 @@ impl Client {
         mut body: Value,
         acting: Option<Acting>,
     ) -> Result<Value> {
-        let acting = acting.unwrap_or_else(|| Acting {
-            user: self.user.load(Ordering::Relaxed),
-            page: self
-                .page
+        let acting = acting.unwrap_or_else(|| {
+            self.acting
                 .read()
                 .unwrap_or_else(|held| held.into_inner())
-                .clone(),
+                .clone()
         });
         // Only the request for streams needs the guest's name, so nothing else carries it and
         // searching and browsing are not tied to what is played.
