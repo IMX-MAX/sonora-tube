@@ -380,19 +380,12 @@ impl WatchView {
                         .role(Role::Status)
                         .aria_label(t!("video-ai-thinking"))
                         .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(byline(t!("video-ai-name"), cx))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .text_size(theme.text(Text::Label))
-                                .text_color(theme.muted_foreground)
-                                .child(Spinner::new("video-ai-spinner"))
-                                .child(t!("video-ai-thinking")),
-                        ),
+                        .items_center()
+                        .gap_2()
+                        .text_size(theme.text(Text::Label))
+                        .text_color(theme.muted_foreground)
+                        .child(Spinner::new("video-ai-spinner"))
+                        .child(t!("video-ai-thinking")),
                 )
             })
             .when_some(failed, |this, reason| {
@@ -530,7 +523,7 @@ impl WatchView {
             .into_any_element()
     }
 
-    /// A question, set the way a comment is: who asked over what they asked.
+    /// A question, in a quiet bubble at the trailing edge, the way a conversation is read.
     fn question(&self, place: usize, text: &str, cx: &Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let text = SharedString::from(text.to_owned());
@@ -539,15 +532,23 @@ impl WatchView {
             .role(Role::Group)
             .aria_label(t!("video-ai-you-said", text = text.as_ref()))
             .flex()
-            .flex_col()
-            .gap_1()
+            .justify_end()
             .w_full()
-            .child(byline(t!("video-ai-you"), cx))
-            .child(div().text_size(theme.text(Text::Label)).child(text))
+            .pl_8()
+            .child(
+                div()
+                    .min_w_0()
+                    .px_3()
+                    .py_1p5()
+                    .rounded(theme.radius)
+                    .bg(theme.secondary)
+                    .text_size(theme.text(Text::Label))
+                    .child(text),
+            )
             .into_any_element()
     }
 
-    /// An answer, set the way a comment is, its Markdown drawn block by block and its moments
+    /// An answer as plain text across the panel, its Markdown drawn block by block and its moments
     /// and addresses seeking or opening when pressed.
     fn reply(&self, place: usize, text: &str, cx: &Context<Self>) -> AnyElement {
         let theme = *cx.theme();
@@ -569,7 +570,6 @@ impl WatchView {
             .flex_col()
             .gap_1()
             .w_full()
-            .child(byline(t!("video-ai-name"), cx))
             .child(body)
             .child(
                 div().flex().child(
@@ -794,15 +794,6 @@ impl WatchView {
                 .into_any_element(),
         )
     }
-}
-
-/// Who a message in the chat is from, set the way a comment's byline is.
-fn byline(name: SharedString, cx: &gpui::App) -> impl IntoElement {
-    let theme = cx.theme();
-    div()
-        .text_size(theme.text(Text::Small))
-        .text_color(theme.muted_foreground)
-        .child(name)
 }
 
 /// The answer with the brackets taken off its moments, so `[4:05]` reads and seeks as `4:05`
