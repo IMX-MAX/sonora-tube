@@ -561,6 +561,18 @@ impl RenderOnce for Scrubber {
     }
 }
 
+/// The stretches a track cut at these fractions falls into, or none when it is not cut.
+fn stretches(cuts: &[f32]) -> impl Iterator<Item = (f32, f32)> + use<> {
+    let ends: Vec<f32> = match cuts.is_empty() {
+        true => Vec::new(),
+        false => std::iter::once(0.)
+            .chain(cuts.iter().copied())
+            .chain(std::iter::once(1.))
+            .collect(),
+    };
+    (1..ends.len()).map(move |place| (ends[place - 1], ends[place]))
+}
+
 #[cfg(test)]
 mod tests {
     use gpui::{Bounds, point, px, size};
@@ -623,16 +635,4 @@ mod tests {
         assert!(state.hovered(point(x, px(-1.)), PAD).is_none());
         assert!(state.hovered(point(x, reach), PAD).is_none());
     }
-}
-
-/// The stretches a track cut at these fractions falls into, or none when it is not cut.
-fn stretches(cuts: &[f32]) -> impl Iterator<Item = (f32, f32)> + use<> {
-    let ends: Vec<f32> = match cuts.is_empty() {
-        true => Vec::new(),
-        false => std::iter::once(0.)
-            .chain(cuts.iter().copied())
-            .chain(std::iter::once(1.))
-            .collect(),
-    };
-    (1..ends.len()).map(move |place| (ends[place - 1], ends[place]))
 }

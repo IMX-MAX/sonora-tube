@@ -291,11 +291,8 @@ impl Pen {
                         any = true;
                         style.color = Some(theme.progress_bar);
                         style.font_weight = Some(FontWeight::SEMIBOLD);
-                        style.background_color = Some(ui::motion::mix(
-                            theme.progress_bar,
-                            theme.background,
-                            TINT,
-                        ));
+                        style.background_color =
+                            Some(ui::motion::mix(theme.progress_bar, theme.background, TINT));
                     }
                     Some((_, tube::Mark::Link(_))) => {
                         any = true;
