@@ -32,7 +32,7 @@ impl SettingsView {
         vec![
             Group::new("settings-theme", "icons/palette.svg")
                 .cards(Slot::Theme)
-                .rows([Slot::Adaptive, Slot::CommunityThemes]),
+                .rows([Slot::Adaptive]),
             Group::new("settings-icons", "icons/layout-grid.svg").cards(Slot::Icons),
             Group::new("settings-corners", "icons/maximize.svg").cards(Slot::Corners),
             Group::new("settings-page-width", "icons/columns-3.svg").cards(Slot::PageWidth),

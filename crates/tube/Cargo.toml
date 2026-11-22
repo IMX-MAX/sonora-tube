@@ -10,10 +10,10 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha1.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 rustls.workspace = true
-tokio.workspace = true
 
 [lints]
 workspace = true

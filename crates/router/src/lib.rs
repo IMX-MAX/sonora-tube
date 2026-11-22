@@ -100,37 +100,24 @@ impl NavEntry {
     }
 }
 
+/// A screen the app can open on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Home,
     Search,
+    Later,
     History,
-    Songs,
-    Albums,
-    Playlists,
-    Artists,
 }
 
 impl Screen {
-    pub const ALL: [Self; 7] = [
-        Self::Home,
-        Self::Search,
-        Self::Songs,
-        Self::Albums,
-        Self::Artists,
-        Self::Playlists,
-        Self::History,
-    ];
+    pub const ALL: [Self; 4] = [Self::Home, Self::Search, Self::Later, Self::History];
 
     pub fn id(self) -> &'static str {
         match self {
             Self::Home => "home",
             Self::Search => "search",
+            Self::Later => "later",
             Self::History => "history",
-            Self::Songs => "songs",
-            Self::Albums => "albums",
-            Self::Playlists => "playlists",
-            Self::Artists => "artists",
         }
     }
 
@@ -138,31 +125,22 @@ impl Screen {
         match self {
             Self::Home => "nav-home",
             Self::Search => "nav-search",
+            Self::Later => "nav-later",
             Self::History => "nav-history",
-            Self::Songs => "nav-songs",
-            Self::Albums => "nav-albums",
-            Self::Playlists => "nav-playlists",
-            Self::Artists => "nav-artists",
         }
     }
 
-    /// The screen a stored id names. The local music screen joined Songs, so its old id opens there.
+    /// The screen a stored id names, or `None` for one that no longer exists.
     pub fn from_id(id: &str) -> Option<Self> {
-        match id {
-            "imported" => Some(Self::Songs),
-            id => Self::ALL.into_iter().find(|screen| screen.id() == id),
-        }
+        Self::ALL.into_iter().find(|screen| screen.id() == id)
     }
 
     pub fn destination(self) -> Destination {
         match self {
             Self::Home => Destination::Home,
             Self::Search => Destination::Search,
+            Self::Later => Destination::Later,
             Self::History => Destination::History,
-            Self::Songs => Destination::Library(LibraryTab::Songs),
-            Self::Albums => Destination::Library(LibraryTab::Albums),
-            Self::Playlists => Destination::Library(LibraryTab::Playlists),
-            Self::Artists => Destination::Library(LibraryTab::Artists),
         }
     }
 }

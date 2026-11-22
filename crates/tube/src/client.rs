@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, ensure};
 use serde_json::{Value, json};
@@ -33,6 +33,10 @@ const WEB: Guise = Guise {
     number: "1",
     agent: USER_AGENT,
 };
+/// How many times a caption file is asked for before giving up on it.
+const TRIES: u32 = 5;
+/// How long the first retry of a caption file waits, doubling with each one after.
+const RETRY: Duration = Duration::from_millis(300);
 /// The `params` that open a channel on its Videos tab.
 const VIDEOS_TAB: &str = "EgZ2aWRlb3PyBgQKAjoA";
 
@@ -188,13 +192,25 @@ impl Client {
         let Some(track) = parse::caption_track(&answer, &self.language) else {
             return Ok(Vec::new());
         };
-        let response = self
-            .http
-            .get(format!("{track}&fmt=json3"))
-            .header("User-Agent", APP.agent)
-            .send()
-            .await
-            .context("cannot reach youtube")?;
+        let address = format!("{track}&fmt=json3");
+        let mut wait = RETRY;
+        let mut tries = TRIES;
+        let response = loop {
+            let response = self
+                .http
+                .get(&address)
+                .header("User-Agent", APP.agent)
+                .send()
+                .await
+                .context("cannot reach youtube")?;
+            tries -= 1;
+            // YouTube turns away a share of caption requests at random, and the next one passes.
+            if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS || tries == 0 {
+                break response;
+            }
+            tokio::time::sleep(wait).await;
+            wait *= 2;
+        };
         let status = response.status();
         ensure!(status.is_success(), "youtube answered {status}");
         let timed = response
