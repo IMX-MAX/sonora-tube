@@ -65,6 +65,15 @@ jobs:
             --fix-file "$APP/Contents/MacOS/sonora" \
             --dest-dir "$APP/Contents/Frameworks" \
             --install-path @executable_path/../Frameworks/
+          # dylibbundler can write the same search path twice, which macOS 15 refuses to load.
+          for file in "$APP/Contents/MacOS/sonora" "$APP"/Contents/Frameworks/*.dylib; do
+            otool -l "$file" | awk '/LC_RPATH/ {getline; getline; print $2}' | sort | uniq -d \
+              | while read -r path; do
+                  while [ "$(otool -l "$file" | grep -cF "path $path (")" -gt 1 ]; do
+                    install_name_tool -delete_rpath "$path" "$file"
+                  done
+                done
+          done
           if otool -L "$APP/Contents/MacOS/sonora" "$APP"/Contents/Frameworks/*.dylib \
             | grep -E '/(opt/homebrew|usr/local)/'; then
             echo "a library is still loaded from Homebrew" >&2
