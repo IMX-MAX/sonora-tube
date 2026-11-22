@@ -296,6 +296,7 @@ video-ai-send = Ask
 video-ai-clear = New chat
 video-ai-copy = Copy answer
 video-ai-copy-table = Copy table
+video-ai-table = Table
 video-ai-copy-code = Copy code
 video-ai-thinking = Reading the transcript…
 video-ai-failed = Couldn't get an answer

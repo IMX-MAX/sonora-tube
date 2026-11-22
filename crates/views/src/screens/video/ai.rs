@@ -179,23 +179,28 @@ impl Pen {
                     .border_color(theme.table_row_border)
                     .overflow_hidden()
                     .text_size(theme.text(Text::Small))
+                    .aria_label(t!("video-ai-table"))
                     .child(
                         div()
+                            .id(self.id("video-ai-table-head"))
+                            .role(Role::Row)
                             .grid()
                             .grid_cols(columns)
                             .bg(theme.table_head)
                             .text_color(theme.table_head_foreground)
                             .font_weight(FontWeight::MEDIUM)
-                            .children(head.iter().map(|cell| self.cell(cell))),
+                            .children(head.iter().map(|cell| self.cell(Role::ColumnHeader, cell))),
                     )
                     .children(rows.iter().enumerate().map(|(at, row)| {
                         div()
+                            .id(self.id("video-ai-table-row"))
+                            .role(Role::Row)
                             .grid()
                             .grid_cols(columns)
                             .border_t_1()
                             .border_color(theme.table_row_border)
                             .when(at + 1 == last, |this| this.rounded_b(theme.radius))
-                            .children(row.iter().map(|cell| self.cell(cell)))
+                            .children(row.iter().map(|cell| self.cell(Role::Cell, cell)))
                     })),
             )
             .child(
@@ -209,8 +214,12 @@ impl Pen {
             .into_any_element()
     }
 
-    fn cell(&mut self, cell: &Rich) -> AnyElement {
+    /// One cell of a table, read out as the head of its column or a cell under one.
+    fn cell(&mut self, role: Role, cell: &Rich) -> AnyElement {
         div()
+            .id(self.id("video-ai-table-cell"))
+            .role(role)
+            .aria_label(SharedString::from(cell.text.clone()))
             .min_w_0()
             .px_2()
             .py_1p5()
