@@ -2054,6 +2054,11 @@ impl Account {
                 match crate::settled(listed, cx) {
                     Ok(identities) => {
                         this.identities = identities;
+                        // A guest profile taken while the list was on its way leaves the
+                        // remembered channel as it is.
+                        if !this.signed_in() {
+                            return cx.notify();
+                        }
                         let known = this.page.is_some()
                             && this
                                 .identities
