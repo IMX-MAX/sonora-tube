@@ -219,6 +219,8 @@ pub struct Watching {
     full: bool,
     /// Whether the account liked the video, `None` as a guest.
     liked: bool,
+    /// Whether the page on its way is one read again, which the history leaves out.
+    again: bool,
     like: Option<Task<()>>,
     /// The qualities the video can be played at, best first, once YouTube has named them.
     qualities: Vec<Quality>,
@@ -276,6 +278,7 @@ impl Watching {
             floating: false,
             full: false,
             liked: false,
+            again: false,
             like: None,
             qualities: Vec::new(),
             board: None,
@@ -804,6 +807,7 @@ impl Watching {
         self.newest = false;
         self.playback.update(cx, |playback, cx| playback.pause(cx));
         self.id = Some(id.to_owned());
+        self.again = false;
         self.watch = None;
         self.error = None;
         self.thread = Thread::default();
@@ -848,7 +852,9 @@ impl Watching {
                         }
                         this.chapters = Arc::new(tube::chapters(&watch.description));
                         this.watch = Some(Arc::new(watch));
-                        if let Some(seen) = this.video() {
+                        // A page read again is no new watch, and the profile may have changed.
+                        let again = std::mem::take(&mut this.again);
+                        if let Some(seen) = this.video().filter(|_| !again) {
                             this.subscriptions
                                 .update(cx, |kept, cx| kept.watched_now(seen, cx));
                         }
@@ -870,6 +876,7 @@ impl Watching {
         };
         let paused = self.player().is_some_and(|player| player.paused());
         self.open(&id, cx);
+        self.again = true;
         self.set_paused(paused, cx);
     }
 
