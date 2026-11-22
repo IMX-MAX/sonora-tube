@@ -219,8 +219,9 @@ pub struct Watching {
     full: bool,
     /// Whether the account liked the video, `None` as a guest.
     liked: bool,
-    /// Whether the page on its way is one read again, which the history leaves out.
-    again: bool,
+    /// Whether the video has gone into the history since it was opened, so that reading its
+    /// page again, perhaps under another profile, adds nothing.
+    seen: bool,
     like: Option<Task<()>>,
     /// The qualities the video can be played at, best first, once YouTube has named them.
     qualities: Vec<Quality>,
@@ -278,7 +279,7 @@ impl Watching {
             floating: false,
             full: false,
             liked: false,
-            again: false,
+            seen: false,
             like: None,
             qualities: Vec::new(),
             board: None,
@@ -812,7 +813,7 @@ impl Watching {
         self.newest = false;
         self.playback.update(cx, |playback, cx| playback.pause(cx));
         self.id = Some(id.to_owned());
-        self.again = false;
+        self.seen = false;
         self.watch = None;
         self.error = None;
         self.thread = Thread::default();
@@ -857,8 +858,7 @@ impl Watching {
                         }
                         this.chapters = Arc::new(tube::chapters(&watch.description));
                         this.watch = Some(Arc::new(watch));
-                        // A page read again is no new watch, and the profile may have changed.
-                        let again = std::mem::take(&mut this.again);
+                        let again = std::mem::replace(&mut this.seen, true);
                         if let Some(seen) = this.video().filter(|_| !again) {
                             this.subscriptions
                                 .update(cx, |kept, cx| kept.watched_now(seen, cx));
@@ -880,10 +880,9 @@ impl Watching {
             return;
         };
         let paused = self.player().is_some_and(|player| player.paused());
-        // A page that never arrived was never put into the history, so its retry is.
-        let again = self.watch.is_some();
+        let seen = self.seen;
         self.open(&id, cx);
-        self.again = again;
+        self.seen = seen;
         self.set_paused(paused, cx);
     }
 
