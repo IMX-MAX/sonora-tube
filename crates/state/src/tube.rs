@@ -7,13 +7,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{AnyView, App, AppContext as _, ClipboardItem, Context, Entity, Global, Image, Task};
+use tube::ai::{Said, Speaker};
 use tube::{
-    Caption, Channel, Client, Comment, Found, Identity, Line, Page, Peek, Playlist, Post, Quality,
-    Storyboard, Tab, Video, Watch,
+    Caption, Channel, Chapter, Client, Comment, Found, Identity, Line, Page, Peek, Playlist, Post,
+    Quality, Storyboard, Tab, Video, Watch,
 };
 use video::{Player, VideoView};
 
-use crate::{Io, Outcome, Playback, Toasts, VideoDownloads, join};
+use crate::{Assistant, Io, Outcome, Playback, Toasts, VideoDownloads, join};
 
 /// A search of YouTube and the results fetched so far.
 pub struct VideoSearch {
@@ -166,6 +167,19 @@ struct Thread {
     reply_tasks: Vec<Task<()>>,
 }
 
+/// A chat with the AI about the video being watched, which reads its transcript.
+#[derive(Default)]
+struct Chat {
+    said: Vec<Said>,
+    /// Whether an answer is on its way.
+    asking: bool,
+    /// Whether the question waits for the transcript to arrive before it is sent.
+    waiting: bool,
+    /// Why the last answer did not come.
+    failed: Option<String>,
+    task: Option<Task<()>>,
+}
+
 /// The transcript of the video being watched, fetched the first time its panel is opened.
 #[derive(Default)]
 struct Script {
@@ -225,6 +239,14 @@ pub struct Watching {
     /// Writes down how far the video is watched while it plays.
     placing: Option<Task<()>>,
     shot: Option<Task<()>>,
+    /// The video's chapters in order: the description's, or the AI's when it lists none.
+    chapters: Arc<Vec<Chapter>>,
+    /// Whether the chapters were cut by the AI rather than written by the uploader.
+    chapters_ai: bool,
+    chaptering: Option<Task<()>>,
+    /// Whether cutting chapters for this video was tried and failed, so it is not retried.
+    chapters_failed: bool,
+    chat: Chat,
 }
 
 impl Watching {
@@ -264,7 +286,234 @@ impl Watching {
             newest: false,
             placing: None,
             shot: None,
+            chapters: Arc::default(),
+            chapters_ai: false,
+            chaptering: None,
+            chapters_failed: false,
+            chat: Chat::default(),
         }
+    }
+
+    /// The video's chapters in order, empty when it has none.
+    pub fn chapters(&self) -> Arc<Vec<Chapter>> {
+        self.chapters.clone()
+    }
+
+    /// Whether the chapters were made by the AI.
+    pub fn chapters_ai(&self) -> bool {
+        self.chapters_ai
+    }
+
+    /// Whether the AI is cutting chapters for the video right now.
+    pub fn chaptering(&self) -> bool {
+        self.chaptering.is_some()
+    }
+
+    /// The place of the chapter playing at `seconds`.
+    pub fn chapter_at(&self, seconds: f64) -> Option<usize> {
+        self.chapters
+            .iter()
+            .rposition(|chapter| chapter.start <= seconds)
+    }
+
+    /// The messages of the chat about the video, oldest first.
+    pub fn said(&self) -> &[Said] {
+        &self.chat.said
+    }
+
+    /// Whether the AI's answer is on its way.
+    pub fn asking(&self) -> bool {
+        self.chat.asking
+    }
+
+    /// Why the last answer did not come, until another question is asked.
+    pub fn chat_failed(&self) -> Option<&str> {
+        self.chat.failed.as_deref()
+    }
+
+    /// Whether the chat failed because the video has no transcript to go on.
+    pub fn chat_blind(&self) -> bool {
+        self.chat.failed.is_some() && self.script.lines.is_none() && self.script.failed
+    }
+
+    /// Sends `question` to the AI, with the transcript as what it knows about the video.
+    pub fn ask(&mut self, question: &str, cx: &mut Context<Self>) {
+        let question = question.trim();
+        if question.is_empty() || self.chat.asking {
+            return;
+        }
+        self.chat.said.push(Said {
+            speaker: Speaker::User,
+            text: question.to_owned(),
+        });
+        self.answer(cx);
+    }
+
+    /// Asks for the answer to the last question again, after it failed.
+    pub fn ask_again(&mut self, cx: &mut Context<Self>) {
+        let unanswered = self
+            .chat
+            .said
+            .last()
+            .is_some_and(|said| said.speaker == Speaker::User);
+        if !unanswered || self.chat.asking {
+            return;
+        }
+        if self.script.lines.is_none() && self.script.failed {
+            self.chat.failed = None;
+            self.chat.asking = true;
+            self.chat.waiting = true;
+            self.load_transcript(cx);
+            return;
+        }
+        self.answer(cx);
+    }
+
+    /// Forgets the chat, to start over.
+    pub fn clear_chat(&mut self, cx: &mut Context<Self>) {
+        self.chat = Chat::default();
+        cx.notify();
+    }
+
+    /// Sends the chat to the AI once the transcript is here, fetching it first when needed.
+    fn answer(&mut self, cx: &mut Context<Self>) {
+        self.chat.failed = None;
+        self.chat.asking = true;
+        cx.notify();
+        let lines = match &self.script.lines {
+            Some(lines) => lines.clone(),
+            None if !self.script.failed => {
+                self.chat.waiting = true;
+                self.load_transcript(cx);
+                return;
+            }
+            None => {
+                self.chat.asking = false;
+                self.chat.failed = Some("the transcript could not be loaded".to_owned());
+                return;
+            }
+        };
+        let assistant = Assistant::entity(cx);
+        let (client, model) = match &assistant {
+            Some(assistant) => {
+                let assistant = assistant.read(cx);
+                (assistant.client(), assistant.chat_model().to_owned())
+            }
+            None => (None, String::new()),
+        };
+        let Some(client) = client else {
+            self.chat.asking = false;
+            self.chat.failed = Some("no key".to_owned());
+            return;
+        };
+        let title = self
+            .watch
+            .as_ref()
+            .map(|watch| watch.title.clone())
+            .unwrap_or_default();
+        let (said, asked) = (self.chat.said.clone(), self.id.clone());
+        let request = self
+            .io
+            .spawn(async move { client.ask(&model, &title, &lines, &said).await });
+        self.chat.task = Some(cx.spawn(async move |this, cx| {
+            let answered = join(request).await;
+            this.update(cx, |this, cx| {
+                if this.id != asked {
+                    return;
+                }
+                this.chat.asking = false;
+                match answered {
+                    Ok(text) => this.chat.said.push(Said {
+                        speaker: Speaker::Assistant,
+                        text,
+                    }),
+                    Err(error) => {
+                        let reason = format!("{error:#}");
+                        log::warn!("video: the ai cannot answer: {reason}");
+                        refused(&reason, cx);
+                        this.chat.failed = Some(reason);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Has the AI cut chapters from the transcript, when the video lists none, a key is saved
+    /// and auto chapters are on.
+    fn chapter(&mut self, cx: &mut Context<Self>) {
+        if !self.chapters.is_empty()
+            || self.chaptering.is_some()
+            || self.chapters_failed
+            || self.watch.is_none()
+        {
+            return;
+        }
+        let Some(assistant) = Assistant::entity(cx) else {
+            return;
+        };
+        let (client, model) = {
+            let assistant = assistant.read(cx);
+            if !assistant.auto_chapters() {
+                return;
+            }
+            (assistant.client(), assistant.chapter_model().to_owned())
+        };
+        let Some(client) = client else { return };
+        let lines = match &self.script.lines {
+            Some(lines) if !lines.is_empty() => lines.clone(),
+            Some(_) => return,
+            None => {
+                if !self.script.failed {
+                    self.load_transcript(cx);
+                }
+                return;
+            }
+        };
+        let title = self
+            .watch
+            .as_ref()
+            .map(|watch| watch.title.clone())
+            .unwrap_or_default();
+        let length = self
+            .player()
+            .and_then(|player| player.duration())
+            .or_else(|| lines.last().map(|line| line.start + line.length))
+            .unwrap_or(0.);
+        let asked = self.id.clone();
+        let request = self
+            .io
+            .spawn(async move { client.chapters(&model, &title, &lines, length).await });
+        self.chaptering = Some(cx.spawn(async move |this, cx| {
+            let made = join(request).await;
+            this.update(cx, |this, cx| {
+                if this.id != asked {
+                    return;
+                }
+                this.chaptering = None;
+                match made {
+                    Ok(chapters) if !chapters.is_empty() => {
+                        this.chapters = Arc::new(chapters);
+                        this.chapters_ai = true;
+                    }
+                    Ok(_) => this.chapters_failed = true,
+                    Err(error) => {
+                        let reason = format!("{error:#}");
+                        log::warn!("video: the ai cannot cut chapters: {reason}");
+                        refused(&reason, cx);
+                        this.chapters_failed = true;
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Tries the AI chapters again, after a key was saved or auto chapters were turned on.
+    pub fn chapter_again(&mut self, cx: &mut Context<Self>) {
+        self.chapter(cx);
     }
 
     /// Whether the comments come newest first.
@@ -553,6 +802,11 @@ impl Watching {
             open: self.script.open,
             ..Script::default()
         };
+        self.chat = Chat::default();
+        self.chapters = Arc::default();
+        self.chapters_ai = false;
+        self.chaptering = None;
+        self.chapters_failed = false;
         if self.script.open {
             self.load_transcript(cx);
         }
@@ -583,12 +837,14 @@ impl Watching {
                         if let Some(liked) = watch.liked {
                             this.liked = liked;
                         }
+                        this.chapters = Arc::new(tube::chapters(&watch.description));
                         this.watch = Some(Arc::new(watch));
                         if let Some(seen) = this.video() {
                             this.subscriptions
                                 .update(cx, |kept, cx| kept.watched_now(seen, cx));
                         }
                         this.load_comments(cx);
+                        this.chapter(cx);
                     }
                     Err(reason) => this.error = Some(reason),
                 }
@@ -941,6 +1197,10 @@ impl Watching {
                         this.script.failed = true;
                     }
                 }
+                if std::mem::take(&mut this.chat.waiting) {
+                    this.answer(cx);
+                }
+                this.chapter(cx);
                 cx.notify();
             })
             .ok();
@@ -1854,7 +2114,16 @@ impl Account {
 }
 
 /// Writes a file only its owner can read, making its folder first.
-fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+/// Tells the assistant Mistral turned its key down, when `reason` says so.
+fn refused(reason: &str, cx: &mut App) {
+    if reason.contains("API key")
+        && let Some(assistant) = Assistant::entity(cx)
+    {
+        assistant.update(cx, |assistant, cx| assistant.mark_refused(cx));
+    }
+}
+
+pub(crate) fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
 
     if let Some(parent) = path.parent() {

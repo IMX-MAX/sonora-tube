@@ -318,6 +318,12 @@ impl Root {
                 subscriptions.clone(),
             )
         });
+        let assistant = state::Assistant::shared(io.clone(), cx);
+        cx.observe(&assistant, {
+            let watching = watching.clone();
+            move |_, _, cx| watching.update(cx, |watching, cx| watching.chapter_again(cx))
+        })
+        .detach();
         let watch = cx.new(|cx| WatchView::new(watching.clone(), subscriptions.clone(), cx));
         // The quick search asks on its own, so typing in it leaves the search screen as it was.
         let quick = cx.new(|_| VideoSearch::new(tube.clone(), io.clone()));
