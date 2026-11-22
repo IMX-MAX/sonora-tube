@@ -1985,7 +1985,13 @@ impl Subscriptions {
                             !gone.contains(&kept.id)
                                 || channels.iter().any(|channel| channel.id == kept.id)
                         });
+                        // A channel followed here before the account brought it stays a local
+                        // follow, so a later sync without it leaves it alone.
                         for channel in channels {
+                            let local = this.follows(&channel.id) && !gone.contains(&channel.id);
+                            if local {
+                                continue;
+                            }
                             this.kept.synced.push(channel.id.clone());
                             if !this.follows(&channel.id) {
                                 this.kept.channels.push(channel);
