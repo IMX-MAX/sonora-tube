@@ -3250,7 +3250,7 @@ fn save_settings(path: &Path, bytes: &[u8], previous: Option<&[u8]>) -> Result<(
         previous.filter(|previous| serde_json::from_slice::<Values>(json(previous)).is_ok())
     {
         write_settings(
-            &path.with_file_name("sonora.backup.json"),
+            &path.with_file_name("youtube-plus.backup.json"),
             &without_scrobbling(previous),
         )
         .context("cannot back up settings")?;
@@ -3764,7 +3764,7 @@ mod tests {
     fn scratch(name: &str) -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir().join(format!(
-            "sonora-{name}-{}-{}",
+            "youtube-plus-{name}-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))

@@ -92,7 +92,7 @@ impl Player {
             ("ytdl-format", "bestvideo[height<=?1080]+bestaudio/best"),
             ("terminal", "no"),
             ("keep-open", "yes"),
-            ("audio-client-name", "sonora"),
+            ("audio-client-name", "YouTube+"),
         ] {
             core.option(name, value)?;
         }

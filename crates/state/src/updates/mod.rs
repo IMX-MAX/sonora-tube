@@ -32,11 +32,7 @@ const SHORT_COMMIT: usize = 7;
 const POLL: Duration = Duration::from_secs(6 * 60 * 60);
 /// Held while an update is prepared or cleared away.
 static STAGING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-const AGENT: &str = concat!(
-    "sonora/",
-    env!("CARGO_PKG_VERSION"),
-    " (https://github.com/sonorahq/sonora)"
-);
+const AGENT: &str = concat!("youtube-plus/", env!("CARGO_PKG_VERSION"), "");
 
 /// The builds Sonora updates to. Stable follows tagged releases, and Nightly follows the build
 /// of main the nightly workflow publishes every night.

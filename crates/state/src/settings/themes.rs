@@ -25,9 +25,9 @@ include!(concat!(env!("OUT_DIR"), "/themes.rs"));
 
 const FORMAT_VERSION: u32 = 1;
 /// The scheme every link meant for Sonora itself uses.
-const SCHEME: &str = "sonora:";
+const SCHEME: &str = "youtubeplus:";
 /// What a theme link starts with. The theme file or family follows as unpadded base64url.
-const THEME_LINK: &str = "sonora://theme/";
+const THEME_LINK: &str = "youtubeplus://theme/";
 /// The longest theme link read. A full theme file encodes to about 2 KiB.
 const LINK_LIMIT: usize = 16 * 1024;
 /// How many variants a linked family may have.

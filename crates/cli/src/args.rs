@@ -20,9 +20,9 @@ use crate::item;
 /// shapes are kept apart and joined in `into_command`.
 #[derive(Parser)]
 #[command(
-    name = "sonora",
+    name = "youtube-plus",
     about = "A native, familiar music streaming client",
-    override_usage = "sonora [FILE_OR_LINK]...\n       sonora [--json] <COMMAND>",
+    override_usage = "youtube-plus [FILE_OR_LINK]...\n       youtube-plus [--json] <COMMAND>",
     disable_help_subcommand = true,
     disable_version_flag = true,
     arg = Arg::new("version")
@@ -148,10 +148,10 @@ enum Sub {
     Providers,
     /// Print the current provider, or switch to one that has an account.
     Provider {
-        /// A provider as `sonora providers` lists it, such as `spotify`.
+        /// A provider as `youtube-plus providers` lists it, such as `spotify`.
         slug: Option<String>,
     },
-    /// Print the Sonora Session Sonora is in, or start, join or leave one.
+    /// Print the YouTube+ Session YouTube+ is in, or start, join or leave one.
     Session {
         #[command(subcommand)]
         action: Option<SessionSub>,
@@ -160,14 +160,14 @@ enum Sub {
     Completions { shell: Shell },
 }
 
-/// What `sonora session` does with a Sonora Session.
+/// What `youtube-plus session` does with a YouTube+ Session.
 #[derive(Subcommand)]
 enum SessionSub {
     /// Start a session on the current provider and print its code.
     Start,
     /// Join the session a friend's six-digit code names, or open the dialog to type it in.
     Join { code: Option<String> },
-    /// Leave the session, which ends it for everyone when Sonora hosts it.
+    /// Leave the session, which ends it for everyone when YouTube+ hosts it.
     Leave,
 }
 
@@ -235,8 +235,8 @@ enum RepeatArg {
 }
 
 /// Reads the command line, `args` including the program name, with `version` for `--version`.
-/// A mistake in a subcommand is refused. Any other, such as a flag a launcher added that Sonora
-/// does not know, leaves the flags out and keeps the rest as things to open, so Sonora still
+/// A mistake in a subcommand is refused. Any other, such as a flag a launcher added that YouTube+
+/// does not know, leaves the flags out and keeps the rest as things to open, so YouTube+ still
 /// starts.
 pub fn parse(args: Vec<OsString>, version: &'static str) -> Result<CommandType, Refusal> {
     let mut command = Args::command().version(version);
@@ -274,7 +274,7 @@ pub fn completions(shell: Shell) {
     // the version only has to be there for `-v` to build, a script never shows it
     let mut command = Args::command().version(env!("CARGO_PKG_VERSION"));
     let mut script = Vec::new();
-    clap_complete::generate(shell, &mut command, "sonora", &mut script);
+    clap_complete::generate(shell, &mut command, "youtube-plus", &mut script);
     io::stdout().write_all(&script).ok();
 }
 
