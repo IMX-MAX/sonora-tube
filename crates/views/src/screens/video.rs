@@ -3251,9 +3251,11 @@ impl WatchView {
                     .bg(gpui::black())
                     .occlude()
                     .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                        // Only a pointer brought to the top or the bottom asks for the controls.
+                        // Only a pointer brought to the picture's top or bottom asks for the controls.
                         let at = event.position.y;
-                        if at > WAKE_HEAD && at < room.height - room.height * WAKE_FOOT {
+                        if at > seat.top() + WAKE_HEAD
+                            && at < seat.bottom() - seat.size.height * WAKE_FOOT
+                        {
                             return;
                         }
                         let hidden = !this
