@@ -1,0 +1,102 @@
+name: macos app
+
+# Builds the Apple Silicon app of a branch as a disk image, with the mpv library the video
+# player needs and a yt-dlp placed inside the bundle. It is signed ad hoc, not notarised.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["devin/**"]
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_RELEASE_STRIP: symbols
+  RUST_BACKTRACE: 1
+  TARGET: aarch64-apple-darwin
+  APP: YouTube+.app
+
+jobs:
+  build:
+    name: aarch64-apple-darwin
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: rust toolchain
+        run: rustup toolchain install && rustup target add "$TARGET"
+
+      - name: install mpv
+        run: brew install mpv dylibbundler
+
+      - name: build
+        run: |
+          set -euo pipefail
+          export RUSTFLAGS="-L native=$(brew --prefix)/lib"
+          cargo build --release --locked --package sonora --target "$TARGET"
+
+      - name: assemble the bundle
+        run: |
+          set -euo pipefail
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
+          cp "target/$TARGET/release/sonora" "$APP/Contents/MacOS/sonora"
+          cp assets/macos/sonora.icns assets/macos/Assets.car "$APP/Contents/Resources/"
+          sed \
+            -e "s/@VERSION@/0.0.0/g" \
+            -e "s/dev.nolight.sonora/app.youtubeplus/" \
+            -e "s|<string>Sonora</string>|<string>YouTube+</string>|g" \
+            assets/macos/Info.plist > "$APP/Contents/Info.plist"
+          plutil -lint "$APP/Contents/Info.plist"
+          jq -n --arg commit "$GITHUB_SHA" \
+            '{version: "0.0.0", channel: "nightly", commit: $commit}' \
+            > "$APP/Contents/Resources/sonora-build.json"
+
+          # yt-dlp sits beside the executable, where the player looks for it.
+          curl -fsSL -o "$APP/Contents/MacOS/yt-dlp" \
+            https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos
+          chmod +x "$APP/Contents/MacOS/yt-dlp"
+
+          # mpv and every library it loads move into the bundle, so the app runs without Homebrew.
+          dylibbundler --overwrite-dir --bundle-deps \
+            --fix-file "$APP/Contents/MacOS/sonora" \
+            --dest-dir "$APP/Contents/Frameworks" \
+            --install-path @executable_path/../Frameworks/
+          if otool -L "$APP/Contents/MacOS/sonora" "$APP"/Contents/Frameworks/*.dylib \
+            | grep -E '/(opt/homebrew|usr/local)/'; then
+            echo "a library is still loaded from Homebrew" >&2
+            exit 1
+          fi
+
+      - name: sign the bundle
+        run: |
+          set -euo pipefail
+          codesign --force --sign - "$APP"/Contents/Frameworks/*.dylib
+          codesign --force --sign - "$APP/Contents/MacOS/yt-dlp"
+          codesign --force --sign - "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+
+      - name: start the app
+        run: |
+          set -euo pipefail
+          "$APP/Contents/MacOS/sonora" --version
+
+      - name: create the disk image
+        run: |
+          set -euo pipefail
+          mkdir -p dist staging
+          cp -R "$APP" staging/
+          ln -s /Applications staging/Applications
+          megabytes=$(du -ms staging | cut -f1)
+          hdiutil create -volname "YouTube+" -srcfolder staging \
+            -size "$((megabytes + 128))m" -ov -format UDZO \
+            dist/YouTubePlus-macos-arm64.dmg
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-aarch64-apple-darwin
+          path: dist/*
+          if-no-files-found: error
