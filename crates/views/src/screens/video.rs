@@ -1573,7 +1573,11 @@ impl WatchView {
         let picked = self
             .picked
             .map(|(from, to)| from.min(to)..from.max(to))
-            .filter(|picked| !picked.is_empty() && picked.end <= shown.len());
+            .filter(|picked| {
+                !picked.is_empty()
+                    && shown.is_char_boundary(picked.start)
+                    && shown.is_char_boundary(picked.end)
+            });
         // Every place the look changes, so that no two stretches overlap.
         let mut cuts: Vec<usize> = marks
             .iter()
