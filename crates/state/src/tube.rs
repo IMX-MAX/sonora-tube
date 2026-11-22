@@ -827,7 +827,8 @@ impl Watching {
             && self.error.is_none()
             && self
                 .player()
-                .is_none_or(|player| player.duration().is_none())
+                // a live stream has no length, so its place stands in for one
+                .is_none_or(|player| player.duration().is_none() && player.position().is_none())
     }
 
     /// Hands the volume to the player.
