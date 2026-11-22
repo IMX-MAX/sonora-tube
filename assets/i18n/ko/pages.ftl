@@ -114,7 +114,6 @@ home-collection-albums = 내 컬렉션의 앨범
 # powerbar (quick search)
 powerbar-title = 빠른 검색
 powerbar-open = 열기
-powerbar-song = 곡으로 이동
 
 # search page
 search-placeholder = 어떤 음악을 듣고 싶으신가요?

@@ -113,7 +113,6 @@ home-collection-albums = Álbuns da sua coleção
 # search page
 powerbar-title = Pesquisa rápida
 powerbar-open = Abrir
-powerbar-song = Ir para a música
 search-placeholder = O que você quer ouvir?
 search-browse = Explorar tudo
 search-submit = Buscar

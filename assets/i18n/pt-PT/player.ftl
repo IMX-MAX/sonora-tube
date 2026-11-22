@@ -54,9 +54,6 @@ fullscreen-artwork = Capa
 # play button
 play-pause = Pausar
 play-resume = Retomar
-signal-path-codec-alac = ALAC
-signal-path-codec-pcm = PCM
-signal-path-codec-other = Outro codec
 
 # lyrics
 lyrics-title = Letras

@@ -99,7 +99,6 @@ home-collection-albums = Album từ bộ sưu tập của bạn
 # powerbar (quick search)
 powerbar-title = Tìm kiếm nhanh
 powerbar-open = Mở
-powerbar-song = Chuyển đến bài hát
 
 # search page
 search-placeholder = Bạn muốn nghe gì?

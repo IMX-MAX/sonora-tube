@@ -53,9 +53,6 @@ fullscreen-artwork = Kapak
 # play button
 play-pause = Duraklat
 play-resume = Sürdür
-signal-path-codec-alac = ALAC
-signal-path-codec-pcm = PCM
-signal-path-codec-other = Diğer kodek
 
 # lyrics
 lyrics-title = Şarkı sözleri

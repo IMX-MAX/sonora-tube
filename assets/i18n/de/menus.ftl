@@ -72,8 +72,6 @@ playlist-again-add = Erneut hinzufügen
 # confirm
 confirm-delete-track-files-title = Titeldateien löschen?
 confirm-delete-track-files = Die Datei(en) werden endgültig von der Festplatte gelöscht. Das lässt sich nicht rückgängig machen.
-confirm-uninstall-widevine-title = Widevine-Modul deinstallieren?
-confirm-uninstall-widevine = YouTube+ löscht die Kopie, die es von Google geladen hat. Apple-Music-Titel spielen erst wieder, wenn es erneut heruntergeladen ist.
 confirm-remove-downloads-title = Alle Downloads entfernen?
 confirm-remove-downloads = Alle heruntergeladenen Songs aller Dienste werden von diesem Computer gelöscht. Sie werden wieder gestreamt, bis du sie erneut herunterlädst.
 confirm-delete-named = „{ $name }“ löschen? Das lässt sich nicht rückgängig machen.

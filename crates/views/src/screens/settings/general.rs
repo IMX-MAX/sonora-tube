@@ -1,19 +1,15 @@
 use gpui::prelude::*;
 use gpui::{AnyElement, App, Context, SharedString, Window};
 use i18n::{Language, t};
-use router::{NavEntry, Screen};
+use router::Screen;
 use ui::{MenuItem, OptionCard, Pace, Picker, Rounding, Saver, Stillness, Switch};
 
 use super::appearance::corner;
 use super::rows::{Announced as _, grid, segmented};
 use super::{Group, LANGUAGES, SettingsView, Slot};
-use crate::shared::nav::{entry_shown, set_entry_shown};
 use crate::shared::popups::matches_query;
 
 const STARTUP: &str = "startup";
-const PROVIDER: &str = "provider";
-const ENTRIES: &str = "entries";
-
 impl SettingsView {
     pub(super) fn general_groups(&self, cx: &App) -> Vec<Group> {
         vec![
@@ -75,87 +71,6 @@ impl SettingsView {
         self.row(
             t!("settings-startup"),
             picker.name(t!("settings-startup")).into_any_element(),
-        )
-    }
-
-    pub(super) fn provider_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let configured = self.settings.read(cx).startup_provider().map(str::to_owned);
-        let providers: Vec<_> = self
-            .session
-            .read(cx)
-            .providers()
-            .map(|provider| (provider.slug, provider.name))
-            .collect();
-        let current = match configured.as_deref() {
-            None => t!("settings-provider-last-used"),
-            Some(slug) => providers
-                .iter()
-                .find(|(provider, _)| *provider == slug)
-                .map(|(_, name)| SharedString::from(*name))
-                .unwrap_or_else(|| t!("common-unavailable", name = slug)),
-        };
-
-        let mut picker = Picker::new(PROVIDER, &self.popovers, current)
-            .width(Picker::REGULAR)
-            .items([
-                MenuItem::new("provider-last-used", t!("settings-provider-last-used"))
-                    .selected(configured.is_none())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.settings.update(cx, |settings, cx| {
-                            settings.set_startup_provider(None, cx);
-                        });
-                        this.popovers.close();
-                        cx.notify();
-                    })),
-            ]);
-
-        for (slug, name) in providers {
-            let selected = configured.as_deref() == Some(slug);
-            picker = picker.item(
-                MenuItem::new(slug, SharedString::from(name))
-                    .selected(selected)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.settings.update(cx, |settings, cx| {
-                            settings.set_startup_provider(Some(slug), cx);
-                        });
-                        this.popovers.close();
-                        cx.notify();
-                    })),
-            );
-        }
-
-        self.row(
-            t!("settings-provider"),
-            picker.name(t!("settings-provider")).into_any_element(),
-        )
-    }
-
-    /// The sidebar rows the listener can show or hide. Radio is offered only for a provider
-    /// that lists stations, since the sidebar shows it for no other.
-    pub(super) fn entries_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let stations = self.session.read(cx).capabilities().stations;
-        let entries = NavEntry::ALL
-            .into_iter()
-            .filter(|entry| stations || *entry != NavEntry::Radio);
-        let picker = Picker::new(ENTRIES, &self.popovers, t!("settings-entries-pick"))
-            .width(Picker::REGULAR)
-            .sticky()
-            .items(entries.map(|entry| {
-                let shown = entry_shown(entry, self.settings.read(cx));
-
-                MenuItem::new(entry.id(), i18n::lookup(entry.key(), None))
-                    .selected(shown)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.settings.update(cx, |settings, cx| {
-                            set_entry_shown(entry, !shown, settings, cx)
-                        });
-                        cx.notify();
-                    }))
-            }));
-
-        self.row(
-            t!("settings-entries"),
-            picker.name(t!("settings-entries")).into_any_element(),
         )
     }
 
@@ -423,21 +338,6 @@ impl SettingsView {
         )
     }
 
-    pub(super) fn video_glow_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).video_glow();
-
-        self.row(
-            t!("settings-video-glow"),
-            Switch::new("video-glow", on)
-                .name(t!("settings-video-glow"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_video_glow(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-
     pub(super) fn captions_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let on = self.settings.read(cx).captions();
 
@@ -448,21 +348,6 @@ impl SettingsView {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.settings
                         .update(cx, |settings, cx| settings.set_captions(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-
-    pub(super) fn adaptive_menu_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).adaptive_menu();
-
-        self.row(
-            t!("settings-adaptive-menu"),
-            Switch::new("adaptive-menu", on)
-                .name(t!("settings-adaptive-menu"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_adaptive_menu(!on, cx));
                 }))
                 .into_any_element(),
         )
@@ -496,60 +381,5 @@ impl SettingsView {
                 }))
                 .into_any_element(),
         )
-    }
-
-    pub(super) fn now_playing_on_file_open_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).now_playing_on_file_open();
-
-        self.row(
-            t!("settings-now-playing-on-file-open"),
-            Switch::new("now-playing-on-file-open", on)
-                .name(t!("settings-now-playing-on-file-open"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings.update(cx, |settings, cx| {
-                        settings.set_now_playing_on_file_open(!on, cx)
-                    });
-                }))
-                .into_any_element(),
-        )
-    }
-
-    pub(super) fn taskbar_progress_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).taskbar_progress();
-
-        self.row(
-            t!("settings-taskbar-progress"),
-            Switch::new("taskbar-progress", on)
-                .name(t!("settings-taskbar-progress"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_taskbar_progress(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-}
-
-/// The rows about the Windows taskbar button. Only Windows has that button, so the list is
-/// empty everywhere else and the row is left off the page.
-fn taskbar_slots() -> Vec<Slot> {
-    match cfg!(target_os = "windows") {
-        true => vec![Slot::TaskbarProgress],
-        false => Vec::new(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn taskbar_progress_row_is_listed_only_on_windows() {
-        let slots = taskbar_slots();
-        assert_eq!(
-            slots.contains(&Slot::TaskbarProgress),
-            cfg!(target_os = "windows")
-        );
-        assert_eq!(slots.is_empty(), !cfg!(target_os = "windows"));
     }
 }

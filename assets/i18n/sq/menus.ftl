@@ -72,8 +72,6 @@ playlist-again-add = Shto përsëri
 # confirm
 confirm-delete-track-files-title = Të fshihen skedarët e këngëve?
 confirm-delete-track-files = Skedari(ët) do të fshihen përgjithmonë nga disku. Kjo nuk mund të zhbëhet.
-confirm-uninstall-widevine-title = Të çinstalohet moduli Widevine?
-confirm-uninstall-widevine = YouTube+ fshin kopjen që shkarkoi nga Google. Këngët e Apple Music ndalojnë së luajturi derisa të shkarkohet përsëri.
 confirm-remove-downloads-title = Të hiqen të gjitha shkarkimet?
 confirm-remove-downloads = Çdo këngë që ke shkarkuar fshihet nga ky kompjuter, nga çdo shërbim. Ato transmetohen përsëri derisa t'i shkarkosh sërish.
 confirm-delete-named = Fshi “{ $name }”? Kjo nuk mund të zhbëhet.

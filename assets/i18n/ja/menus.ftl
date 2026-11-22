@@ -63,8 +63,6 @@ playlist-again-add = 再度追加
 # confirm
 confirm-delete-track-files-title = 曲ファイルを削除しますか？
 confirm-delete-track-files = ファイルはディスクから完全に削除されます。この操作は取り消せません。
-confirm-uninstall-widevine-title = Widevine モジュールをアンインストールしますか？
-confirm-uninstall-widevine = Google からダウンロードしたコピーを削除します。再度ダウンロードするまで Apple Music の曲は再生できません。
 confirm-remove-downloads-title = すべてのダウンロードを削除しますか？
 confirm-remove-downloads = ダウンロードした曲は、どのサービスのものもすべてこのコンピューターから削除されます。もう一度ダウンロードするまではストリーミングで再生されます。
 confirm-delete-named = 「{ $name }」を削除しますか？この操作は取り消せません。

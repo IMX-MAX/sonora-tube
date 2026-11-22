@@ -73,8 +73,6 @@ playlist-again-add = Ajouter quand même
 # confirm
 confirm-delete-track-files-title = Supprimer les fichiers des titres ?
 confirm-delete-track-files = Le ou les fichiers seront définitivement supprimés du disque. Cette action est irréversible.
-confirm-uninstall-widevine-title = Désinstaller le module Widevine ?
-confirm-uninstall-widevine = YouTube+ supprime la copie téléchargée depuis Google. Les titres Apple Music ne pourront plus être lus tant que YouTube+ ne l'aura pas téléchargée à nouveau.
 confirm-remove-downloads-title = Supprimer tous les téléchargements ?
 confirm-remove-downloads = Tous les titres téléchargés sont supprimés de cet ordinateur, pour tous les services. Ils seront de nouveau lus en streaming jusqu'à ce que vous les téléchargiez à nouveau.
 confirm-delete-named = Supprimer « { $name } » ? Cette action est irréversible.

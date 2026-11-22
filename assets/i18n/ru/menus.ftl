@@ -85,10 +85,6 @@ playlist-again-add = Добавить ещё раз
 # confirm
 confirm-delete-track-files-title = Удалить файлы треков?
 confirm-delete-track-files = Файлы будут безвозвратно удалены с диска. Это действие нельзя отменить.
-confirm-uninstall-widevine-title = Удалить модуль Widevine?
-confirm-uninstall-widevine = YouTube+ удалит копию, скачанную у Google. Треки Apple Music перестанут играть, пока модуль не будет скачан снова.
-confirm-remove-soloist-title = Удалить Soloist?
-confirm-remove-soloist = YouTube+ удалит программу Soloist, ваш API-ключ и её вход в аккаунт. Spotify вернётся на встроенный плеер.
 confirm-remove-downloads-title = Удалить все загрузки?
 confirm-remove-downloads = Все скачанные треки из всех сервисов будут удалены с этого компьютера. Они снова будут играть по сети, пока вы не скачаете их заново.
 confirm-delete-named = Удалить «{ $name }»? Это действие нельзя отменить.

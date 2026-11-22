@@ -54,9 +54,6 @@ fullscreen-artwork = Pochette
 # play button
 play-pause = Pause
 play-resume = Reprendre
-signal-path-codec-alac = ALAC
-signal-path-codec-pcm = PCM
-signal-path-codec-other = Autre codec
 
 # lyrics
 lyrics-title = Paroles

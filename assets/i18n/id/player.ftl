@@ -79,9 +79,6 @@ fullscreen-panels = Tampilan sedang diputar
 # play button
 play-pause = Jeda
 play-resume = Lanjutkan
-signal-path-codec-alac = ALAC
-signal-path-codec-pcm = PCM
-signal-path-codec-other = Codec lain
 
 # lyrics
 lyrics-title = Lirik

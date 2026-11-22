@@ -79,8 +79,6 @@ playlist-again-add = Přidat znovu
 # confirm
 confirm-delete-track-files-title = Smazat soubory skladeb?
 confirm-delete-track-files = Soubory budou trvale smazány z disku. Tuto akci nelze vzít zpět.
-confirm-uninstall-widevine-title = Odinstalovat modul Widevine?
-confirm-uninstall-widevine = YouTube+ smaže kopii, kterou stáhla od Googlu. Skladby Apple Music přestanou přehrávat, dokud se znovu nestáhne.
 confirm-remove-downloads-title = Odebrat všechny stažené skladby?
 confirm-remove-downloads = Všechny skladby, které jsi stáhl, se smažou z tohoto počítače, ze všech služeb. Budou se znovu streamovat, dokud je opět nestáhneš.
 confirm-delete-named = Smazat „{ $name }“? Tuto akci nelze vzít zpět.

@@ -54,9 +54,6 @@ fullscreen-artwork = Kopertina
 # play button
 play-pause = Pauzë
 play-resume = Vazhdo
-signal-path-codec-alac = ALAC
-signal-path-codec-pcm = PCM
-signal-path-codec-other = Kodek tjetër
 
 # lyrics
 lyrics-title = Tekstet

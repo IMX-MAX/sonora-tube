@@ -10,12 +10,10 @@ use ui::{
     Picker, Rounding, Scrubber, Switch, Theme, ThemeKind,
 };
 
-use super::rows::{Announced as _, grid, outward};
+use super::rows::{Announced as _, grid};
 use super::{Group, SettingsView, Slot, TYPEFACES};
 use crate::shared::popups::matches_query;
 
-/// The website's gallery of themes people made, whose install buttons hand a theme to Sonora.
-const COMMUNITY_THEMES: &str = "https://sonorahq.org/themes";
 /// How large a pack's sample glyphs draw on its card.
 const SAMPLE: Pixels = px(14.);
 const TYPEFACE_LIMIT: usize = 200;
@@ -462,12 +460,6 @@ impl SettingsView {
             );
 
         self.row(t!("settings-opacity"), control.into_any_element())
-    }
-
-    pub(super) fn community_themes_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        outward("community-themes", t!("settings-theme-explore"), None, cx)
-            .on_click(|_, _, cx| cx.open_url(COMMUNITY_THEMES))
-            .into_any_element()
     }
 
     pub(super) fn adaptive_row(&self, cx: &mut Context<Self>) -> AnyElement {

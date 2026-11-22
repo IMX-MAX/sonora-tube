@@ -72,8 +72,6 @@ playlist-again-add = Adicionar novamente
 # confirm
 confirm-delete-track-files-title = Eliminar ficheiros das faixas?
 confirm-delete-track-files = Os ficheiros serão eliminados permanentemente do disco. Isto não pode ser anulado.
-confirm-uninstall-widevine-title = Desinstalar o módulo Widevine?
-confirm-uninstall-widevine = O YouTube+ elimina a cópia que transferiu do Google. As faixas do Apple Music deixam de tocar até que ele seja transferido novamente.
 confirm-remove-downloads-title = Remover todas as transferências?
 confirm-remove-downloads = Todas as músicas que transferiu são eliminadas deste computador, de todos os serviços. Voltam a ser transmitidas até as transferir de novo.
 confirm-delete-named = Eliminar "{ $name }"? Isto não pode ser anulado.

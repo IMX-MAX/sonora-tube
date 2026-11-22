@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{Context, ElementId, Hsla};
+use gpui::{ElementId, Hsla};
 use router::NavEntry;
 use state::AppSettings;
 use ui::Button;
@@ -48,18 +48,5 @@ pub(crate) fn entry_shown(entry: NavEntry, settings: &AppSettings) -> bool {
     match entry.optional() {
         true => settings.nav_added(entry.id()),
         false => settings.nav_shown(entry.id()),
-    }
-}
-
-/// Shows or hides `entry` in the sidebar, the counterpart of `entry_shown`.
-pub(crate) fn set_entry_shown(
-    entry: NavEntry,
-    shown: bool,
-    settings: &mut AppSettings,
-    cx: &mut Context<AppSettings>,
-) {
-    match entry.optional() {
-        true => settings.set_nav_added(entry.id(), shown, cx),
-        false => settings.set_nav_shown(entry.id(), shown, cx),
     }
 }

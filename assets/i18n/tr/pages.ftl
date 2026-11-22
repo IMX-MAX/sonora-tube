@@ -177,7 +177,6 @@ artist-favorite-songs-count = { $count ->
 home-most-played = En çok dinlenenler
 powerbar-title = Hızlı arama
 powerbar-open = Aç
-powerbar-song = Şarkıya git
 search-open-link = Bağlantıyı YouTube+'da aç
 song-local = Yerel dosya
 track-row-name = { $artists } – { $title }

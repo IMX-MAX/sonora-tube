@@ -72,8 +72,6 @@ playlist-again-add = 再次添加
 # confirm
 confirm-delete-track-files-title = 删除歌曲文件？
 confirm-delete-track-files = 文件将从磁盘上永久删除。此操作无法撤销。
-confirm-uninstall-widevine-title = 卸载 Widevine 模块？
-confirm-uninstall-widevine = YouTube+ 将删除从 Google 下载的副本。在重新下载之前，Apple Music 的歌曲将无法播放。
 confirm-remove-downloads-title = 移除所有下载？
 confirm-remove-downloads = 你从所有服务下载的歌曲都将从此电脑上删除。在重新下载之前，它们将改为在线串流。
 confirm-delete-named = 删除“{ $name }”？此操作无法撤销。

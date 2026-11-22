@@ -109,7 +109,6 @@ home-collection-albums = Album dari koleksi Anda
 # powerbar (quick search)
 powerbar-title = Pencarian cepat
 powerbar-open = Buka
-powerbar-song = Buka lagu
 
 # search page
 search-placeholder = Apa yang ingin Anda dengarkan?
