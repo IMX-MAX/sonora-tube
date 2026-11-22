@@ -22,7 +22,9 @@ use super::{Panel, WatchView};
 
 /// How big a chapter's number stands.
 const BADGE: Pixels = px(22.);
-/// How thick the line under a moment or an address in an answer stands.
+/// How far a moment's badge leans from the theme's colour to the page behind it.
+const TINT: f32 = 0.8;
+/// How thick the line under an address in an answer stands.
 const LINE: Pixels = px(1.);
 /// How many pieces one answer may draw before its ids run into the next answer's.
 const PIECES: usize = 10_000;
@@ -283,13 +285,27 @@ impl Pen {
                         });
                     }
                 }
-                if presses.iter().any(|(range, _)| within(range)) {
-                    any = true;
-                    style.color = Some(theme.progress_bar);
-                    style.underline = Some(UnderlineStyle {
-                        thickness: LINE,
-                        ..Default::default()
-                    });
+                match presses.iter().find(|(range, _)| within(range)) {
+                    // A moment stands as a badge in a tint of the theme's colour.
+                    Some((_, tube::Mark::Moment(_))) => {
+                        any = true;
+                        style.color = Some(theme.progress_bar);
+                        style.font_weight = Some(FontWeight::SEMIBOLD);
+                        style.background_color = Some(ui::motion::mix(
+                            theme.progress_bar,
+                            theme.background,
+                            TINT,
+                        ));
+                    }
+                    Some((_, tube::Mark::Link(_))) => {
+                        any = true;
+                        style.color = Some(theme.progress_bar);
+                        style.underline = Some(UnderlineStyle {
+                            thickness: LINE,
+                            ..Default::default()
+                        });
+                    }
+                    None => {}
                 }
                 any.then_some((from..to, style))
             })
