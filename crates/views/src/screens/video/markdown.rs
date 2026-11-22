@@ -227,26 +227,41 @@ pub(super) fn cells(head: &[Rich], rows: &[Vec<Rich>]) -> String {
 }
 
 /// `text` with the `\( \)` and `\[ \]` some models fence math in turned into the dollar signs
-/// Markdown reads.
+/// Markdown reads, leaving code as it was written.
 fn dollars(text: &str) -> String {
-    text.replace("\\[", "$$")
-        .replace("\\]", "$$")
-        .replace("\\(", "$")
-        .replace("\\)", "$")
+    let mut fenced = false;
+    text.split_inclusive('\n')
+        .map(|line| {
+            let fence =
+                line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~");
+            if fence {
+                fenced = !fenced;
+            }
+            if fence || fenced {
+                return line.to_owned();
+            }
+            // Every second stretch between backticks is a code span.
+            line.split('`')
+                .enumerate()
+                .map(|(at, piece)| match at % 2 {
+                    0 => piece
+                        .replace("\\[", "$$")
+                        .replace("\\]", "$$")
+                        .replace("\\(", "$")
+                        .replace("\\)", "$"),
+                    _ => piece.to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join("`")
+        })
+        .collect()
 }
 
 /// LaTeX math as the Unicode nearest to it: `x^2` as x², `\alpha` as α, a fraction on one
 /// line.
 fn plain(math: &str) -> String {
-    let mut math = math.trim().to_owned();
-    for wrap in [
-        "\\text",
-        "\\mathrm",
-        "\\mathbf",
-        "\\operatorname",
-        "\\left",
-        "\\right",
-    ] {
+    let mut math = sized(math.trim());
+    for wrap in ["\\text", "\\mathrm", "\\mathbf", "\\operatorname"] {
         math = math.replace(wrap, "");
     }
     let math = fractions(&math)
@@ -257,6 +272,27 @@ fn plain(math: &str) -> String {
         .replace("\\quad", "  ")
         .replace("\\\\", "\n");
     unicodeit::replace(&math).replace(['{', '}'], "")
+}
+
+/// `math` without the `\left` and `\right` that size a bracket, keeping the commands that only
+/// start with them, as `\leftarrow` does.
+fn sized(math: &str) -> String {
+    let mut out = String::with_capacity(math.len());
+    let mut rest = math;
+    while let Some(at) = rest.find('\\') {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        let name = after
+            .find(|letter: char| !letter.is_ascii_alphabetic())
+            .map_or(after, |end| &after[..end]);
+        if name != "left" && name != "right" {
+            out.push('\\');
+            out.push_str(name);
+        }
+        rest = &after[name.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// `math` with every `\frac{a}{b}` written on one line as `(a)/(b)`.
