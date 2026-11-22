@@ -56,6 +56,11 @@ const SHELL_ZOOM_REST: f32 = 1e-3;
 /// open dialog and a menu opened after it still shows over the toast.
 const TOAST_LAYER: usize = 1;
 
+/// The YouTube client every window of the app shares.
+struct Tube(tube::Client);
+
+impl gpui::Global for Tube {}
+
 struct Screens {
     radio: Entity<RadioView>,
     library: Entity<LibraryView>,
@@ -289,7 +294,16 @@ impl Root {
         // The quick search asks on its own, so typing in it leaves the search screen as it was.
         let genres = cx.new(|cx| Genres::new(session.clone(), io.clone(), cx));
 
-        let tube = tube::Client::new();
+        // One client for the life of the app, so a window opened again signs in and out the
+        // same one the quick search asks through.
+        let tube = match cx.try_global::<Tube>() {
+            Some(kept) => kept.0.clone(),
+            None => {
+                let made = tube::Client::new();
+                cx.set_global(Tube(made.clone()));
+                made
+            }
+        };
         let account = state::VideoAccount::install(tube.clone(), cx);
         state::VideoDownloads::install(tube.clone(), cx);
         let video_search = cx.new(|_| VideoSearch::new(tube.clone(), io.clone()));
