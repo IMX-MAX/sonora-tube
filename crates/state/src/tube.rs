@@ -800,6 +800,11 @@ impl Watching {
     /// Starts `id` playing and fetches its page. The music stops, since both would sound at once.
     pub fn open(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.id.as_deref() == Some(id) {
+            // Opened again, perhaps under another profile, whose history has yet to see it.
+            if let Some(seen) = self.video() {
+                self.subscriptions
+                    .update(cx, |kept, cx| kept.watched_now(seen, cx));
+            }
             self.set_paused(false, cx);
             return;
         }
@@ -875,8 +880,10 @@ impl Watching {
             return;
         };
         let paused = self.player().is_some_and(|player| player.paused());
+        // A page that never arrived was never put into the history, so its retry is.
+        let again = self.watch.is_some();
         self.open(&id, cx);
-        self.again = true;
+        self.again = again;
         self.set_paused(paused, cx);
     }
 
