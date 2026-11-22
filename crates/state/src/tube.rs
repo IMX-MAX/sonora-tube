@@ -1722,7 +1722,12 @@ impl Account {
                                 .identities
                                 .iter()
                                 .any(|identity| this.acts_as(identity));
-                        if !known && !this.identities.is_empty() {
+                        // A kept choice whose account did not answer this time is left alone,
+                        // since the list then says nothing about its channels.
+                        let unheard = this.page.as_ref().is_some_and(|(user, _)| {
+                            !this.identities.iter().any(|held| held.user == *user)
+                        });
+                        if !known && !unheard && !this.identities.is_empty() {
                             let taken = this
                                 .identities
                                 .iter()
