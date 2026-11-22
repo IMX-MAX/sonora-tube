@@ -41,7 +41,7 @@ use self::equalizer::Profile;
 use crate::equalizer::DeviceRule;
 use crate::pins::PinSort;
 use crate::queue::{Resume, gap_target};
-use crate::updates::{Channel, updates_itself};
+use crate::updates::Channel;
 use crate::{Hit, Outcome, Repeat, Sonora, Toasts};
 
 /// How Sonora is named on the device list of the provider's apps. `Both` is the app's name with
@@ -790,8 +790,8 @@ impl Default for Values {
             hide_shorts: false,
             captions: false,
             video_glow: true,
-            check_updates: cfg!(target_os = "windows") || updates_itself(),
-            auto_update: true,
+            check_updates: false,
+            auto_update: false,
             update_channel: String::new(),
             close_to_tray: true,
             tray_icon: true,

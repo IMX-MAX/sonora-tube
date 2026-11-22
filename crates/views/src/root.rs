@@ -1136,10 +1136,18 @@ impl Root {
         let mut header = None;
         let cached = destination != Destination::Equalizer;
 
-        if !matches!(destination, Destination::Watch(_) | Destination::Fullscreen) {
-            self.screens
-                .watching
-                .update(cx, |watching, cx| watching.leave(cx));
+        // A video still playing as its page is left carries on in a small window of its own.
+        let on_page = matches!(destination, Destination::Watch(_));
+        if destination != Destination::Fullscreen {
+            let carried = self
+                .screens
+                .watch
+                .update(cx, |watch, cx| watch.follow(on_page, cx));
+            if !on_page && !carried {
+                self.screens
+                    .watching
+                    .update(cx, |watching, cx| watching.leave(cx));
+            }
         }
 
         let content: AnyView = match destination {

@@ -231,6 +231,13 @@ impl Player {
         }
     }
 
+    /// How fast the video plays, 1 being as recorded.
+    pub fn set_speed(&self, speed: f64) {
+        if let Err(error) = self.core.set("speed", &speed.to_string()) {
+            log::warn!("video: cannot set the speed: {error:#}");
+        }
+    }
+
     /// The volume from 0 to 100.
     pub fn set_volume(&self, volume: f64) {
         if let Err(error) = self

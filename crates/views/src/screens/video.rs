@@ -53,10 +53,6 @@ const FACE_ROOM: f32 = 1.7;
 const SCRIPT_HEIGHT: Pixels = px(420.);
 /// How much of the window's height the picture may take in theater mode.
 const THEATER_SHARE: f32 = 0.78;
-/// How long the controls stay over a full screen picture after the pointer last moved.
-const LINGER: Duration = Duration::from_secs(3);
-/// How see-through the bar under a full screen picture is.
-const VEIL: f32 = 0.85;
 /// How large the picture-in-picture window opens, and how far from the screen's corner.
 const PIP_SIZE: Size<Pixels> = size(px(480.), px(270.));
 const PIP_MARGIN: Pixels = px(24.);
@@ -65,8 +61,6 @@ const OPENING: usize = 3;
 const STEADY: Pixels = px(0.5);
 /// How often the watch page redraws its clock and scrubber while a video plays.
 const TICK: Duration = Duration::from_millis(250);
-/// How far the skip buttons move the video, in seconds.
-const SKIP: f64 = 10.;
 /// How large a channel's avatar is among search results, against a control's height.
 const CHIP_AVATAR: f32 = 1.5;
 /// How wide the volume slider under the video is.
@@ -89,6 +83,12 @@ const PEEK_BARE: Pixels = px(64.);
 const BANNER: Pixels = px(240.);
 const BANNER_VEIL: f32 = 0.1;
 const BANNER_CLEAR: f32 = 0.45;
+/// How strongly selected text in a description is backed.
+const SELECTED: f32 = 0.4;
+/// How long a press on the picture is held before it hurries the video along.
+const HOLD: Duration = Duration::from_millis(350);
+/// The speeds a video can be played at.
+const SPEEDS: [f32; 8] = [0.25, 0.5, 0.75, 1., 1.25, 1.5, 1.75, 2.];
 const VOLUME_WIDTH: Pixels = px(96.);
 /// How far the picture's colours spread around it, and how strongly.
 const GLOW_BLUR: Pixels = px(90.);
@@ -337,6 +337,11 @@ fn length_badge(length: SharedString, cx: &App) -> impl IntoElement {
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.overlay_foreground)
         .child(length)
+}
+
+/// A speed as it is written, such as `1.5x`.
+fn pace(speed: f32) -> SharedString {
+    format!("{speed}x").into()
 }
 
 /// One video as a row: its thumbnail `picture` wide on the left and what is known about it on the
@@ -840,10 +845,18 @@ pub(crate) struct WatchView {
     beside: bool,
     /// The picture-in-picture window, while one is open.
     pip: Option<AnyWindowHandle>,
+    /// Whether that window opened by itself when the page was left, so coming back closes it.
+    drifted: bool,
     /// Whether the whole description shows rather than its opening lines.
     described: bool,
     /// Where the menu of picture qualities hangs from, while it is open.
     choosing: Option<Point<Pixels>>,
+    /// Where the menu of speeds hangs from, while it is open.
+    pacing: Option<Point<Pixels>>,
+    /// The wait that turns a press on the picture into a hold.
+    hold: Option<Task<()>>,
+    /// Whether the press being let go was a hold, so it is not also a click.
+    swallow: bool,
     /// How far along the seek bar the pointer rests, which shows that moment's picture.
     peek: Option<f32>,
     /// The stretch of the description that is selected, from where the drag began to where
@@ -913,8 +926,12 @@ impl WatchView {
             width: Pixels::ZERO,
             beside: false,
             pip: None,
+            drifted: false,
             described: false,
             choosing: None,
+            pacing: None,
+            hold: None,
+            swallow: false,
             peek: None,
             picked: None,
             picking: false,
@@ -931,8 +948,40 @@ impl WatchView {
         }
     }
 
+    /// Follows the page being left or come back to. A video that plays as the page is left
+    /// carries on in picture-in-picture, and coming back puts it on the page again. Says
+    /// whether the video plays on without the page.
+    pub(crate) fn follow(&mut self, on_page: bool, cx: &mut Context<Self>) -> bool {
+        let watching = self.watching.read(cx);
+        let floating = watching.floating();
+        let playing = watching.player().is_some_and(|player| !player.paused());
+        match on_page {
+            true => {
+                if floating && self.drifted {
+                    self.toggle_pip(cx);
+                }
+                false
+            }
+            false if floating => true,
+            false if playing && watching.id().is_some() => {
+                self.toggle_pip(cx);
+                self.drifted = self.watching.read(cx).floating();
+                self.drifted
+            }
+            false => false,
+        }
+    }
+
+    /// Ends a press on the picture, and the hurry a held one began.
+    fn release(&mut self, cx: &mut Context<Self>) {
+        self.hold = None;
+        self.watching
+            .update(cx, |watching, cx| watching.hurry(false, cx));
+    }
+
     /// Moves the picture into a small window that stays above the others, or brings it back.
     fn toggle_pip(&mut self, cx: &mut Context<Self>) {
+        self.drifted = false;
         if self.watching.read(cx).floating() {
             if let Some(pip) = self.pip.take() {
                 pip.update(cx, |_, window, _| window.remove_window()).ok();
@@ -991,6 +1040,7 @@ impl WatchView {
         let full = self.watching.read(cx).full();
         let toggled = self.watching.clone();
         let spoken = self.watching.read(cx).caption().filter(|_| !floating);
+        let hurried = self.watching.read(cx).hurried();
         let buffering = self.watching.read(cx).buffering();
         // The halves of the picture light the page on their own side.
         let glow = self
@@ -1024,12 +1074,39 @@ impl WatchView {
             })
             .overflow_hidden()
             .bg(gpui::black())
-            .on_click(move |event, _, cx| {
+            // A press held hurries the video along until it is let go, and is no click then.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.swallow = false;
+                    this.hold = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(HOLD).await;
+                        this.update(cx, |this, cx| {
+                            this.swallow = true;
+                            this.watching
+                                .update(cx, |watching, cx| watching.hurry(true, cx));
+                        })
+                        .ok();
+                    }));
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.release(cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.release(cx)),
+            )
+            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
+                if std::mem::take(&mut this.swallow) {
+                    return;
+                }
                 toggled.update(cx, |watching, cx| match event.click_count() {
                     2 => watching.set_full(!full, cx),
                     _ => watching.toggle(cx),
                 })
-            })
+            }))
             .map(|stage| match floating {
                 true => stage
                     .flex()
@@ -1042,6 +1119,27 @@ impl WatchView {
                 false => {
                     stage.when_some(view.filter(|_| !buffering), |this, view| this.child(view))
                 }
+            })
+            .when(hurried, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top_3()
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .px_2()
+                                .py_0p5()
+                                .rounded(theme.radius)
+                                .bg(theme.overlay)
+                                .text_size(theme.text(Text::Small))
+                                .text_color(theme.overlay_foreground)
+                                .child(pace(state::HURRY)),
+                        ),
+                )
             })
             .when(buffering && !floating, |this| {
                 this.child(
@@ -1180,7 +1278,7 @@ impl WatchView {
                     from..to,
                     gpui::HighlightStyle {
                         color: marked.then_some(theme.progress_bar),
-                        background_color: chosen.then_some(theme.selection),
+                        background_color: chosen.then_some(theme.selection.opacity(SELECTED)),
                         underline: marked.then(|| gpui::UnderlineStyle {
                             thickness: px(1.),
                             ..Default::default()
@@ -1268,6 +1366,30 @@ impl WatchView {
                 }
             })
             .child(text)
+    }
+
+    /// The menu of speeds, hanging over the button that opened it.
+    fn speeds(&self, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
+        let at = self.pacing?;
+        let now = self.watching.read(cx).speed();
+        let menu = Menu::new("video-speeds").name(t!("video-speed")).items(
+            SPEEDS.into_iter().enumerate().map(|(place, speed)| {
+                let chosen = self.watching.clone();
+                MenuItem::new(("video-speed", place), pace(speed))
+                    .checked((speed - now).abs() < f32::EPSILON)
+                    .on_click(move |_, _, cx| {
+                        chosen.update(cx, |watching, cx| watching.set_speed(speed, cx));
+                    })
+            }),
+        );
+        Some(
+            Popup::new(at, menu)
+                .above()
+                .on_close(cx.listener(|this, _, _, cx| {
+                    this.pacing = None;
+                    cx.notify();
+                })),
+        )
     }
 
     /// The menu of picture qualities, hanging over the button that opened it.
@@ -1432,6 +1554,20 @@ impl WatchView {
                     .on_click(move |_, _, cx| {
                         captioned.update(cx, |watching, cx| watching.toggle_captions(cx));
                     }),
+            )
+            .child(
+                Button::new("video-speed")
+                    .label(pace(watching.speed()))
+                    .ghost()
+                    .selected(self.pacing.is_some())
+                    .tooltip("video-speed")
+                    .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
+                        this.pacing = match this.pacing {
+                            Some(_) => None,
+                            None => Some(event.position()),
+                        };
+                        cx.notify();
+                    })),
             )
             .when(!watching.qualities().is_empty(), |this| {
                 this.child(
@@ -1808,7 +1944,10 @@ impl WatchView {
             .read(cx)
             .player()
             .is_none_or(|player| player.paused());
-        let shown = paused || self.choosing.is_some() || self.stirred.elapsed() < FULL_LINGER;
+        let shown = paused
+            || self.choosing.is_some()
+            || self.pacing.is_some()
+            || self.stirred.elapsed() < FULL_LINGER;
         let title = self
             .watching
             .read(cx)
@@ -2417,7 +2556,11 @@ impl Render for PipView {
         let theme = *cx.theme();
         let watching = self.watching.read(cx);
         let paused = watching.player().is_none_or(|player| player.paused());
-        let (toggled, closed) = (self.watching.clone(), self.watching.clone());
+        let (toggled, closed, opened) = (
+            self.watching.clone(),
+            self.watching.clone(),
+            self.watching.clone(),
+        );
 
         div()
             .id("video-pip")
@@ -2476,13 +2619,39 @@ impl Render for PipView {
                             }),
                     )
                     .child(
+                        Button::new("video-pip-expand")
+                            .icon("icons/maximize.svg")
+                            .ghost()
+                            .tooltip("video-pip-expand")
+                            .on_click(move |_, window, cx| {
+                                let id = opened.update(cx, |watching, cx| {
+                                    watching.set_floating(false, cx);
+                                    watching.id().map(str::to_owned)
+                                });
+                                window.remove_window();
+                                if let Some(id) = id {
+                                    navigate(Destination::Watch(id.into()), cx);
+                                }
+                                cx.activate(true);
+                            }),
+                    )
+                    .child(
                         Button::new("video-pip-back")
                             .icon("icons/x.svg")
                             .ghost()
                             .tooltip("video-pip-close")
                             .on_click(move |_, window, cx| {
+                                // Closed away from its page the video has nowhere to show, so
+                                // it stops. On its page the picture goes back there.
+                                let away = !matches!(
+                                    router::trail(cx).read(cx).current(),
+                                    Destination::Watch(_)
+                                );
                                 closed.update(cx, |watching, cx| {
                                     watching.set_floating(false, cx);
+                                    if away {
+                                        watching.set_paused(true, cx);
+                                    }
                                 });
                                 window.remove_window();
                             }),
@@ -2560,6 +2729,7 @@ impl Render for WatchView {
             .size_full()
             .when(full, |this| this.child(self.screen(window, cx)))
             .children(self.qualities(cx))
+            .children(self.speeds(cx))
             .child(
                 Scroller::new("video-watch-page", &self.scrollbar)
                     .hold()

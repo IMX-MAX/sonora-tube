@@ -321,7 +321,9 @@ impl Client {
     }
 
     async fn call_as(&self, guise: &Guise, endpoint: &str, mut body: Value) -> Result<Value> {
-        let visitor = self.visitor();
+        // Only the request for streams needs the guest's name, so nothing else carries it and
+        // searching and browsing are not tied to what is played.
+        let visitor = self.visitor().filter(|_| guise.name == HEADSET.name);
         let mut client = json!({
             "clientName": guise.name,
             "clientVersion": guise.version,
@@ -371,7 +373,7 @@ impl Client {
             .json()
             .await
             .context("cannot read youtube's answer")?;
-        if visitor.is_none()
+        if self.visitor().is_none()
             && let Some(named) = answer["responseContext"]["visitorData"].as_str()
         {
             *self

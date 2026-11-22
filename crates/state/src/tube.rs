@@ -127,6 +127,8 @@ impl VideoSearch {
     }
 }
 
+/// How fast a video plays while its picture is held down.
+pub const HURRY: f32 = 2.;
 /// The tallest picture played when the user has not chosen one.
 const AUTO_HEIGHT: u32 = 1080;
 /// How long a caption without a length of its own stays up, in seconds.
@@ -199,6 +201,10 @@ pub struct Watching {
     ceiling: Option<u32>,
     /// Whether the picture's colours glow around it.
     ambient: bool,
+    /// How fast videos play, 1 being as recorded.
+    speed: f32,
+    /// Whether the video is held at [`HURRY`] for as long as the picture is pressed.
+    hurried: bool,
     stream: Option<Task<()>>,
     task: Option<Task<()>>,
 }
@@ -233,6 +239,8 @@ impl Watching {
             board: None,
             ceiling: None,
             ambient: true,
+            speed: 1.,
+            hurried: false,
             stream: None,
             task: None,
         }
@@ -594,7 +602,7 @@ impl Watching {
         self.qualities
             .iter()
             .find(|quality| quality.height <= ceiling)
-            .or(self.qualities.last())
+            .or_else(|| self.qualities.last())
     }
 
     /// Plays this video and the ones after it no taller than `ceiling`, carrying on from where
@@ -617,6 +625,44 @@ impl Watching {
             log::warn!("video: cannot switch the quality: {error:#}");
         }
         player.set_paused(paused);
+    }
+
+    /// How fast videos play, 1 being as recorded.
+    pub fn speed(&self) -> f32 {
+        self.speed
+    }
+
+    /// Plays this video and the ones after it at `speed`.
+    pub fn set_speed(&mut self, speed: f32, cx: &mut Context<Self>) {
+        self.speed = speed;
+        self.pace();
+        cx.notify();
+    }
+
+    /// Whether the video is being hurried along by a held press.
+    pub fn hurried(&self) -> bool {
+        self.hurried
+    }
+
+    /// Plays at [`HURRY`] while `hurried`, and at the chosen speed again after.
+    pub fn hurry(&mut self, hurried: bool, cx: &mut Context<Self>) {
+        if self.hurried == hurried {
+            return;
+        }
+        self.hurried = hurried;
+        self.pace();
+        cx.notify();
+    }
+
+    /// Hands the speed to the player.
+    fn pace(&self) {
+        let speed = match self.hurried {
+            true => HURRY,
+            false => self.speed,
+        };
+        if let Some(player) = self.player() {
+            player.set_speed(f64::from(speed));
+        }
     }
 
     pub fn ambient(&self) -> bool {
@@ -913,6 +959,8 @@ impl Watching {
         player.stop();
         player.set_volume(f64::from(self.volume()) * 100.);
         player.set_paused(false);
+        self.hurried = false;
+        self.pace();
         self.qualities.clear();
         self.board = None;
         if self.captions {

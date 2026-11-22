@@ -44,7 +44,7 @@ NAMED_COLORS = {"white": "#ffffff", "black": "#000000"}
 
 
 class Master:
-    """Reads the background and equalizer bars shared by the platform icons."""
+    """Reads the background and the shapes shared by the platform icons."""
 
     def __init__(self, path):
         if not path.exists():
@@ -65,27 +65,19 @@ class Master:
         rect = svg.find(f"{ns}rect")
         self.background = rect.get("fill") if rect is not None else "white"
 
-        self.bars = []
-        for path_el in svg.iterfind(f"{ns}path"):
-            match = re.fullmatch(
-                r"M(-?[\d.]+) (-?[\d.]+)V(-?[\d.]+)", path_el.get("d").strip()
-            )
-            if not match:
-                sys.exit(f"icons: unsupported path {path_el.get('d')!r}")
-            self.bars.append(tuple(float(n) for n in match.groups()))
-            self.foreground = path_el.get("stroke", "black")
-            self.stroke = float(path_el.get("stroke-width", 2))
-            self.cap = path_el.get("stroke-linecap", "round")
-
-        if not self.bars:
-            sys.exit("icons: master has no bars")
+        # Shapes are drawn as the master has them, at every size.
+        self.shapes = [
+            ET.tostring(shape, encoding="unicode").replace(
+                ' xmlns="http://www.w3.org/2000/svg"', ""
+            ).strip()
+            for shape in svg.iterfind(f"{ns}path")
+        ]
+        self.stroke = 2.0
+        if not self.shapes:
+            sys.exit("icons: master has no shapes")
 
     def glyph(self, stroke):
-        return "\n".join(
-            f'  <path d="M{x} {y0}V{y1}" stroke="{self.foreground}"'
-            f' stroke-width="{stroke:g}" stroke-linecap="{self.cap}"/>'
-            for x, y0, y1 in self.bars
-        )
+        return "\n".join(f"  {shape}" for shape in self.shapes)
 
 
 def stroke_for(pixels, master):
