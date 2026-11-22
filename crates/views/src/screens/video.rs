@@ -137,6 +137,12 @@ const GLOW_REACH: Pixels = px(40.);
 /// How far down the glow sits, which keeps it off the top of the page where it would be cut.
 const GLOW_DROP: Pixels = px(60.);
 const GLOW_STRENGTH: f32 = 0.4;
+/// On a light page a dark colour only smudges it, so the glow is lifted to at least this
+/// lightness and a colour with less than `GLOW_VIVID` saturation fades away with it.
+const GLOW_LIFT: f32 = 0.62;
+const GLOW_VIVID: f32 = 0.35;
+/// A page lighter than this counts as a light one.
+const LIGHT_PAGE: f32 = 0.5;
 /// How much of the picture's width a caption may take, and how dark its backing is.
 const CAPTION_SHARE: f32 = 0.8;
 const CAPTION_BACKING: f32 = 0.7;
@@ -1493,7 +1499,7 @@ impl WatchView {
             .map(|(left, right)| {
                 [(left, -GLOW_REACH), (right, GLOW_REACH)]
                     .map(|(colour, across)| BoxShadow {
-                        color: Hsla::from(rgb(colour)).opacity(GLOW_STRENGTH),
+                        color: halo(colour, theme.background),
                         offset: point(across, GLOW_DROP),
                         blur_radius: GLOW_BLUR,
                         spread_radius: Pixels::ZERO,
@@ -4753,5 +4759,19 @@ impl Render for VideoFeedView {
                     ),
                 ),
         )
+    }
+}
+
+/// The colour `picture` (`0xRRGGBB`) glows in around a video on a page of colour `page`. A dark
+/// page takes it as it is. A light page takes a lighter tint of it, and nothing of a grey.
+fn halo(picture: u32, page: Hsla) -> Hsla {
+    let colour = Hsla::from(rgb(picture));
+    if page.l < LIGHT_PAGE {
+        return colour.opacity(GLOW_STRENGTH);
+    }
+    Hsla {
+        l: colour.l.max(GLOW_LIFT),
+        a: GLOW_STRENGTH * (colour.s / GLOW_VIVID).min(1.),
+        ..colour
     }
 }
