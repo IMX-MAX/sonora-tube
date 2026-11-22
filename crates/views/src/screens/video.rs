@@ -39,6 +39,14 @@ const UNPLAYED: f32 = 0.62;
 const PLAYLIST_ICON: &str = "icons/list.svg";
 /// The narrowest a video tile gets before the grid drops a column.
 const TILE_MIN: Pixels = px(220.);
+/// The narrowest the upright tile of a Short gets.
+const SHORT_MIN: Pixels = px(168.);
+/// The widest the picture of a Short gets on its own page, and the least room left around it.
+const SHORT_MAX: Pixels = px(520.);
+/// How long a turn of the wheel over a Short is deaf to the next, so one flick steps once.
+const STEP_REST: Duration = Duration::from_millis(450);
+/// How dark the foot of a Short's picture goes behind its title.
+const SHORT_SHADE: f32 = 0.7;
 /// How wide the picture and the text under it may grow on the watch page.
 const STAGE_MAX: Pixels = px(1120.);
 /// How wide the whole watch page may grow once the videos to watch next sit beside the picture.
@@ -147,9 +155,19 @@ struct Tiles {
 
 impl Tiles {
     fn new(available: Pixels, cx: &App) -> Self {
+        Self::least(available, TILE_MIN, cx)
+    }
+
+    /// The narrower tiles that Shorts stand upright in.
+    fn upright(available: Pixels, cx: &App) -> Self {
+        Self::least(available, SHORT_MIN, cx)
+    }
+
+    /// As many tiles a row as fit without one going under `least`.
+    fn least(available: Pixels, least: Pixels, cx: &App) -> Self {
         let gap = cx.theme().metrics.pad;
-        let available = available.max(TILE_MIN);
-        let columns = ((available + gap) / (TILE_MIN + gap)).floor().max(1.);
+        let available = available.max(least);
+        let columns = ((available + gap) / (least + gap)).floor().max(1.);
         Self {
             width: ((available - gap * (columns - 1.)) / columns).floor(),
             gap,
@@ -195,6 +213,96 @@ struct Card<'a> {
     fetched: Option<f32>,
     /// How much of the video was watched, when it was left unfinished.
     watched: Option<f32>,
+    /// The Shorts listed with this one, which its page steps through.
+    reel: Option<Rc<[Video]>>,
+}
+
+/// The video being watched, where a tile of a Short hands over the list it stands in.
+struct Stepped(Entity<Watching>);
+
+impl gpui::Global for Stepped {}
+
+/// The page a video opens on: the upright one for a Short.
+fn page(video: &Video) -> Destination {
+    match video.short {
+        true => Destination::Short(video.id.clone().into()),
+        false => Destination::Watch(video.id.clone().into()),
+    }
+}
+
+/// The videos of a list that are not Shorts, and its Shorts.
+fn sorted(videos: &[Video]) -> (Vec<&Video>, Rc<[Video]>) {
+    let (shorts, long): (Vec<&Video>, Vec<&Video>) = videos.iter().partition(|video| video.short);
+    (long, shorts.into_iter().cloned().collect())
+}
+
+/// The upright tile of one Short: its picture, then its title and how it has done.
+fn short_tile(
+    scope: &str,
+    video: &Video,
+    place: (usize, usize),
+    reel: &Rc<[Video]>,
+    tiles: Tiles,
+    cx: &App,
+) -> AnyElement {
+    let picture = Artwork::new(Some(video.upright()))
+        .size(tiles.width)
+        .wide((tiles.width * 16. / 9.).floor())
+        .corner_radius(cx.theme().radius);
+    tile(
+        SharedString::from(format!("{scope}-short-{}", video.id)),
+        Card {
+            picture,
+            badge: None,
+            title: &video.title,
+            lines: [
+                video.views.clone().unwrap_or_default().into(),
+                SharedString::default(),
+            ],
+            corner: None,
+            asked: Some(video.clone()),
+            fetched: None,
+            watched: None,
+            reel: Some(reel.clone()),
+        },
+        place,
+        page(video),
+        tiles,
+        cx,
+    )
+}
+
+/// The Shorts of a list under a heading of their own, a row of them unless `all` are asked for.
+fn shorts_shelf(
+    scope: &str,
+    shorts: &Rc<[Video]>,
+    width: Pixels,
+    all: bool,
+    cx: &App,
+) -> Option<AnyElement> {
+    if shorts.is_empty() {
+        return None;
+    }
+    let tiles = Tiles::upright(width, cx);
+    let shown = match all {
+        true => shorts.len(),
+        false => shorts.len().min(tiles.columns),
+    };
+    let cards = shorts
+        .iter()
+        .take(shown)
+        .enumerate()
+        .map(|(place, short)| short_tile(scope, short, (place, shown), shorts, tiles, cx))
+        .collect();
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .when(!all, |this| this.child(heading(t!("video-shorts"), cx)))
+            .child(tiles.grid(cards))
+            .into_any_element(),
+    )
 }
 
 /// The one menu a right click on any video opens, drawn once at the root of the workspace.
@@ -238,7 +346,7 @@ impl Render for VideoMenu {
         };
         let saved = self.kept.read(cx).saved(&video.id);
         let fetched = state::VideoDownloads::progress(&video.id, cx);
-        let watched = Destination::Watch(video.id.clone().into());
+        let watched = page(&video);
         let address = format!("https://www.youtube.com/watch?v={}", video.id);
         let (kept, later) = (self.kept.clone(), video.clone());
         let fetch = video.clone();
@@ -343,6 +451,7 @@ fn tile(
         asked,
         fetched,
         watched,
+        reel,
     } = card;
     let theme = cx.theme();
     let title = SharedString::from(title.to_owned());
@@ -363,7 +472,13 @@ fn tile(
         .w(tiles.width)
         .gap_2()
         .cursor_pointer()
-        .on_click(move |_, _, cx| navigate(destination.clone(), cx))
+        .on_click(move |_, _, cx| {
+            if let Some((reel, stepped)) = reel.as_ref().zip(cx.try_global::<Stepped>()) {
+                let (reel, watching) = (reel.to_vec(), stepped.0.clone());
+                watching.update(cx, |watching, _| watching.set_reel(reel));
+            }
+            navigate(destination.clone(), cx)
+        })
         .when_some(asked, |this, video| {
             this.on_mouse_down(MouseButton::Right, VideoMenu::opener(video))
         })
@@ -466,9 +581,10 @@ fn video_tile(
             asked: Some(video.clone()),
             fetched: state::VideoDownloads::progress(&video.id, cx),
             watched: kept.read(cx).progress(&video.id),
+            reel: None,
         },
         place,
-        Destination::Watch(video.id.clone().into()),
+        page(video),
         tiles,
         cx,
     )
@@ -597,7 +713,7 @@ fn video_row(
     let channel = video.channel.as_ref().map(|channel| channel.name.clone());
     let numbers = caption([video.views.clone(), video.published.clone()]);
     let spoken = caption([channel.clone(), Some(numbers.to_string())]);
-    let destination = Destination::Watch(video.id.clone().into());
+    let destination = page(video);
     let dim = |line: SharedString| {
         div()
             .truncate()
@@ -726,6 +842,7 @@ fn playlist_tile(
             asked: None,
             fetched: None,
             watched: None,
+            reel: None,
         },
         place,
         Destination::Videos(playlist.id.clone().into()),
@@ -962,13 +1079,15 @@ impl VideoSearchView {
             .map(|(place, channel)| channel_chip(channel, (place, count), &self.subscriptions, cx));
         let rows = self.width.min(ROWS_MAX);
         let picture = (rows * ROW_SHARE).min(ROW_PICTURE).floor();
-        let videos: Vec<&Video> = found
+        let (shorts, videos): (Vec<&Video>, Vec<&Video>) = found
             .iter()
             .filter_map(|found| match found {
                 Found::Video(video) => Some(video),
                 _ => None,
             })
-            .collect();
+            .partition(|video| video.short);
+        let reel: Rc<[Video]> = shorts.into_iter().cloned().collect();
+        let shorts = shorts_shelf("search", &reel, self.width, false, cx);
         let listed = videos.len();
         let videos = videos.into_iter().enumerate().map(|(place, video)| {
             video_row(
@@ -1001,6 +1120,7 @@ impl VideoSearchView {
             .when(count > 0, |this| {
                 this.child(div().flex().flex_wrap().gap(tiles.gap).children(chips))
             })
+            .children(shorts)
             .child(div().flex().flex_col().w(rows).gap_1().children(videos))
             .when(held > 0, |this| this.child(tiles.grid(playlists)))
             .into_any_element()
@@ -1171,6 +1291,8 @@ pub(crate) struct WatchView {
     entered: bool,
     /// When the pointer last moved over the full screen picture, which keeps its controls up.
     stirred: Option<Instant>,
+    /// When the wheel last stepped to another Short.
+    stepped: Option<Instant>,
     /// Which page of the side panel shows: the transcript, the chapters or the AI chat.
     panel: Panel,
     /// The field a question to the AI is written in.
@@ -1191,6 +1313,7 @@ impl WatchView {
         let id = cx.entity_id();
         cx.observe(&watching, |_, _, cx| cx.notify()).detach();
         cx.observe(&subscriptions, |_, _, cx| cx.notify()).detach();
+        cx.set_global(Stepped(watching.clone()));
         if let Some(assistant) = state::Assistant::entity(cx) {
             cx.observe(&assistant, |_, _, cx| cx.notify()).detach();
         }
@@ -1258,6 +1381,7 @@ impl WatchView {
             theater: false,
             entered: false,
             stirred: None,
+            stepped: None,
             panel: Panel::Transcript,
             query,
             chat_scroll: ScrollHandle::new(),
@@ -1428,7 +1552,9 @@ impl WatchView {
                     return;
                 }
                 toggled.update(cx, |watching, cx| match event.click_count() {
-                    2 => watching.set_full(!full, cx),
+                    // A Short keeps to its page.
+                    2 if !watching.short() => watching.set_full(!full, cx),
+                    2 => {}
                     _ => watching.toggle(cx),
                 })
             }))
@@ -2550,6 +2676,344 @@ impl WatchView {
         )
     }
 
+    /// Steps to the Short `by` places on in the list this one was opened from.
+    fn step(&mut self, by: isize, cx: &mut Context<Self>) {
+        let Some(id) = self
+            .watching
+            .read(cx)
+            .beside(by)
+            .map(|short| short.id.clone())
+        else {
+            return;
+        };
+        self.pending = None;
+        router::replace(Destination::Short(id.into()), cx);
+    }
+
+    /// The page of a Short: its upright picture playing over and over, with its title on it,
+    /// and beside it only what a Short is for: the next one, a like, the comments, the sound.
+    fn reel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let theme = *cx.theme();
+        let pad = theme.metrics.inset;
+        let gap = theme.metrics.pad;
+        let rail = theme.metrics.control;
+        let viewport = window.viewport_size();
+        let whole = cells::content_width(window, pad * 2., cx);
+        let tall = (viewport.height - theme.metrics.title_bar - Chrome::bottom(cx) - pad * 2.)
+            .max(SCRIPT_HEIGHT);
+        let beside = self.discussed && Chrome::room(window, cx).fits(Room::Wide);
+        let taken = match beside {
+            true => rail + gap + NEXT_WIDTH + gap,
+            false => rail + gap,
+        };
+        // The bar under the picture takes its share of the height.
+        let foot = theme.metrics.control;
+        let width = ((tall - foot) * 9. / 16.)
+            .min(SHORT_MAX)
+            .min(whole - taken)
+            .max(SHORT_MIN)
+            .floor();
+        let stage = size(width, (width * 16. / 9.).floor());
+        if let Some(view) = self.watching.read(cx).view() {
+            view.update(cx, |view, cx| view.round(theme.radius, cx));
+        }
+
+        let watching = self.watching.read(cx);
+        let player = watching.player();
+        let position = player.and_then(|player| player.position()).unwrap_or(0.);
+        let total = player.and_then(|player| player.duration()).unwrap_or(0.);
+        let fraction = match self.pending {
+            Some(pending) => pending,
+            None if total > 0. => (position / total) as f32,
+            None => 0.,
+        };
+        let listed = watching.beside(0).cloned();
+        let watch = watching.watch();
+        let title = watch
+            .map(|watch| watch.title.clone())
+            .or_else(|| listed.as_ref().map(|short| short.title.clone()))
+            .map(SharedString::from);
+        let channel = watch
+            .and_then(|watch| watch.channel.as_ref())
+            .map(|channel| {
+                (
+                    SharedString::from(channel.name.clone()),
+                    Destination::Channel(channel.id.clone().into()),
+                )
+            });
+        let numbers = caption([
+            watch.and_then(|watch| watch.views.clone()),
+            watch
+                .and_then(|watch| watch.likes.clone())
+                .map(|likes| t!("video-likes", likes = likes.as_str()).to_string()),
+        ]);
+        let address = watching
+            .id()
+            .map(|id| format!("https://www.youtube.com/shorts/{id}"));
+        let (liked, muted) = (watching.liked(), watching.muted());
+        let (before, after) = (watching.beside(-1).is_some(), watching.beside(1).is_some());
+        let failure = watching.error().map(str::to_owned);
+        let (like, mute, retried) = (
+            self.watching.clone(),
+            self.watching.clone(),
+            self.watching.clone(),
+        );
+        let discussed = self.discussed;
+
+        let picture = div()
+            .id("video-short")
+            .relative()
+            .w(stage.width)
+            .h(stage.height)
+            .flex_none()
+            // A turn of the wheel goes to the next Short or back to the last.
+            .on_scroll_wheel(
+                cx.listener(|this, event: &gpui::ScrollWheelEvent, window, cx| {
+                    cx.stop_propagation();
+                    let turned = event.delta.pixel_delta(window.line_height()).y;
+                    let rested = this
+                        .stepped
+                        .is_none_or(|stepped| stepped.elapsed() >= STEP_REST);
+                    if turned == Pixels::ZERO || !rested {
+                        return;
+                    }
+                    this.stepped = Some(Instant::now());
+                    this.step(if turned < Pixels::ZERO { 1 } else { -1 }, cx);
+                }),
+            )
+            .child(self.stage(stage, cx))
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_4()
+                    .pt_8()
+                    .pb_4()
+                    .rounded_b(theme.radius)
+                    .bg(gpui::linear_gradient(
+                        180.,
+                        gpui::linear_color_stop(gpui::black().opacity(0.), 0.),
+                        gpui::linear_color_stop(gpui::black().opacity(SHORT_SHADE), 1.),
+                    ))
+                    .text_color(gpui::white())
+                    .when_some(channel, |this, (name, opened)| {
+                        this.child(
+                            div()
+                                .id("video-short-channel")
+                                .role(Role::Link)
+                                .aria_label(name.clone())
+                                .flex()
+                                .cursor_pointer()
+                                .text_size(theme.text(Text::Label))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .hover(|this| this.underline())
+                                .on_click(move |_, _, cx| navigate(opened.clone(), cx))
+                                .child(name),
+                        )
+                    })
+                    .when_some(title, |this, title| {
+                        this.child(
+                            div()
+                                .id("video-short-title")
+                                .role(Role::Heading)
+                                .aria_level(1)
+                                .aria_label(title.clone())
+                                .line_clamp(3)
+                                .text_size(theme.text(Text::Body))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(title),
+                        )
+                    })
+                    .when(!numbers.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .truncate()
+                                .text_size(theme.text(Text::Small))
+                                .opacity(CAPTION_SHARE)
+                                .child(numbers),
+                        )
+                    }),
+            );
+        let bar = div().flex().items_center().w(stage.width).h(foot).child(
+            Scrubber::new(&self.seek, fraction)
+                .name(t!("video-position"))
+                .value(clock(Duration::from_secs_f64(position.max(0.))))
+                .colors(
+                    theme.progress_bar,
+                    ui::motion::mix(theme.progress_bar, theme.background, UNPLAYED),
+                    theme.foreground,
+                )
+                .enabled(total > 0.)
+                .on_move(cx.listener(|this, fraction: &f32, _, cx| {
+                    this.pending = Some(*fraction);
+                    cx.notify();
+                }))
+                .on_release(cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                    let Some(fraction) = this.pending.take() else {
+                        return;
+                    };
+                    this.watching.update(cx, |watching, cx| {
+                        watching.seek_to(f64::from(fraction) * total, cx);
+                    });
+                })),
+        );
+        let rail = div()
+            .id("video-short-actions")
+            .role(Role::Toolbar)
+            .aria_label(t!("video-short-actions"))
+            .flex()
+            .flex_col()
+            .flex_none()
+            .justify_between()
+            .h(stage.height)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        Button::new("video-short-previous")
+                            .icon("icons/chevron-up.svg")
+                            .secondary()
+                            .disabled(!before)
+                            .tooltip_trailing("video-short-previous")
+                            .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
+                    )
+                    .child(
+                        Button::new("video-short-next")
+                            .icon("icons/chevron-down.svg")
+                            .secondary()
+                            .disabled(!after)
+                            .tooltip_trailing("video-short-next")
+                            .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        Button::new("video-like")
+                            .icon("icons/thumbs-up.svg")
+                            .map(|button| match liked {
+                                true => button.primary(),
+                                false => button.secondary(),
+                            })
+                            .tooltip_trailing(match liked {
+                                true => "video-like-remove",
+                                false => "video-like",
+                            })
+                            .on_click(move |_, _, cx| {
+                                like.update(cx, |watching, cx| watching.toggle_like(cx));
+                            }),
+                    )
+                    .child(
+                        Button::new("video-discussion")
+                            .icon("icons/message-square.svg")
+                            .secondary()
+                            .selected(discussed)
+                            .tooltip_trailing(match discussed {
+                                true => "video-discussion-hide",
+                                false => "video-discussion-show",
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.discussed = !this.discussed;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("video-mute")
+                            .icon(match muted {
+                                true => "icons/volume-x.svg",
+                                false => "icons/volume-2.svg",
+                            })
+                            .secondary()
+                            .tooltip_trailing(match muted {
+                                true => "video-unmute",
+                                false => "video-mute",
+                            })
+                            .on_click(move |_, _, cx| {
+                                mute.update(cx, |watching, cx| watching.toggle_muted(cx));
+                            }),
+                    )
+                    .when_some(address, |this, address| {
+                        this.child(
+                            Button::new("video-short-copy")
+                                .icon("icons/link.svg")
+                                .secondary()
+                                .tooltip_trailing("video-menu-copy")
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        address.clone(),
+                                    ));
+                                    Toasts::show(Outcome::Done, "toast-link-copied", cx);
+                                }),
+                        )
+                    }),
+            );
+
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .children(self.frames(cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .items_center()
+                    .justify_center()
+                    .gap(gap)
+                    .p(pad)
+                    .pb(pad + Chrome::bottom(cx))
+                    .map(|this| match failure {
+                        Some(reason) => this.child(
+                            div()
+                                .id("video-watch-failure")
+                                .role(Role::Alert)
+                                .w(stage.width)
+                                .child(trouble::lost(
+                                    "video-watch-lost",
+                                    t!("trouble-not-loaded"),
+                                    Some(&reason),
+                                    move |_, _, cx| {
+                                        retried.update(cx, |watching, cx| watching.refresh(cx));
+                                    },
+                                    cx,
+                                )),
+                        ),
+                        None => this.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_none()
+                                .child(picture)
+                                .child(bar),
+                        ),
+                    })
+                    .child(div().flex().flex_col().h(stage.height + foot).child(rail))
+                    .when(beside, |this| {
+                        this.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_none()
+                                .w(NEXT_WIDTH)
+                                .h(stage.height + foot)
+                                .children(self.discussion(cx)),
+                        )
+                    }),
+            )
+            .into_any_element()
+    }
+
     /// The panels asked for, the transcript first: side by side they share their column's height.
     fn panels(&self, cx: &Context<Self>) -> Vec<AnyElement> {
         self.transcript(cx)
@@ -2621,7 +3085,17 @@ impl WatchView {
     /// video is paused.
     fn screen(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let theme = *cx.theme();
-        let room = window.viewport_size();
+        let whole = window.viewport_size();
+        let gap = theme.metrics.pad;
+        // A panel asked for keeps its place beside the picture, which gives it the room.
+        let panels = match Chrome::room(window, cx).fits(Room::Wide) {
+            true => self.panels(cx),
+            false => Vec::new(),
+        };
+        let room = match panels.is_empty() {
+            true => whole,
+            false => size(whole.width - NEXT_WIDTH - gap * 2., whole.height),
+        };
         let lit = self.strip_lit(cx);
         let title = self
             .watching
@@ -2635,8 +3109,8 @@ impl WatchView {
                 div()
                     .id("video-screen")
                     .relative()
-                    .w(room.width)
-                    .h(room.height)
+                    .w(whole.width)
+                    .h(whole.height)
                     .bg(gpui::black())
                     .occlude()
                     .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
@@ -2669,7 +3143,7 @@ impl WatchView {
                                 .opacity(lit)
                                 .top(-SLIDE * (1. - lit))
                                 .left_0()
-                                .right_0()
+                                .w(room.width)
                                 .flex()
                                 .items_center()
                                 .gap_3()
@@ -2711,7 +3185,7 @@ impl WatchView {
                                 .opacity(lit)
                                 .bottom(FLOAT_FOOT - SLIDE * (1. - lit))
                                 .left_0()
-                                .right_0()
+                                .w(room.width)
                                 .flex()
                                 .justify_center()
                                 .child(
@@ -2729,6 +3203,21 @@ impl WatchView {
                                         .backdrop_blur(FLOAT_BLUR)
                                         .child(self.controls(cx)),
                                 ),
+                        )
+                    })
+                    .when(!panels.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top(gap)
+                                .right(gap)
+                                .bottom(gap)
+                                .w(NEXT_WIDTH)
+                                .flex()
+                                .flex_col()
+                                .gap(gap)
+                                .text_color(theme.foreground)
+                                .children(panels),
                         )
                     }),
             ),
@@ -3447,6 +3936,9 @@ impl Render for WatchView {
             self.turns += 1;
             self.turned = Instant::now();
         }
+        if self.watching.read(cx).short() && !full {
+            return self.reel(window, cx);
+        }
         if self.zoomed(cx) < 1. {
             window.request_animation_frame();
         }
@@ -3570,7 +4062,7 @@ impl Render for WatchView {
                                             .w(self.width)
                                             .gap_6()
                                             .children(within)
-                                            .when(!beside, |this| {
+                                            .when(!beside && !full, |this| {
                                                 this.children(self.panels(cx).into_iter().map(
                                                     |panel| {
                                                         div()
@@ -3613,7 +4105,7 @@ impl Render for WatchView {
                                                 |this| this.child(self.comments(true, cx)),
                                             ),
                                     )
-                                    .when(beside, |page| {
+                                    .when(beside && !full, |page| {
                                         page.child(
                                             div()
                                                 .flex()
@@ -3628,6 +4120,7 @@ impl Render for WatchView {
                             ),
                     ),
             )
+            .into_any_element()
     }
 }
 
@@ -3696,6 +4189,7 @@ impl VideoListView {
                 let (tab, list) = (*tab, self.list.clone());
                 let key = match tab {
                     Tab::Videos => "video-channel-videos",
+                    Tab::Shorts => "video-channel-shorts",
                     Tab::Playlists => "video-channel-playlists",
                     Tab::Posts => "video-channel-posts",
                     Tab::Releases => "video-channel-releases",
@@ -3844,8 +4338,13 @@ impl Render for VideoListView {
                     })
                     .collect()
             }
-            Tab::Posts => Vec::new(),
+            Tab::Shorts | Tab::Posts => Vec::new(),
         };
+        let reel: Rc<[Video]> = match open {
+            Tab::Shorts => list.shorts().into(),
+            Tab::Videos | Tab::Playlists | Tab::Posts | Tab::Releases => Rc::default(),
+        };
+        let shorts = shorts_shelf("list", &reel, self.width, true, cx);
         let posts: Vec<AnyElement> = match open {
             Tab::Posts => {
                 let posts = list.posts();
@@ -3855,9 +4354,9 @@ impl Render for VideoListView {
                     .map(|(place, post)| self.written(post, (place, posts.len()), cx))
                     .collect()
             }
-            Tab::Videos | Tab::Playlists | Tab::Releases => Vec::new(),
+            Tab::Videos | Tab::Shorts | Tab::Playlists | Tab::Releases => Vec::new(),
         };
-        let empty = cards.is_empty() && posts.is_empty() && !loading;
+        let empty = cards.is_empty() && posts.is_empty() && shorts.is_none() && !loading;
         let parts = self.parts(cx);
         let next = self.list.clone();
         let banner = list
@@ -3923,12 +4422,13 @@ impl Render for VideoListView {
                             })
                             .when_some(parts, |this, parts| this.child(div().flex().child(parts)))
                             .when(!cards.is_empty(), |this| this.child(tiles.grid(cards)))
+                            .children(shorts)
                             .when(!posts.is_empty(), |this| {
                                 this.child(div().flex().flex_col().gap_4().children(posts))
                             })
                             .when(empty, |this| {
                                 let label = match open {
-                                    Tab::Videos => t!("video-list-empty"),
+                                    Tab::Videos | Tab::Shorts => t!("video-list-empty"),
                                     Tab::Playlists | Tab::Releases | Tab::Posts => {
                                         t!("video-channel-empty")
                                     }
@@ -4065,9 +4565,10 @@ impl VideoFeedView {
         if self.feed != Feed::Subscriptions || videos.is_empty() {
             return Vec::new();
         }
+        let (videos, reel) = sorted(videos);
         let total = videos.len();
         let cards = videos
-            .iter()
+            .into_iter()
             .enumerate()
             .map(|(place, video)| {
                 video_tile(
@@ -4080,10 +4581,10 @@ impl VideoFeedView {
                 )
             })
             .collect();
-        vec![
-            self.titled(t!("video-home-recommended"), None, cx),
-            tiles.grid(cards).into_any_element(),
-        ]
+        std::iter::once(self.titled(t!("video-home-recommended"), None, cx))
+            .chain(shorts_shelf("recommended", &reel, self.width, false, cx))
+            .chain(std::iter::once(tiles.grid(cards).into_any_element()))
+            .collect()
     }
 
     /// The first row of the videos saved for later, on the home page, with a way to the rest.
@@ -4159,15 +4660,18 @@ impl Render for VideoFeedView {
             Feed::Discover => kept.is_finding(),
             _ => home && kept.is_loading(),
         };
-        let total = videos.len();
+        let (videos, reel) = sorted(videos);
+        let shorts = shorts_shelf(kind, &reel, self.width, false, cx);
+        let total = videos.len() + reel.len();
+        let listed = videos.len();
         let cards: Vec<AnyElement> = videos
-            .iter()
+            .into_iter()
             .enumerate()
             .map(|(place, video)| {
-                video_tile(kind, video, (place, total), tiles, &self.subscriptions, cx)
+                video_tile(kind, video, (place, listed), tiles, &self.subscriptions, cx)
             })
             .collect();
-        let empty = cards.is_empty() && !loading && (!home || kept.recommended().is_empty());
+        let empty = total == 0 && !loading && (!home || kept.recommended().is_empty());
         if self.feed == Feed::Discover && !loading && (1..FOUND_MOST).contains(&total) {
             // Near the foot of the page more are looked for, next to the ones found.
             let scroll = self.scrollbar.read(cx).scroll().clone();
@@ -4220,6 +4724,7 @@ impl Render for VideoFeedView {
                             .children(self.recommended(tiles, cx))
                             .child(self.titled(title, trailing, cx))
                             .child(tiles.grid(cards))
+                            .children(shorts)
                             .when(empty, |this| {
                                 this.child(
                                     div()

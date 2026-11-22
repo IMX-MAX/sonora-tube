@@ -244,6 +244,17 @@ impl Player {
         }
     }
 
+    /// Starts the video over each time it ends, as a Short does, or lets it end.
+    pub fn set_looping(&self, looping: bool) {
+        let value = match looping {
+            true => "inf",
+            false => "no",
+        };
+        if let Err(error) = self.core.set("loop-file", value) {
+            log::warn!("video: cannot change looping: {error:#}");
+        }
+    }
+
     /// The volume from 0 to 100.
     pub fn set_volume(&self, volume: f64) {
         if let Err(error) = self

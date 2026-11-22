@@ -464,7 +464,13 @@ impl Powerbar {
     /// Opens what a row stands for, or does it.
     fn enter(&self, row: &Row, cx: &mut App) {
         match row {
-            Row::Video(video) => navigate(Destination::Watch(video.id.clone().into()), cx),
+            Row::Video(video) => navigate(
+                match video.short {
+                    true => Destination::Short(video.id.clone().into()),
+                    false => Destination::Watch(video.id.clone().into()),
+                },
+                cx,
+            ),
             Row::Channel(channel) => navigate(Destination::Channel(channel.id.clone().into()), cx),
             Row::Playlist(list) => navigate(Destination::Videos(list.id.clone().into()), cx),
             Row::Page(place) => match PAGES[*place].2.clone() {
