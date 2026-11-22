@@ -816,7 +816,13 @@ impl Watching {
 
     /// Starts `id` playing and fetches its page. The music stops, since both would sound at once.
     pub fn open(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.show(id, false, cx);
+    }
+
+    /// Opens `id` as a long video, or as a Short when `short`: looping and from its start.
+    fn show(&mut self, id: &str, short: bool, cx: &mut Context<Self>) {
         if self.id.as_deref() == Some(id) {
+            self.set_short(short);
             // Opened again, perhaps under another profile, whose history has yet to see it.
             if let Some(seen) = self.video() {
                 self.subscriptions
@@ -830,7 +836,7 @@ impl Watching {
         self.playback.update(cx, |playback, cx| playback.pause(cx));
         self.id = Some(id.to_owned());
         self.seen = false;
-        self.set_short(false);
+        self.set_short(short);
         self.watch = None;
         self.error = None;
         self.thread = Thread::default();
@@ -894,8 +900,7 @@ impl Watching {
     /// Opens a Short in the upright player, which plays it over and over and steps through
     /// `reel`, the list it was opened from.
     pub fn open_short(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.open(id, cx);
-        self.set_short(true);
+        self.show(id, true, cx);
         if !self.reel.iter().any(|short| short.id == id) {
             self.reel.clear();
         }
@@ -933,7 +938,7 @@ impl Watching {
         };
         let paused = self.player().is_some_and(|player| player.paused());
         let seen = self.seen;
-        self.open(&id, cx);
+        self.show(&id, self.short, cx);
         self.seen = seen;
         self.set_paused(paused, cx);
     }
@@ -1464,7 +1469,11 @@ impl Watching {
         };
         player.set_looping(self.short);
         player.stop();
-        let start = self.subscriptions.read(cx).resume(id).unwrap_or(0.);
+        // A Short is over in a moment and plays round again, so it always starts at its start.
+        let start = match self.short {
+            true => 0.,
+            false => self.subscriptions.read(cx).resume(id).unwrap_or(0.),
+        };
         if self.placing.is_none() {
             self.placing = Some(cx.spawn(async move |this, cx| {
                 loop {
