@@ -67,8 +67,8 @@ jobs:
             libasound2-dev libfontconfig1-dev libfreetype-dev
             libx11-dev libxcb1-dev libxcursor-dev libxi-dev
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
-            libvulkan-dev libdbus-1-dev
-          version: 1
+            libvulkan-dev libdbus-1-dev libmpv-dev
+          version: 2
 
       # rust-toolchain.toml pins the toolchain cargo runs, along with its components.
       - name: rust toolchain
@@ -209,7 +209,7 @@ jobs:
             libasound2-dev libfontconfig1-dev libfreetype-dev \
             libx11-dev libxcb1-dev libxcursor-dev libxi-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libvulkan-dev libdbus-1-dev
+            libvulkan-dev libdbus-1-dev libmpv-dev
 
       # rust-toolchain.toml pins the toolchain cargo runs, and it only comes with the host's
       # standard library, so a cross-compiled target has to be added to it.
