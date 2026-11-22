@@ -104,8 +104,8 @@ const WAKE_HEAD: Pixels = px(56.);
 const WAKE_FOOT: f32 = 0.18;
 const FLOAT_FILL: f32 = 0.55;
 const FLOAT_BLUR: Pixels = px(20.);
-/// A picture darker than `BAR_DARK` takes light controls in full screen and one lighter than
-/// `BAR_LIGHT` dark ones. Between the two the controls stay as they were, so they do not flicker.
+/// A picture darker than `BAR_DARK` takes a light strip of controls in full screen and one
+/// lighter than `BAR_LIGHT` a dark one. Between the two it stays as it was, so it does not flicker.
 /// How wide a picture is for its height.
 const SHAPE: f32 = 16. / 9.;
 const BAR_DARK: f32 = 0.4;
@@ -1234,7 +1234,8 @@ enum Panel {
 
 /// The colours the playback controls are drawn in. On the page they are the theme's. Floating
 /// over the picture in full screen they are whichever of the theme's page and text colours
-/// stands out from it: light controls over a dark picture and dark ones over a light picture.
+/// stands out from it: a light strip with dark marks over a dark picture, and a dark one with
+/// light marks over a light picture.
 #[derive(Clone, Copy)]
 pub(super) struct Ink {
     /// Whether the controls float over the picture, where a button brings its own fills.
