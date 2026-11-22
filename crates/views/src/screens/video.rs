@@ -34,6 +34,8 @@ use crate::shared::transport::{percent, volume_icon};
 use crate::shared::trouble;
 
 const CHANNEL_ICON: &str = "icons/user.svg";
+/// How far the unplayed stretch of the seek bar leans from the played colour to the page behind.
+const UNPLAYED: f32 = 0.62;
 const PLAYLIST_ICON: &str = "icons/list.svg";
 /// The narrowest a video tile gets before the grid drops a column.
 const TILE_MIN: Pixels = px(220.);
@@ -2208,10 +2210,14 @@ impl WatchView {
                     .children(self.preview(total, cx))
                     .child(
                         Scrubber::new(&self.seek, fraction)
-                            .cuts(cuts, theme.background)
+                            .cuts(cuts)
                             .name(t!("video-position"))
                             .value(elapsed)
-                            .colors(theme.progress_bar, theme.muted, theme.foreground)
+                            .colors(
+                                theme.progress_bar,
+                                ui::motion::mix(theme.progress_bar, theme.background, UNPLAYED),
+                                theme.foreground,
+                            )
                             .enabled(seekable)
                             .on_move(cx.listener(|this, fraction: &f32, _, cx| {
                                 this.pending = Some(*fraction);
