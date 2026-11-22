@@ -240,21 +240,53 @@ fn dollars(text: &str) -> String {
             if fence || fenced {
                 return line.to_owned();
             }
-            // Every second stretch between backticks is a code span.
-            line.split('`')
-                .enumerate()
-                .map(|(at, piece)| match at % 2 {
-                    0 => piece
-                        .replace("\\[", "$$")
-                        .replace("\\]", "$$")
-                        .replace("\\(", "$")
-                        .replace("\\)", "$"),
-                    _ => piece.to_owned(),
-                })
-                .collect::<Vec<_>>()
-                .join("`")
+            // A run of backticks opens a code span that the next run as long closes. An
+            // escaped backtick is a plain character, so it opens none.
+            let mut turned = String::with_capacity(line.len());
+            let mut stretch = String::new();
+            let mut open = None;
+            let mut escaped = false;
+            let mut letters = line.chars().peekable();
+            while let Some(letter) = letters.next() {
+                if letter != '`' || (escaped && open.is_none()) {
+                    stretch.push(letter);
+                    escaped = letter == '\\' && !escaped;
+                    continue;
+                }
+                escaped = false;
+                let mut run = 1;
+                while letters.next_if_eq(&'`').is_some() {
+                    run += 1;
+                }
+                let ticks = "`".repeat(run);
+                match open {
+                    Some(opened) if opened != run => stretch.push_str(&ticks),
+                    _ => {
+                        turned.push_str(&spelled(&stretch, open.is_some()));
+                        turned.push_str(&ticks);
+                        stretch.clear();
+                        open = open.is_none().then_some(run);
+                    }
+                }
+            }
+            // A run nothing closes on its line is no code span.
+            turned.push_str(&spelled(&stretch, false));
+            turned
         })
         .collect()
+}
+
+/// A stretch of a line as Markdown reads it: code as written, anything else with its math
+/// fences as dollar signs.
+fn spelled(stretch: &str, code: bool) -> String {
+    match code {
+        true => stretch.to_owned(),
+        false => stretch
+            .replace("\\[", "$$")
+            .replace("\\]", "$$")
+            .replace("\\(", "$")
+            .replace("\\)", "$"),
+    }
 }
 
 /// LaTeX math as the Unicode nearest to it: `x^2` as x², `\alpha` as α, a fraction on one

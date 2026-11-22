@@ -184,6 +184,7 @@ impl Pen {
                         div()
                             .id(self.id("video-ai-table-head"))
                             .role(Role::Row)
+                            .aria_label(row_label(head))
                             .grid()
                             .grid_cols(columns)
                             .bg(theme.table_head)
@@ -195,6 +196,7 @@ impl Pen {
                         div()
                             .id(self.id("video-ai-table-row"))
                             .role(Role::Row)
+                            .aria_label(row_label(row))
                             .grid()
                             .grid_cols(columns)
                             .border_t_1()
@@ -838,4 +840,13 @@ fn unbracket(text: &str) -> String {
 fn copy(text: String, cx: &mut gpui::App) {
     cx.write_to_clipboard(ClipboardItem::new_string(text));
     Toasts::show(Outcome::Done, "toast-ai-copied", cx);
+}
+
+/// What a screen reader says for a row of a table: its cells, one after the other.
+fn row_label(row: &[Rich]) -> SharedString {
+    row.iter()
+        .map(|cell| cell.text.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+        .into()
 }
