@@ -53,7 +53,7 @@ jobs:
           plutil -lint "$APP/Contents/Info.plist"
           jq -n --arg commit "$GITHUB_SHA" \
             '{version: "0.0.0", channel: "nightly", commit: $commit}' \
-            > "$APP/Contents/Resources/sonora-build.json"
+            > "$APP/Contents/Resources/build.json"
 
           # yt-dlp sits beside the executable, where the player looks for it.
           curl -fsSL -o "$APP/Contents/MacOS/yt-dlp" \
