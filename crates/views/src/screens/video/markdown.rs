@@ -292,9 +292,12 @@ fn ticks(text: &str) -> usize {
 }
 
 /// How far into `text` the run of exactly `run` backticks closing a code span starts, when one
-/// does before the paragraph ends.
+/// does before the paragraph, the item of a list or the row of a table ends.
 fn closing(text: &str, run: usize) -> Option<usize> {
-    let end = text.find("\n\n").unwrap_or(text.len());
+    let end = text
+        .match_indices('\n')
+        .find(|(at, _)| starts_block(&text[at + 1..]))
+        .map_or(text.len(), |(at, _)| at);
     let mut at = 0;
     while let Some(found) = text[at..end].find('`') {
         let start = at + found;
@@ -305,6 +308,21 @@ fn closing(text: &str, run: usize) -> Option<usize> {
         at = start + length;
     }
     None
+}
+
+/// Whether the line `text` begins with ends the paragraph before it: an empty line, an item of
+/// a list, a heading, a quote or a row of a table.
+fn starts_block(text: &str) -> bool {
+    let line = text.lines().next().unwrap_or_default().trim_start();
+    let numbered = line
+        .trim_start_matches(|letter: char| letter.is_ascii_digit())
+        .strip_prefix(['.', ')'])
+        .is_some_and(|rest| rest.starts_with(' ') && rest.len() < line.len() - 1);
+    line.is_empty()
+        || numbered
+        || ["- ", "* ", "+ ", "#", ">", "|"]
+            .iter()
+            .any(|mark| line.starts_with(mark))
 }
 
 /// Text outside code with its math fences as dollar signs.
