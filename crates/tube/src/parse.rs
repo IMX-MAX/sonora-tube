@@ -5,6 +5,7 @@
 //! path. The same walk is where the clutter is dropped.
 
 use anyhow::{Context as _, Result};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
 
 use crate::{
@@ -322,20 +323,38 @@ fn attribute<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     None
 }
 
+/// How well a sound track of an HLS stream list suits a listener, higher being better: the one
+/// YouTube marks as the default, then the language the video was recorded in, then anything
+/// that is not a dub. YouTube lists dubs first and often marks no default.
+fn fitness(line: &str) -> u8 {
+    if attribute(line, "DEFAULT") == Some("YES") {
+        return 3;
+    }
+    let tags = attribute(line, "YT-EXT-XTAGS")
+        .and_then(|tags| URL_SAFE_NO_PAD.decode(tags.trim_end_matches('=')).ok())
+        .map(|tags| String::from_utf8_lossy(&tags).into_owned())
+        .unwrap_or_default();
+    match (tags.contains("original"), tags.contains("dubbed")) {
+        (true, _) => 2,
+        (false, false) => 1,
+        (false, true) => 0,
+    }
+}
+
 /// The qualities an HLS stream list offers, best first and one per height: the H.264 picture
 /// where there is one, since every machine decodes it in hardware, and no HDR ones, which
 /// would need tone mapping.
 pub(crate) fn qualities(listed: &str) -> Vec<Quality> {
-    let mut sounds: Vec<(&str, &str, bool)> = Vec::new();
+    let mut sounds: Vec<(&str, &str, u8)> = Vec::new();
     let mut found: Vec<(Quality, bool)> = Vec::new();
     let mut lines = listed.lines();
     while let Some(line) = lines.next() {
         if line.starts_with("#EXT-X-MEDIA:") {
-            if let (Some(group), Some(address)) =
-                (attribute(line, "GROUP-ID"), attribute(line, "URI"))
+            if attribute(line, "TYPE") == Some("AUDIO")
+                && let (Some(group), Some(address)) =
+                    (attribute(line, "GROUP-ID"), attribute(line, "URI"))
             {
-                let chosen = attribute(line, "DEFAULT") == Some("YES");
-                sounds.push((group, address, chosen));
+                sounds.push((group, address, fitness(line)));
             }
             continue;
         }
@@ -353,11 +372,12 @@ pub(crate) fn qualities(listed: &str) -> Vec<Quality> {
             continue;
         };
         let group = attribute(line, "AUDIO");
-        let in_group = |sound: &&(&str, &str, bool)| Some(sound.0) == group;
+        // The first of the best fitting ones, since `max_by_key` would take the last.
         let Some(sound) = sounds
             .iter()
-            .find(|sound| in_group(sound) && sound.2)
-            .or_else(|| sounds.iter().find(in_group))
+            .filter(|sound| Some(sound.0) == group)
+            .rev()
+            .max_by_key(|sound| sound.2)
         else {
             continue;
         };
