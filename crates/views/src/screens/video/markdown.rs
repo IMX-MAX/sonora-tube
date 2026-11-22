@@ -229,64 +229,90 @@ pub(super) fn cells(head: &[Rich], rows: &[Vec<Rich>]) -> String {
 /// `text` with the `\( \)` and `\[ \]` some models fence math in turned into the dollar signs
 /// Markdown reads, leaving code as it was written.
 fn dollars(text: &str) -> String {
+    let mut turned = String::with_capacity(text.len());
     let mut fenced = false;
-    text.split_inclusive('\n')
-        .map(|line| {
-            let fence =
-                line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~");
-            if fence {
-                fenced = !fenced;
-            }
-            if fence || fenced {
-                return line.to_owned();
-            }
-            // A run of backticks opens a code span that the next run as long closes. An
-            // escaped backtick is a plain character, so it opens none.
-            let mut turned = String::with_capacity(line.len());
-            let mut stretch = String::new();
-            let mut open = None;
-            let mut escaped = false;
-            let mut letters = line.chars().peekable();
-            while let Some(letter) = letters.next() {
-                if letter != '`' || (escaped && open.is_none()) {
-                    stretch.push(letter);
-                    escaped = letter == '\\' && !escaped;
-                    continue;
-                }
-                escaped = false;
-                let mut run = 1;
-                while letters.next_if_eq(&'`').is_some() {
-                    run += 1;
-                }
-                let ticks = "`".repeat(run);
-                match open {
-                    Some(opened) if opened != run => stretch.push_str(&ticks),
-                    _ => {
-                        turned.push_str(&spelled(&stretch, open.is_some()));
-                        turned.push_str(&ticks);
-                        stretch.clear();
-                        open = open.is_none().then_some(run);
-                    }
-                }
-            }
-            // A run nothing closes on its line is no code span.
-            turned.push_str(&spelled(&stretch, false));
-            turned
-        })
-        .collect()
+    // Fenced code is kept by the line, and what lies between two fences is read as one piece
+    // since a code span may run over the end of a line.
+    let mut prose = String::new();
+    for line in text.split_inclusive('\n') {
+        let fence = line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~");
+        if !fence && !fenced {
+            prose.push_str(line);
+            continue;
+        }
+        turned.push_str(&spans(&std::mem::take(&mut prose)));
+        turned.push_str(line);
+        if fence {
+            fenced = !fenced;
+        }
+    }
+    turned.push_str(&spans(&prose));
+    turned
 }
 
-/// A stretch of a line as Markdown reads it: code as written, anything else with its math
-/// fences as dollar signs.
-fn spelled(stretch: &str, code: bool) -> String {
-    match code {
-        true => stretch.to_owned(),
-        false => stretch
-            .replace("\\[", "$$")
-            .replace("\\]", "$$")
-            .replace("\\(", "$")
-            .replace("\\)", "$"),
+/// Prose with its math fences as dollar signs outside its code spans. A run of backticks opens
+/// a span only when a run as long closes it in the same paragraph, and an escaped backtick
+/// opens none.
+fn spans(prose: &str) -> String {
+    let mut turned = String::with_capacity(prose.len());
+    let mut plain = 0;
+    let mut at = 0;
+    while let Some(found) = prose[at..].find('`') {
+        let start = at + found;
+        let run = ticks(&prose[start..]);
+        let escaped = prose[..start]
+            .chars()
+            .rev()
+            .take_while(|c| *c == '\\')
+            .count()
+            % 2
+            == 1;
+        let body = match escaped {
+            true => start + 1,
+            false => start + run,
+        };
+        let close = (!escaped).then(|| closing(&prose[body..], run)).flatten();
+        match close {
+            Some(length) => {
+                turned.push_str(&spelled(&prose[plain..start]));
+                turned.push_str(&prose[start..body + length + run]);
+                at = body + length + run;
+                plain = at;
+            }
+            None => at = body,
+        }
     }
+    turned.push_str(&spelled(&prose[plain..]));
+    turned
+}
+
+/// How many backticks `text` starts with.
+fn ticks(text: &str) -> usize {
+    text.bytes().take_while(|byte| *byte == b'`').count()
+}
+
+/// How far into `text` the run of exactly `run` backticks closing a code span starts, when one
+/// does before the paragraph ends.
+fn closing(text: &str, run: usize) -> Option<usize> {
+    let end = text.find("\n\n").unwrap_or(text.len());
+    let mut at = 0;
+    while let Some(found) = text[at..end].find('`') {
+        let start = at + found;
+        let length = ticks(&text[start..]);
+        if length == run {
+            return Some(start);
+        }
+        at = start + length;
+    }
+    None
+}
+
+/// Text outside code with its math fences as dollar signs.
+fn spelled(text: &str) -> String {
+    text.replace("\\[", "$$")
+        .replace("\\]", "$$")
+        .replace("\\(", "$")
+        .replace("\\)", "$")
 }
 
 /// LaTeX math as the Unicode nearest to it: `x^2` as x², `\alpha` as α, a fraction on one
