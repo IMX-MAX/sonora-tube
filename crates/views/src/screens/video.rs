@@ -262,7 +262,7 @@ impl Render for VideoMenu {
                     kept.update(cx, |kept, cx| kept.toggle_later(&later, cx));
                 }),
             )
-            .when_some(video.channel.clone(), |menu, channel| {
+            .when_some(video.channel, |menu, channel| {
                 let opened = Destination::Channel(channel.id.into());
                 menu.item(
                     MenuItem::new("video-menu-channel", t!("video-menu-channel"))

@@ -133,21 +133,35 @@ const PAGES: [(&str, &str, Option<Destination>); 6] = [
 /// One line of the quick search.
 #[derive(Clone)]
 enum Row {
-    /// Something YouTube found, or a video watched lately.
-    Found(Found),
+    /// A video YouTube found, or one watched lately.
+    Video(Box<tube::Video>),
+    /// A channel YouTube found.
+    Channel(Box<tube::Channel>),
+    /// A playlist YouTube found.
+    Playlist(Box<tube::Playlist>),
     /// A page of the app, by its place in [`PAGES`].
     Page(usize),
     /// Something done to the playing video.
     Deed(Deed),
 }
 
+impl From<Found> for Row {
+    fn from(found: Found) -> Self {
+        match found {
+            Found::Video(video) => Self::Video(Box::new(video)),
+            Found::Channel(channel) => Self::Channel(Box::new(channel)),
+            Found::Playlist(list) => Self::Playlist(Box::new(list)),
+        }
+    }
+}
+
 impl Row {
     /// What tells the row from every other, which its entrance and the cursor follow.
     fn key(&self) -> SharedString {
         match self {
-            Self::Found(Found::Video(video)) => format!("video-{}", video.id).into(),
-            Self::Found(Found::Channel(channel)) => format!("channel-{}", channel.id).into(),
-            Self::Found(Found::Playlist(list)) => format!("playlist-{}", list.id).into(),
+            Self::Video(video) => format!("video-{}", video.id).into(),
+            Self::Channel(channel) => format!("channel-{}", channel.id).into(),
+            Self::Playlist(list) => format!("playlist-{}", list.id).into(),
             Self::Page(place) => format!("page-{place}").into(),
             Self::Deed(deed) => format!("deed-{}", deed.id()).into(),
         }
@@ -360,7 +374,7 @@ impl Powerbar {
                     .watched()
                     .iter()
                     .take(RECENT)
-                    .map(|video| Row::Found(Found::Video(video.clone()))),
+                    .map(|video| Row::Video(Box::new(video.clone()))),
             ),
             false => {
                 // Typing narrows the app's own rows to a few, so what YouTube found comes first.
@@ -369,7 +383,7 @@ impl Powerbar {
                     .iter()
                     .take(MAX_HITS)
                     .cloned()
-                    .map(Row::Found)
+                    .map(Row::from)
                     .collect();
                 rows.append(&mut all);
             }
@@ -450,15 +464,9 @@ impl Powerbar {
     /// Opens what a row stands for, or does it.
     fn enter(&self, row: &Row, cx: &mut App) {
         match row {
-            Row::Found(Found::Video(video)) => {
-                navigate(Destination::Watch(video.id.clone().into()), cx)
-            }
-            Row::Found(Found::Channel(channel)) => {
-                navigate(Destination::Channel(channel.id.clone().into()), cx)
-            }
-            Row::Found(Found::Playlist(list)) => {
-                navigate(Destination::Videos(list.id.clone().into()), cx)
-            }
+            Row::Video(video) => navigate(Destination::Watch(video.id.clone().into()), cx),
+            Row::Channel(channel) => navigate(Destination::Channel(channel.id.clone().into()), cx),
+            Row::Playlist(list) => navigate(Destination::Videos(list.id.clone().into()), cx),
             Row::Page(place) => match PAGES[*place].2.clone() {
                 Some(destination) => navigate(destination, cx),
                 None => open_settings(cx),
@@ -477,40 +485,34 @@ impl Powerbar {
             SharedString::from(parts.into_iter().flatten().collect::<Vec<_>>().join(" · "))
         };
         match row {
-            Row::Found(Found::Video(video)) => {
-                Card::new(("powerbar-video", place), video.title.clone())
-                    .cover(Some(video.thumbnail()))
-                    .fallback("icons/play-filled.svg")
-                    .meta(Self::under(
-                        line([
-                            video.channel.as_ref().map(|channel| channel.name.clone()),
-                            video.length.clone(),
-                        ]),
-                        cx,
-                    ))
-            }
-            Row::Found(Found::Channel(channel)) => {
-                Card::new(("powerbar-channel", place), channel.name.clone())
-                    .cover(channel.avatar.clone())
-                    .fallback("icons/user.svg")
-                    .circle()
-                    .meta(Self::under(
-                        line([
-                            Some(t!("video-channel").to_string()),
-                            channel.subscribers.clone(),
-                        ]),
-                        cx,
-                    ))
-            }
-            Row::Found(Found::Playlist(list)) => {
-                Card::new(("powerbar-playlist", place), list.title.clone())
-                    .cover(list.thumbnail.clone())
-                    .fallback("icons/list.svg")
-                    .meta(Self::under(
-                        line([Some(t!("video-playlist").to_string()), list.detail.clone()]),
-                        cx,
-                    ))
-            }
+            Row::Video(video) => Card::new(("powerbar-video", place), video.title.clone())
+                .cover(Some(video.thumbnail()))
+                .fallback("icons/play-filled.svg")
+                .meta(Self::under(
+                    line([
+                        video.channel.as_ref().map(|channel| channel.name.clone()),
+                        video.length.clone(),
+                    ]),
+                    cx,
+                )),
+            Row::Channel(channel) => Card::new(("powerbar-channel", place), channel.name.clone())
+                .cover(channel.avatar.clone())
+                .fallback("icons/user.svg")
+                .circle()
+                .meta(Self::under(
+                    line([
+                        Some(t!("video-channel").to_string()),
+                        channel.subscribers.clone(),
+                    ]),
+                    cx,
+                )),
+            Row::Playlist(list) => Card::new(("powerbar-playlist", place), list.title.clone())
+                .cover(list.thumbnail.clone())
+                .fallback("icons/list.svg")
+                .meta(Self::under(
+                    line([Some(t!("video-playlist").to_string()), list.detail.clone()]),
+                    cx,
+                )),
             Row::Page(page) => {
                 let (key, icon, _) = &PAGES[*page];
                 Card::new(("powerbar-page", place), i18n::translate(key))
