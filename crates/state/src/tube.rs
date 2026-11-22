@@ -246,6 +246,8 @@ pub struct Watching {
     chaptering: Option<Task<()>>,
     /// Whether cutting chapters for this video was tried and failed, so it is not retried.
     chapters_failed: bool,
+    /// The key and model the chapters last failed with, so only a change of either tries again.
+    chapters_tried: Option<String>,
     chat: Chat,
 }
 
@@ -290,6 +292,7 @@ impl Watching {
             chapters_ai: false,
             chaptering: None,
             chapters_failed: false,
+            chapters_tried: None,
             chat: Chat::default(),
         }
     }
@@ -505,6 +508,9 @@ impl Watching {
                         this.chapters_failed = true;
                     }
                 }
+                if this.chapters_failed {
+                    this.chapters_tried = tried(cx);
+                }
                 cx.notify();
             })
             .ok();
@@ -513,6 +519,9 @@ impl Watching {
 
     /// Tries the AI chapters again, after a key was saved or auto chapters were turned on.
     pub fn chapter_again(&mut self, cx: &mut Context<Self>) {
+        if self.chapters_failed && self.chapters_tried != tried(cx) {
+            self.chapters_failed = false;
+        }
         self.chapter(cx);
     }
 
@@ -2115,6 +2124,17 @@ impl Account {
 
 /// Writes a file only its owner can read, making its folder first.
 /// Tells the assistant Mistral turned its key down, when `reason` says so.
+/// The key and chapter model in use, told apart without holding the key.
+fn tried(cx: &App) -> Option<String> {
+    let assistant = Assistant::entity(cx)?.read(cx);
+    Some(format!(
+        "{:?} {} {}",
+        assistant.hint(),
+        assistant.refused(),
+        assistant.chapter_model()
+    ))
+}
+
 fn refused(reason: &str, cx: &mut App) {
     if reason.contains("API key")
         && let Some(assistant) = Assistant::entity(cx)
