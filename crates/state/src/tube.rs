@@ -1598,7 +1598,7 @@ pub struct Account {
     identities: Vec<Identity>,
     /// The channel picked among them, none being the account's own. Unset until one is picked
     /// or YouTube's own choice is taken.
-    page: Option<Option<String>>,
+    page: Option<(usize, Option<String>)>,
     /// Counts every change of who the client acts as, so what is synced can follow.
     acting: u64,
     listing: Option<Task<()>>,
@@ -1626,8 +1626,10 @@ impl Account {
         let page = path
             .as_ref()
             .and_then(|path| std::fs::read_to_string(path.with_file_name("channel")).ok())
-            .map(|page| Some(page.trim().to_owned()).filter(|page| !page.is_empty()));
-        client.act_as(page.clone().flatten());
+            .map(|kept| chosen(&kept));
+        if let Some((user, page)) = &page {
+            client.act_as(*user, page.clone());
+        }
         let io = Io::global(cx);
         let account = cx.new(|cx| {
             let mut account = Self {
@@ -1669,7 +1671,7 @@ impl Account {
     /// Whether `identity` is the channel the client acts as.
     pub fn acts_as(&self, identity: &Identity) -> bool {
         match &self.page {
-            Some(page) => *page == identity.page,
+            Some((user, page)) => *user == identity.user && *page == identity.page,
             None => identity.selected,
         }
     }
@@ -1681,25 +1683,26 @@ impl Account {
 
     /// Acts as another channel of the account from now on, and remembers it.
     pub fn choose(&mut self, identity: &Identity, cx: &mut Context<Self>) {
-        if self.page.as_ref() == Some(&identity.page) {
+        if self.acts_as(identity) && self.page.is_some() {
             return;
         }
-        self.settle(identity.page.clone());
+        self.settle(identity.user, identity.page.clone());
         cx.notify();
     }
 
-    /// Takes `page` as the channel in use and writes the choice down.
-    fn settle(&mut self, page: Option<String>) {
-        self.client.act_as(page.clone());
+    /// Takes the channel `page` of the session's account `user` as the one in use and writes
+    /// the choice down.
+    fn settle(&mut self, user: usize, page: Option<String>) {
+        self.client.act_as(user, page.clone());
         if let Some(path) = &self.path
             && let Err(error) = write_private(
                 &path.with_file_name("channel"),
-                page.as_deref().unwrap_or_default().as_bytes(),
+                format!("{user}:{}", page.as_deref().unwrap_or_default()).as_bytes(),
             )
         {
             log::warn!("video: cannot keep the chosen channel: {error:#}");
         }
-        self.page = Some(page);
+        self.page = Some((user, page));
         self.acting += 1;
     }
 
@@ -1714,19 +1717,20 @@ impl Account {
                 match crate::settled(listed, cx) {
                     Ok(identities) => {
                         this.identities = identities;
-                        let known = this.page.as_ref().is_some_and(|page| {
-                            this.identities
+                        let known = this.page.is_some()
+                            && this
+                                .identities
                                 .iter()
-                                .any(|identity| identity.page == *page)
-                        });
+                                .any(|identity| this.acts_as(identity));
                         if !known && !this.identities.is_empty() {
                             let taken = this
                                 .identities
                                 .iter()
                                 .find(|identity| identity.selected)
                                 .or_else(|| this.identities.first())
-                                .and_then(|identity| identity.page.clone());
-                            this.settle(taken);
+                                .map(|identity| (identity.user, identity.page.clone()))
+                                .unwrap_or_default();
+                            this.settle(taken.0, taken.1);
                             if this.identities.len() > 1 {
                                 Toasts::show(Outcome::Info, "toast-video-channels", cx);
                             }
@@ -1816,7 +1820,7 @@ impl Account {
     pub fn sign_out(&mut self, cx: &mut Context<Self>) {
         self.window = None;
         self.client.sign_in(None).ok();
-        self.client.act_as(None);
+        self.client.act_as(0, None);
         if let Some(path) = &self.path {
             std::fs::remove_file(path).ok();
             std::fs::remove_file(path.with_file_name("channel")).ok();
@@ -2352,4 +2356,15 @@ fn rank(beside: Vec<Vec<Video>>, kept: &Kept) -> Vec<Video> {
         })
         .take(FIND_CAP)
         .collect()
+}
+
+/// Reads a kept choice of channel: the session's account, a colon and the channel, where a
+/// file from before accounts were numbered holds the channel alone.
+fn chosen(kept: &str) -> (usize, Option<String>) {
+    let kept = kept.trim();
+    let (user, page) = match kept.split_once(':') {
+        Some((user, page)) => (user.parse().unwrap_or_default(), page),
+        None => (0, kept),
+    };
+    (user, Some(page.to_owned()).filter(|page| !page.is_empty()))
 }

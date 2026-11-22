@@ -20,10 +20,23 @@ pub const PROOF: &[&str] = &["SAPISID", "__Secure-3PAPISID"];
 const HOST: &str = "https://www.youtube.com/youtubei/v1";
 /// The web client YouTube's own site reports. The answers this crate parses are that client's.
 const CLIENT_NAME: &str = "WEB";
+/// How many Google accounts of one session are asked for their channels.
+const ACCOUNTS: usize = 8;
+/// The lists of channels YouTube's account switcher asks for, the usual one first.
+const SWITCHERS: [&str; 2] = [
+    "ACCOUNTS_LIST_REQUEST_TYPE_ACCOUNT_SWITCHER",
+    "ACCOUNTS_LIST_REQUEST_TYPE_CHANNEL_SWITCHER",
+];
 const CLIENT_VERSION: &str = "2.20260707.00.00";
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 /// The iPhone app, a client YouTube still hands readable caption tracks to without a token.
+/// Who a request is made as: a Google account of the session and a channel under it.
+struct Acting {
+    user: usize,
+    page: Option<String>,
+}
+
 const APP: Guise = Guise {
     name: "IOS",
     version: "20.10.4",
@@ -88,6 +101,8 @@ pub struct Client {
     cookies: Arc<RwLock<Option<String>>>,
     /// The channel of the account that requests act as, when it is not the account's own.
     page: Arc<RwLock<Option<String>>>,
+    /// Which of the Google accounts in the session requests act as, counted from the first.
+    user: Arc<std::sync::atomic::AtomicUsize>,
     /// The name YouTube gave this guest, which it wants back before it hands out streams.
     visitor: Arc<RwLock<Option<String>>>,
 }
@@ -101,6 +116,7 @@ impl Client {
             no_shorts: Arc::default(),
             cookies: Arc::default(),
             page: Arc::default(),
+            user: Arc::default(),
             visitor: Arc::default(),
         }
     }
@@ -120,23 +136,52 @@ impl Client {
 
     /// Makes every later request act as one channel of the signed-in account, a brand account
     /// by its page id or the account's own channel with none.
-    pub fn act_as(&self, page: Option<String>) {
+    pub fn act_as(&self, user: usize, page: Option<String>) {
+        self.user.store(user, Ordering::Relaxed);
         *self.page.write().unwrap_or_else(|held| held.into_inner()) = page;
     }
 
-    /// The channels the signed-in Google account can act as.
+    /// The channels the signed-in session can act as, over every Google account in it.
     pub async fn identities(&self) -> Result<Vec<Identity>> {
         ensure!(self.signed_in(), "no account is signed in");
-        let answer = self
-            .call(
-                "account/accounts_list",
-                json!({
-                    "requestType": "ACCOUNTS_LIST_REQUEST_TYPE_CHANNEL_SWITCHER",
-                    "callCircumstance": "SWITCHING_USERS_FULL",
-                }),
-            )
-            .await?;
-        Ok(parse::identities(&answer))
+        let mut found: Vec<Identity> = Vec::new();
+        for user in 0..ACCOUNTS {
+            let mut listed = Vec::new();
+            // The switcher answers one of the two, depending on the account.
+            for kind in SWITCHERS {
+                let asked = self
+                    .send(
+                        &WEB,
+                        "account/accounts_list",
+                        json!({ "requestType": kind }),
+                        Some(Acting { user, page: None }),
+                    )
+                    .await;
+                match asked {
+                    Ok(answer) => listed = parse::identities(&answer, user),
+                    Err(error) => {
+                        log::debug!("tube: account {user} names no channel: {error:#}");
+                    }
+                }
+                if !listed.is_empty() {
+                    break;
+                }
+            }
+            let known = found.len();
+            for identity in listed {
+                let seen = found
+                    .iter()
+                    .any(|held| held.page == identity.page && held.name == identity.name);
+                if !seen {
+                    found.push(identity);
+                }
+            }
+            // A number past the last account answers with nothing, or with the first again.
+            if found.len() == known {
+                break;
+            }
+        }
+        Ok(found)
     }
 
     /// Every channel the account in use is subscribed to.
@@ -410,7 +455,26 @@ impl Client {
         self.call_as(&WEB, endpoint, body).await
     }
 
-    async fn call_as(&self, guise: &Guise, endpoint: &str, mut body: Value) -> Result<Value> {
+    async fn call_as(&self, guise: &Guise, endpoint: &str, body: Value) -> Result<Value> {
+        self.send(guise, endpoint, body, None).await
+    }
+
+    /// Asks an endpoint as `acting`, or as the channel in use with none.
+    async fn send(
+        &self,
+        guise: &Guise,
+        endpoint: &str,
+        mut body: Value,
+        acting: Option<Acting>,
+    ) -> Result<Value> {
+        let acting = acting.unwrap_or_else(|| Acting {
+            user: self.user.load(Ordering::Relaxed),
+            page: self
+                .page
+                .read()
+                .unwrap_or_else(|held| held.into_inner())
+                .clone(),
+        });
         // Only the request for streams needs the guest's name, so nothing else carries it and
         // searching and browsing are not tied to what is played.
         let visitor = self.visitor().filter(|_| guise.name == HEADSET.name);
@@ -429,12 +493,7 @@ impl Client {
         body["context"] = json!({ "client": client });
         // Only the web client is the one the account signed in to.
         let account = self.account().filter(|_| guise.name == CLIENT_NAME);
-        let page = account.as_ref().and_then(|_| {
-            self.page
-                .read()
-                .unwrap_or_else(|held| held.into_inner())
-                .clone()
-        });
+        let page = account.as_ref().and_then(|_| acting.page.clone());
         if let Some(page) = &page {
             body["context"]["user"] = json!({ "onBehalfOfUser": page });
         }
@@ -462,7 +521,7 @@ impl Client {
                 .header("Cookie", cookies)
                 .header("Authorization", proof(now, key))
                 .header("X-Origin", ORIGIN)
-                .header("X-Goog-AuthUser", "0");
+                .header("X-Goog-AuthUser", acting.user.to_string());
         }
         let response = request
             .json(&body)

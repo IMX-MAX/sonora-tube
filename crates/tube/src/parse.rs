@@ -40,24 +40,27 @@ pub(crate) fn listing(answer: &Value) -> Page<Found> {
 }
 
 /// The channels an account can act as, out of the answer that fills YouTube's account switcher.
-pub(crate) fn identities(answer: &Value) -> Vec<Identity> {
+pub(crate) fn identities(answer: &Value, user: usize) -> Vec<Identity> {
     let mut items = Vec::new();
     gather(answer, "accountItem", &mut items);
     items
         .into_iter()
         .filter(|item| !item["isDisabled"].as_bool().unwrap_or(false))
         .filter_map(|item| {
-            let tokens =
-                &item["serviceEndpoint"]["selectActiveIdentityEndpoint"]["supportedTokens"];
-            let page = tokens.as_array().and_then(|tokens| {
-                tokens
-                    .iter()
-                    .find_map(|token| string(&token["pageIdToken"]["pageId"]))
-            });
+            // The token sits at a different depth from one kind of switcher to the next.
+            let mut tokens = Vec::new();
+            gather(item, "pageIdToken", &mut tokens);
+            let page = tokens
+                .into_iter()
+                .find_map(|token| string(&token["pageId"]));
+            let detail = text(&item["channelHandle"])
+                .or_else(|| text(&item["email"]))
+                .or_else(|| text(&item["accountByline"]));
             Some(Identity {
+                user,
                 page,
-                name: text(&item["accountName"])?,
-                detail: text(&item["channelHandle"]).or_else(|| text(&item["accountByline"])),
+                name: text(&item["accountName"]).or_else(|| detail.clone())?,
+                detail,
                 avatar: thumbnail(&item["accountPhoto"]),
                 selected: item["isSelected"].as_bool().unwrap_or(false),
             })

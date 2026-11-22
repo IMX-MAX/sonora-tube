@@ -67,6 +67,8 @@ pub struct Channel {
 /// One of the YouTube channels a Google account can act as: its own, or a brand account's.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Identity {
+    /// Which Google account of the session the channel belongs to, counted from the first.
+    pub user: usize,
     /// What a request names to act as this channel, none for the account's own channel.
     pub page: Option<String>,
     pub name: String,

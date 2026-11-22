@@ -8712,6 +8712,7 @@ version = "0.50.3"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
+ "log",
  "reqwest 0.13.5",
  "rustls",
  "serde",
