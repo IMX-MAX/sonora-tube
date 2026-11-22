@@ -10,7 +10,8 @@ use sha1::{Digest as _, Sha1};
 
 use crate::parse;
 use crate::{
-    Caption, Captions, ChannelPage, Comments, Found, Page, PlaylistPage, Streams, Video, Watch,
+    Caption, Captions, Channel, ChannelPage, Comments, Found, Identity, Page, PlaylistPage,
+    Section, Streams, Tab, Video, Watch,
 };
 
 const ORIGIN: &str = "https://www.youtube.com";
@@ -57,7 +58,12 @@ const TRIES: u32 = 5;
 /// How long the first retry of a caption file waits, doubling with each one after.
 const RETRY: Duration = Duration::from_millis(300);
 /// The `params` that open a channel on its Videos tab.
+/// How many pages of an account's subscriptions are read, each some hundred channels.
+const SUBSCRIBED_PAGES: usize = 20;
 const VIDEOS_TAB: &str = "EgZ2aWRlb3PyBgQKAjoA";
+const PLAYLISTS_TAB: &str = "EglwbGF5bGlzdHPyBgoKCEIGCgIQaCIA";
+const POSTS_TAB: &str = "EgVwb3N0c_IGBAoCSgA%3D";
+const RELEASES_TAB: &str = "EghyZWxlYXNlc_IGBQoDsgEA";
 
 /// The client a request says it comes from.
 struct Guise {
@@ -80,6 +86,8 @@ pub struct Client {
     no_shorts: Arc<AtomicBool>,
     /// The `Cookie` header of the signed-in account, shared by the clones of a client.
     cookies: Arc<RwLock<Option<String>>>,
+    /// The channel of the account that requests act as, when it is not the account's own.
+    page: Arc<RwLock<Option<String>>>,
     /// The name YouTube gave this guest, which it wants back before it hands out streams.
     visitor: Arc<RwLock<Option<String>>>,
 }
@@ -92,6 +100,7 @@ impl Client {
             region: "US".to_owned(),
             no_shorts: Arc::default(),
             cookies: Arc::default(),
+            page: Arc::default(),
             visitor: Arc::default(),
         }
     }
@@ -107,6 +116,57 @@ impl Client {
             .write()
             .unwrap_or_else(|held| held.into_inner()) = cookies;
         Ok(())
+    }
+
+    /// Makes every later request act as one channel of the signed-in account, a brand account
+    /// by its page id or the account's own channel with none.
+    pub fn act_as(&self, page: Option<String>) {
+        *self.page.write().unwrap_or_else(|held| held.into_inner()) = page;
+    }
+
+    /// The channels the signed-in Google account can act as.
+    pub async fn identities(&self) -> Result<Vec<Identity>> {
+        ensure!(self.signed_in(), "no account is signed in");
+        let answer = self
+            .call(
+                "account/accounts_list",
+                json!({
+                    "requestType": "ACCOUNTS_LIST_REQUEST_TYPE_CHANNEL_SWITCHER",
+                    "callCircumstance": "SWITCHING_USERS_FULL",
+                }),
+            )
+            .await?;
+        Ok(parse::identities(&answer))
+    }
+
+    /// Every channel the account in use is subscribed to.
+    pub async fn subscribed(&self) -> Result<Vec<Channel>> {
+        ensure!(self.signed_in(), "no account is signed in");
+        let mut answer = self
+            .call("browse", json!({ "browseId": "FEchannels" }))
+            .await?;
+        let mut channels = Vec::new();
+        for _ in 0..SUBSCRIBED_PAGES {
+            let page = parse::listing(&answer);
+            channels.extend(page.items.into_iter().filter_map(|found| match found {
+                Found::Channel(channel) => Some(channel),
+                Found::Video(_) | Found::Playlist(_) => None,
+            }));
+            let Some(token) = page.more else { break };
+            answer = self
+                .call("browse", json!({ "continuation": token }))
+                .await?;
+        }
+        Ok(channels)
+    }
+
+    /// What YouTube's own home page recommends to the account in use.
+    pub async fn recommended(&self) -> Result<Page<Video>> {
+        ensure!(self.signed_in(), "no account is signed in");
+        let answer = self
+            .call("browse", json!({ "browseId": "FEwhat_to_watch" }))
+            .await?;
+        Ok(parse::videos(&answer))
     }
 
     /// Whether requests go out as an account rather than as a guest.
@@ -215,6 +275,28 @@ impl Client {
             .call("browse", json!({ "browseId": id, "params": VIDEOS_TAB }))
             .await?;
         parse::channel(id, &answer).context("cannot read the channel")
+    }
+
+    /// What a part of a channel other than its videos lists.
+    pub async fn channel_section(&self, id: &str, tab: Tab) -> Result<Section> {
+        let params = match tab {
+            Tab::Videos => VIDEOS_TAB,
+            Tab::Playlists => PLAYLISTS_TAB,
+            Tab::Posts => POSTS_TAB,
+            Tab::Releases => RELEASES_TAB,
+        };
+        let answer = self
+            .call("browse", json!({ "browseId": id, "params": params }))
+            .await?;
+        Ok(parse::section(&answer["contents"]))
+    }
+
+    /// The next stretch of a part of a channel.
+    pub async fn section_more(&self, token: &str) -> Result<Section> {
+        let answer = self
+            .call("browse", json!({ "continuation": token }))
+            .await?;
+        Ok(parse::section(&answer))
     }
 
     /// A playlist and its first videos.
@@ -345,6 +427,17 @@ impl Client {
             client["visitorData"] = json!(visitor);
         }
         body["context"] = json!({ "client": client });
+        // Only the web client is the one the account signed in to.
+        let account = self.account().filter(|_| guise.name == CLIENT_NAME);
+        let page = account.as_ref().and_then(|_| {
+            self.page
+                .read()
+                .unwrap_or_else(|held| held.into_inner())
+                .clone()
+        });
+        if let Some(page) = &page {
+            body["context"]["user"] = json!({ "onBehalfOfUser": page });
+        }
         let mut request = self
             .http
             .post(format!("{HOST}/{endpoint}?prettyPrint=false"))
@@ -355,8 +448,9 @@ impl Client {
         if let Some(visitor) = &visitor {
             request = request.header("X-Goog-Visitor-Id", visitor);
         }
-        // Only the web client is the one the account signed in to.
-        let account = self.account().filter(|_| guise.name == CLIENT_NAME);
+        if let Some(page) = &page {
+            request = request.header("X-Goog-PageId", page);
+        }
         if let Some((cookies, key)) = account
             .as_deref()
             .and_then(|held| Some((held, secret(held)?)))

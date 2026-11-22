@@ -6,13 +6,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{AnyView, App, AppContext as _, Context, Entity, Global, Task};
+use gpui::{AnyView, App, AppContext as _, ClipboardItem, Context, Entity, Global, Image, Task};
 use tube::{
-    Caption, Channel, Client, Comment, Found, Line, Page, Peek, Quality, Storyboard, Video, Watch,
+    Caption, Channel, Client, Comment, Found, Identity, Line, Page, Peek, Playlist, Post, Quality,
+    Storyboard, Tab, Video, Watch,
 };
 use video::{Player, VideoView};
 
-use crate::{Io, Playback, join};
+use crate::{Io, Outcome, Playback, Toasts, VideoDownloads, join};
 
 /// A search of YouTube and the results fetched so far.
 pub struct VideoSearch {
@@ -138,6 +139,11 @@ const CAPTION_STAYS: f64 = 5.;
 /// How often and how many times a freshly opened stream is checked for having failed.
 const OPENING_CHECK: Duration = Duration::from_millis(250);
 const OPENING_CHECKS: usize = 80;
+/// How often the place a video is watched up to is written down.
+const PLACE_EVERY: Duration = Duration::from_secs(5);
+/// The share of a video before which it is not worth resuming and after which it is finished.
+const RESUME_FROM: f32 = 0.02;
+const RESUME_UNTIL: f32 = 0.95;
 
 /// The comments under the video being watched, and the replies opened so far.
 #[derive(Default)]
@@ -214,6 +220,11 @@ pub struct Watching {
     hurried: bool,
     stream: Option<Task<()>>,
     task: Option<Task<()>>,
+    /// Whether the comments come newest first rather than best first.
+    newest: bool,
+    /// Writes down how far the video is watched while it plays.
+    placing: Option<Task<()>>,
+    shot: Option<Task<()>>,
 }
 
 impl Watching {
@@ -250,7 +261,124 @@ impl Watching {
             hurried: false,
             stream: None,
             task: None,
+            newest: false,
+            placing: None,
+            shot: None,
         }
+    }
+
+    /// Whether the comments come newest first.
+    pub fn comments_newest(&self) -> bool {
+        self.newest
+    }
+
+    /// Whether the video's comments can be put in another order.
+    pub fn comments_sortable(&self) -> bool {
+        self.watch
+            .as_ref()
+            .is_some_and(|watch| watch.top.is_some() && watch.newest.is_some())
+    }
+
+    /// Fetches the comments again, newest first or best first.
+    pub fn sort_comments(&mut self, newest: bool, cx: &mut Context<Self>) {
+        let Some(watch) = &self.watch else { return };
+        let token = match newest {
+            true => watch.newest.clone(),
+            false => watch.top.clone(),
+        };
+        if token.is_none() || newest == self.newest {
+            return;
+        }
+        self.newest = newest;
+        self.thread = Thread {
+            total: self.thread.total.take(),
+            write: self.thread.write.take(),
+            more: token,
+            ..Thread::default()
+        };
+        self.load_comments(cx);
+    }
+
+    /// Saves the picture on screen as an image beside the downloads, or puts it on the
+    /// clipboard, and tells how it went in a toast.
+    pub fn take_frame(&mut self, copied: bool, cx: &mut Context<Self>) {
+        let Some(player) = self.player().cloned() else {
+            return;
+        };
+        let title = self
+            .watch
+            .as_ref()
+            .map(|watch| watch.title.clone())
+            .or_else(|| self.id.clone())
+            .unwrap_or_default();
+        let at = player.position().unwrap_or(0.).max(0.) as u64;
+        let name: String = format!("{title} {:02}m{:02}s.png", at / 60, at % 60)
+            .chars()
+            .map(|letter| match letter {
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                letter if letter.is_control() => '_',
+                letter => letter,
+            })
+            .collect();
+        let folder = match copied {
+            true => Some(std::env::temp_dir()),
+            false => VideoDownloads::folder(),
+        };
+        let Some(path) = folder.map(|folder| folder.join(name)) else {
+            return;
+        };
+        let taken = cx.background_executor().spawn(async move {
+            if let Some(folder) = path.parent() {
+                std::fs::create_dir_all(folder)?;
+            }
+            player.snapshot(&path)?;
+            anyhow::ensure!(path.is_file(), "the player wrote no picture");
+            anyhow::Ok(match copied {
+                true => {
+                    let bytes = std::fs::read(&path)?;
+                    std::fs::remove_file(&path).ok();
+                    Some(bytes)
+                }
+                false => None,
+            })
+        });
+        self.shot = Some(cx.spawn(async move |_, cx| {
+            let taken = taken.await;
+            cx.update(|cx| match taken {
+                Ok(bytes) => {
+                    if let Some(bytes) = bytes {
+                        cx.write_to_clipboard(ClipboardItem::new_image(&Image::from_bytes(
+                            gpui::ImageFormat::Png,
+                            bytes,
+                        )));
+                    }
+                    let key = match copied {
+                        true => "toast-video-frame-copied",
+                        false => "toast-video-frame-saved",
+                    };
+                    Toasts::about(Outcome::Done, key, title, cx);
+                }
+                Err(error) => {
+                    log::warn!("video: cannot take the frame: {error:#}");
+                    Toasts::about(Outcome::Failed, "toast-video-frame-failed", title, cx);
+                }
+            });
+        }));
+    }
+
+    /// Writes down how far into the video the player is, for the bar on its thumbnail and for
+    /// taking it up again.
+    fn place(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.id.clone() else { return };
+        let Some(player) = self.player() else { return };
+        let (Some(at), Some(length)) = (player.position(), player.duration()) else {
+            return;
+        };
+        if length <= 0. || player.idle() {
+            return;
+        }
+        self.subscriptions
+            .update(cx, |kept, cx| kept.set_place(&id, at, length, cx));
     }
 
     pub fn id(&self) -> Option<&str> {
@@ -414,6 +542,8 @@ impl Watching {
             self.set_paused(false, cx);
             return;
         }
+        self.place(cx);
+        self.newest = false;
         self.playback.update(cx, |playback, cx| playback.pause(cx));
         self.id = Some(id.to_owned());
         self.watch = None;
@@ -480,6 +610,7 @@ impl Watching {
 
     /// Stops the video when its page is left, so nothing plays unseen.
     pub fn leave(&mut self, cx: &mut Context<Self>) {
+        self.place(cx);
         self.full = false;
         self.set_paused(true, cx);
     }
@@ -997,6 +1128,25 @@ impl Watching {
             return Ok(());
         };
         player.stop();
+        let start = self.subscriptions.read(cx).resume(id).unwrap_or(0.);
+        if self.placing.is_none() {
+            self.placing = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(PLACE_EVERY).await;
+                    let alive = this.update(cx, |this, cx| {
+                        if this.player().is_some_and(|player| !player.paused()) {
+                            this.place(cx);
+                        }
+                    });
+                    if alive.is_err() {
+                        return;
+                    }
+                }
+            }));
+        }
+        let Some((player, _)) = &self.screen else {
+            return Ok(());
+        };
         player.set_volume(f64::from(self.volume()) * 100.);
         player.set_paused(false);
         self.hurried = false;
@@ -1026,7 +1176,7 @@ impl Watching {
                         this.qualities = streams.qualities;
                         this.board = streams.board;
                         this.quality()
-                            .map(|quality| player.play(&quality.picture, &quality.sound, 0.))
+                            .map(|quality| player.play(&quality.picture, &quality.sound, start))
                     }
                     Err(error) => {
                         log::warn!("video: no direct streams for {asked}: {error:#}");
@@ -1037,7 +1187,7 @@ impl Watching {
                 match direct {
                     Some(Ok(())) => Some(player),
                     _ => {
-                        this.scrape(&asked, cx);
+                        this.scrape(&asked, start, cx);
                         None
                     }
                 }
@@ -1052,7 +1202,7 @@ impl Watching {
                     this.update(cx, |this, cx| {
                         if this.id.as_deref() == Some(asked.as_str()) {
                             this.qualities.clear();
-                            this.scrape(&asked, cx);
+                            this.scrape(&asked, start, cx);
                         }
                     })
                     .ok();
@@ -1064,9 +1214,9 @@ impl Watching {
     }
 
     /// Plays the video through the player's own page scraper, the slow way that always works.
-    fn scrape(&mut self, id: &str, cx: &mut Context<Self>) {
+    fn scrape(&mut self, id: &str, start: f64, cx: &mut Context<Self>) {
         let Some(player) = self.player() else { return };
-        if let Err(error) = player.load_from(&tube::watch_url(id), 0.) {
+        if let Err(error) = player.load_from(&tube::watch_url(id), start) {
             log::error!("video: cannot play {id}: {error:#}");
             self.error = Some(format!("{error:#}"));
         }
@@ -1095,6 +1245,14 @@ pub struct VideoList {
     loading: bool,
     error: Option<String>,
     task: Option<Task<()>>,
+    /// The parts a channel offers and the one that is open.
+    tabs: Vec<Tab>,
+    tab: Tab,
+    /// What the open part lists when it is not the videos, each part kept once fetched.
+    playlists: HashMap<Tab, Page<Playlist>>,
+    posts: Page<Post>,
+    posts_read: bool,
+    part: Option<Task<()>>,
 }
 
 /// A loaded channel or playlist, reduced to what the page shows.
@@ -1104,6 +1262,7 @@ struct Listed {
     banner: Option<String>,
     description: String,
     videos: Page<Video>,
+    tabs: Vec<Tab>,
 }
 
 impl VideoList {
@@ -1121,7 +1280,113 @@ impl VideoList {
             loading: false,
             error: None,
             task: None,
+            tabs: Vec::new(),
+            tab: Tab::Videos,
+            playlists: HashMap::new(),
+            posts: Page::default(),
+            posts_read: false,
+            part: None,
         }
+    }
+
+    /// The parts of the channel that can be opened, the videos among them.
+    pub fn tabs(&self) -> &[Tab] {
+        &self.tabs
+    }
+
+    pub fn tab(&self) -> Tab {
+        self.tab
+    }
+
+    /// The playlists or the releases of the open part.
+    pub fn playlists(&self) -> &[Playlist] {
+        self.playlists
+            .get(&self.tab)
+            .map(|page| page.items.as_slice())
+            .unwrap_or_default()
+    }
+
+    pub fn posts(&self) -> &[Post] {
+        &self.posts.items
+    }
+
+    /// Opens a part of the channel, fetching it the first time.
+    pub fn set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        if self.tab == tab {
+            return;
+        }
+        self.tab = tab;
+        self.part = None;
+        self.loading = false;
+        let read = match tab {
+            Tab::Videos => true,
+            Tab::Posts => self.posts_read,
+            Tab::Playlists | Tab::Releases => self.playlists.contains_key(&tab),
+        };
+        cx.notify();
+        if !read {
+            self.load_part(None, cx);
+        }
+    }
+
+    /// Fetches the open part, or with a token the stretch after what it already lists.
+    fn load_part(&mut self, token: Option<String>, cx: &mut Context<Self>) {
+        let Some(Shelf::Channel(id)) = self.shelf.clone() else {
+            return;
+        };
+        let (client, tab) = (self.client.clone(), self.tab);
+        self.loading = true;
+        cx.notify();
+        let request = self.io.spawn(async move {
+            match token {
+                Some(token) => client.section_more(&token).await,
+                None => client.channel_section(&id, tab).await,
+            }
+        });
+        let shelf = self.shelf.clone();
+        self.part = Some(cx.spawn(async move |this, cx| {
+            let loaded = join(request).await;
+            this.update(cx, |this, cx| {
+                if this.shelf != shelf || this.tab != tab {
+                    return;
+                }
+                this.loading = false;
+                match crate::settled(loaded, cx) {
+                    Ok(section) => match tab {
+                        Tab::Posts => {
+                            this.posts_read = true;
+                            for post in section.posts.items {
+                                if !this.posts.items.contains(&post) {
+                                    this.posts.items.push(post);
+                                }
+                            }
+                            this.posts.more = section.posts.more;
+                        }
+                        Tab::Playlists | Tab::Releases | Tab::Videos => {
+                            let kept = this.playlists.entry(tab).or_default();
+                            for playlist in section.playlists.items {
+                                if !kept.items.contains(&playlist) {
+                                    kept.items.push(playlist);
+                                }
+                            }
+                            kept.more = section.playlists.more;
+                        }
+                    },
+                    Err(reason) => {
+                        log::warn!("video: cannot read that part of the channel: {reason}");
+                        // Kept as read, so an empty part is shown instead of asked for forever.
+                        match tab {
+                            Tab::Posts => this.posts_read = true,
+                            Tab::Playlists | Tab::Releases | Tab::Videos => {
+                                this.playlists.entry(tab).or_default();
+                            }
+                        }
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     pub fn shelf(&self) -> Option<&Shelf> {
@@ -1155,7 +1420,14 @@ impl VideoList {
     }
 
     pub fn has_more(&self) -> bool {
-        self.more.is_some()
+        match self.tab {
+            Tab::Videos => self.more.is_some(),
+            Tab::Posts => self.posts.more.is_some(),
+            Tab::Playlists | Tab::Releases => self
+                .playlists
+                .get(&self.tab)
+                .is_some_and(|page| page.more.is_some()),
+        }
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -1183,6 +1455,12 @@ impl VideoList {
         self.more = None;
         self.error = None;
         self.loading = true;
+        self.tabs.clear();
+        self.tab = Tab::Videos;
+        self.playlists.clear();
+        self.posts = Page::default();
+        self.posts_read = false;
+        self.part = None;
         cx.notify();
 
         let client = self.client.clone();
@@ -1197,6 +1475,7 @@ impl VideoList {
                         banner: page.banner,
                         description: page.description,
                         videos: page.videos,
+                        tabs: page.tabs,
                     }
                 }
                 Shelf::Playlist(id) => {
@@ -1207,6 +1486,7 @@ impl VideoList {
                         banner: None,
                         description: String::new(),
                         videos: page.videos,
+                        tabs: Vec::new(),
                     }
                 }
             })
@@ -1224,6 +1504,7 @@ impl VideoList {
                         this.channel = listed.channel;
                         this.banner = listed.banner;
                         this.description = listed.description;
+                        this.tabs = listed.tabs;
                         this.videos = listed.videos.items;
                         this.more = listed.videos.more;
                     }
@@ -1238,6 +1519,21 @@ impl VideoList {
     /// Fetches the stretch after the last one, unless one is already on its way.
     pub fn load_more(&mut self, cx: &mut Context<Self>) {
         if self.loading {
+            return;
+        }
+        let further = match self.tab {
+            Tab::Videos => None,
+            Tab::Posts => Some(self.posts.more.take()),
+            Tab::Playlists | Tab::Releases => Some(
+                self.playlists
+                    .get_mut(&self.tab)
+                    .and_then(|page| page.more.take()),
+            ),
+        };
+        if let Some(token) = further {
+            if token.is_some() {
+                self.load_part(token, cx);
+            }
             return;
         }
         let Some(token) = self.more.take() else {
@@ -1278,7 +1574,7 @@ impl VideoList {
 /// How many watched videos the history keeps.
 /// How often the sign-in window is asked whether the account is in.
 const WINDOW_POLL: Duration = Duration::from_millis(300);
-const SIGN_IN_URL: &str = "https://accounts.google.com/ServiceLogin?service=youtube&passive=true&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26next%3Dhttps%253A%252F%252Fwww.youtube.com%252F";
+const SIGN_IN_URL: &str = "https://accounts.google.com/AccountChooser?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26next%3Dhttps%253A%252F%252Fwww.youtube.com%252F";
 const LANDING: &str = "www.youtube.com";
 const COOKIE_DOMAIN: &str = "youtube.com";
 
@@ -1296,6 +1592,15 @@ pub struct Account {
     window: Option<webview::Page>,
     failed: bool,
     task: Option<Task<()>>,
+    io: Io,
+    /// The channels the Google account can act as, once YouTube listed them.
+    identities: Vec<Identity>,
+    /// The channel picked among them, none being the account's own. Unset until one is picked
+    /// or YouTube's own choice is taken.
+    page: Option<Option<String>>,
+    /// Counts every change of who the client acts as, so what is synced can follow.
+    acting: u64,
+    listing: Option<Task<()>>,
 }
 
 impl Account {
@@ -1316,12 +1621,31 @@ impl Account {
         {
             log::warn!("video: cannot use the kept account: {error:#}");
         }
-        let account = cx.new(|_| Self {
-            client,
-            path,
-            window: None,
-            failed: false,
-            task: None,
+        // An empty file stands for the account's own channel, a missing one for no choice yet.
+        let page = path
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path.with_file_name("channel")).ok())
+            .map(|page| Some(page.trim().to_owned()).filter(|page| !page.is_empty()));
+        client.act_as(page.clone().flatten());
+        let io = Io::global(cx);
+        let account = cx.new(|cx| {
+            let mut account = Self {
+                client,
+                path,
+                window: None,
+                failed: false,
+                task: None,
+                io,
+                identities: Vec::new(),
+                page,
+                acting: 0,
+                listing: None,
+            };
+            if account.signed_in() {
+                account.acting = 1;
+                account.list(cx);
+            }
+            account
         });
         cx.set_global(Held(account.clone()));
         account
@@ -1334,6 +1658,87 @@ impl Account {
 
     pub fn signed_in(&self) -> bool {
         self.client.signed_in()
+    }
+
+    /// The channels the signed-in Google account can act as.
+    pub fn identities(&self) -> &[Identity] {
+        &self.identities
+    }
+
+    /// Whether `identity` is the channel the client acts as.
+    pub fn acts_as(&self, identity: &Identity) -> bool {
+        match &self.page {
+            Some(page) => *page == identity.page,
+            None => identity.selected,
+        }
+    }
+
+    /// A number that changes whenever the client starts acting as someone else.
+    pub fn acting(&self) -> u64 {
+        self.acting
+    }
+
+    /// Acts as another channel of the account from now on, and remembers it.
+    pub fn choose(&mut self, identity: &Identity, cx: &mut Context<Self>) {
+        if self.page.as_ref() == Some(&identity.page) {
+            return;
+        }
+        self.settle(identity.page.clone());
+        cx.notify();
+    }
+
+    /// Takes `page` as the channel in use and writes the choice down.
+    fn settle(&mut self, page: Option<String>) {
+        self.client.act_as(page.clone());
+        if let Some(path) = &self.path
+            && let Err(error) = write_private(
+                &path.with_file_name("channel"),
+                page.as_deref().unwrap_or_default().as_bytes(),
+            )
+        {
+            log::warn!("video: cannot keep the chosen channel: {error:#}");
+        }
+        self.page = Some(page);
+        self.acting += 1;
+    }
+
+    /// Asks YouTube which channels the account can act as. With no choice made yet the one
+    /// YouTube has in use is taken, and a toast says there are others to pick from.
+    fn list(&mut self, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        let request = self.io.spawn(async move { client.identities().await });
+        self.listing = Some(cx.spawn(async move |this, cx| {
+            let listed = join(request).await;
+            this.update(cx, |this, cx| {
+                match crate::settled(listed, cx) {
+                    Ok(identities) => {
+                        this.identities = identities;
+                        let known = this.page.as_ref().is_some_and(|page| {
+                            this.identities
+                                .iter()
+                                .any(|identity| identity.page == *page)
+                        });
+                        if !known && !this.identities.is_empty() {
+                            let taken = this
+                                .identities
+                                .iter()
+                                .find(|identity| identity.selected)
+                                .or_else(|| this.identities.first())
+                                .and_then(|identity| identity.page.clone());
+                            this.settle(taken);
+                            if this.identities.len() > 1 {
+                                Toasts::show(Outcome::Info, "toast-video-channels", cx);
+                            }
+                        }
+                    }
+                    Err(reason) => {
+                        log::warn!("video: cannot list the account's channels: {reason}");
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// Whether the sign-in window is open.
@@ -1391,6 +1796,10 @@ impl Account {
                     this.window = None;
                     if let Some(cookies) = cookies {
                         this.keep(cookies);
+                        if this.signed_in() {
+                            this.acting += 1;
+                            this.list(cx);
+                        }
                     }
                     cx.notify();
                     false
@@ -1406,9 +1815,15 @@ impl Account {
     pub fn sign_out(&mut self, cx: &mut Context<Self>) {
         self.window = None;
         self.client.sign_in(None).ok();
+        self.client.act_as(None);
         if let Some(path) = &self.path {
             std::fs::remove_file(path).ok();
+            std::fs::remove_file(path.with_file_name("channel")).ok();
         }
+        self.identities.clear();
+        self.page = None;
+        self.listing = None;
+        self.acting += 1;
         cx.notify();
     }
 
@@ -1470,6 +1885,12 @@ struct Kept {
     later: Vec<Video>,
     #[serde(default)]
     liked: Vec<String>,
+    /// How far each video was watched and how long it is, both in seconds.
+    #[serde(default)]
+    places: HashMap<String, (f64, f64)>,
+    /// The channels that came from the YouTube account rather than from following them here.
+    #[serde(default)]
+    synced: Vec<String>,
 }
 
 /// The channels the user follows, the feed of their newest uploads and the videos watched. All
@@ -1491,6 +1912,9 @@ pub struct Subscriptions {
     dug: usize,
     finding: bool,
     find: Option<Task<()>>,
+    /// What YouTube's home page recommends to the signed-in account.
+    recommended: Vec<Video>,
+    syncing: Option<Task<()>>,
 }
 
 impl Subscriptions {
@@ -1517,7 +1941,64 @@ impl Subscriptions {
             dug: 0,
             finding: false,
             find: None,
+            recommended: Vec::new(),
+            syncing: None,
         }
+    }
+
+    /// What YouTube recommends to the signed-in account, empty for a guest.
+    pub fn recommended(&self) -> &[Video] {
+        &self.recommended
+    }
+
+    /// Follows what the YouTube account in use is subscribed to and reads its recommendations.
+    /// Channels followed here stay, channels a former sync brought and the account no longer
+    /// has go. As a guest only the recommendations are dropped.
+    pub fn sync(&mut self, cx: &mut Context<Self>) {
+        self.recommended.clear();
+        self.syncing = None;
+        cx.notify();
+        if !self.client.signed_in() {
+            return;
+        }
+        let client = self.client.clone();
+        let request = self.io.spawn(async move {
+            let (channels, recommended) =
+                futures::future::join(client.subscribed(), client.recommended()).await;
+            Ok((channels, recommended))
+        });
+        self.syncing = Some(cx.spawn(async move |this, cx| {
+            let synced = join(request).await;
+            this.update(cx, |this, cx| {
+                let Ok((channels, recommended)) = crate::settled(synced, cx) else {
+                    return;
+                };
+                match recommended {
+                    Ok(page) => this.recommended = page.items,
+                    Err(error) => log::warn!("video: cannot read the recommendations: {error:#}"),
+                }
+                match channels {
+                    Ok(channels) => {
+                        let gone = std::mem::take(&mut this.kept.synced);
+                        this.kept.channels.retain(|kept| {
+                            !gone.contains(&kept.id)
+                                || channels.iter().any(|channel| channel.id == kept.id)
+                        });
+                        for channel in channels {
+                            this.kept.synced.push(channel.id.clone());
+                            if !this.follows(&channel.id) {
+                                this.kept.channels.push(channel);
+                            }
+                        }
+                        this.save();
+                        this.refresh(cx);
+                    }
+                    Err(error) => log::warn!("video: cannot read the subscriptions: {error:#}"),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// Videos to find new channels by, the likeliest first.
@@ -1663,6 +2144,34 @@ impl Subscriptions {
                 self.loaded = false;
             }
         }
+        self.save();
+        cx.notify();
+    }
+
+    /// The share of the video watched so far, when it was started and not finished.
+    pub fn progress(&self, video: &str) -> Option<f32> {
+        let (at, length) = *self.kept.places.get(video)?;
+        let share = (at / length) as f32;
+        (share >= RESUME_FROM).then_some(share.min(1.))
+    }
+
+    /// The second a video left unfinished is taken up again at.
+    pub fn resume(&self, video: &str) -> Option<f64> {
+        let (at, _) = *self.kept.places.get(video)?;
+        self.progress(video)
+            .filter(|share| *share < RESUME_UNTIL)
+            .map(|_| at)
+    }
+
+    /// Records how far the video was watched.
+    pub fn set_place(&mut self, video: &str, at: f64, length: f64, cx: &mut Context<Self>) {
+        if self.kept.places.len() > HISTORY_CAP * 2 {
+            let watched = &self.kept.watched;
+            self.kept
+                .places
+                .retain(|id, _| watched.iter().any(|kept| kept.id == *id));
+        }
+        self.kept.places.insert(video.to_owned(), (at, length));
         self.save();
         cx.notify();
     }

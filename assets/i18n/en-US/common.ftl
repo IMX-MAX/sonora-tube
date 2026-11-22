@@ -253,3 +253,4 @@ nav-return-top = Back to top
 wake-reason = Music is playing
 account-video-sign-in = Sign in to YouTube
 account-video-sign-out = Sign out of YouTube
+account-video-channel = Use { $name }

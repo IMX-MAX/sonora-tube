@@ -161,6 +161,12 @@ impl Player {
         }
     }
 
+    /// Writes the picture on screen to `path` at the video's own size, without captions.
+    pub fn snapshot(&self, path: &std::path::Path) -> Result<()> {
+        let path = path.to_str().context("the path is not text")?;
+        self.core.command(&["screenshot-to-file", path, "video"])
+    }
+
     /// Drops what is playing, leaving the last picture up.
     pub fn stop(&self) {
         if let Err(error) = self.core.command(&["stop"]) {

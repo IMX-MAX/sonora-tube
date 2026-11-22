@@ -313,11 +313,24 @@ impl Root {
         })
         .detach();
         // The page of the video on screen is read again as the account, or as a guest again.
+        // An account kept from the last launch is synced right away.
+        let acted = account.read(cx).acting();
+        if acted != 0 {
+            subscriptions.update(cx, |kept, cx| kept.sync(cx));
+        }
         cx.observe(&account, {
             let watching = watching.clone();
+            let subscriptions = subscriptions.clone();
+            let acted = std::cell::Cell::new(acted);
             move |_, account, cx| {
                 if !account.read(cx).signing_in() {
                     watching.update(cx, |watching, cx| watching.refresh(cx));
+                }
+                // A change of who the client acts as brings that channel's subscriptions and
+                // recommendations along.
+                let acting = account.read(cx).acting();
+                if acted.replace(acting) != acting {
+                    subscriptions.update(cx, |kept, cx| kept.sync(cx));
                 }
             }
         })

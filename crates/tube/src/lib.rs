@@ -64,6 +64,19 @@ pub struct Channel {
     pub subscribers: Option<String>,
 }
 
+/// One of the YouTube channels a Google account can act as: its own, or a brand account's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Identity {
+    /// What a request names to act as this channel, none for the account's own channel.
+    pub page: Option<String>,
+    pub name: String,
+    /// The handle or the address YouTube shows under the name.
+    pub detail: Option<String>,
+    pub avatar: Option<String>,
+    /// Whether YouTube itself has this one as the channel in use.
+    pub selected: bool,
+}
+
 /// A playlist as a search result shows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Playlist {
@@ -108,6 +121,11 @@ pub struct Watch {
     pub likes: Option<String>,
     pub description: String,
     pub channel: Option<Channel>,
+    /// The other channels a video made together is credited to, after `channel`.
+    pub partners: Vec<Channel>,
+    /// The tokens that fetch the comments best first and newest first.
+    pub top: Option<String>,
+    pub newest: Option<String>,
     pub related: Vec<Video>,
     /// The token of the first page of comments, absent when comments are turned off.
     pub comments: Option<String>,
@@ -302,6 +320,35 @@ pub struct ChannelPage {
     pub banner: Option<String>,
     pub description: String,
     pub videos: Page<Video>,
+    /// The parts of the channel that can be opened, in the order YouTube shows them.
+    pub tabs: Vec<Tab>,
+}
+
+/// A part of a channel's page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Tab {
+    Videos,
+    Playlists,
+    Posts,
+    Releases,
+}
+
+/// Something a channel wrote to its followers: words, pictures, or a video it points at.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Post {
+    pub id: String,
+    pub text: String,
+    pub published: Option<String>,
+    pub likes: Option<String>,
+    pub pictures: Vec<String>,
+    pub video: Option<Video>,
+}
+
+/// What one part of a channel other than its videos lists. Releases come as playlists.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Section {
+    pub playlists: Page<Playlist>,
+    pub posts: Page<Post>,
 }
 
 /// A playlist's own page.

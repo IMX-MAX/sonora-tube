@@ -9,8 +9,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
 
 use crate::{
-    Caption, Channel, ChannelPage, ChannelRef, Comment, Comments, Found, Line, Page, Playlist,
-    PlaylistPage, Quality, Storyboard, Video, Watch,
+    Caption, Channel, ChannelPage, ChannelRef, Comment, Comments, Found, Identity, Line, Page,
+    Playlist, PlaylistPage, Post, Quality, Section, Storyboard, Tab, Video, Watch,
 };
 
 /// Containers whose contents are never listed: ads, the side card of a search and the chapter
@@ -37,6 +37,32 @@ pub(crate) fn listing(answer: &Value) -> Page<Found> {
     let mut page = Page::default();
     walk(answer, &mut page);
     page
+}
+
+/// The channels an account can act as, out of the answer that fills YouTube's account switcher.
+pub(crate) fn identities(answer: &Value) -> Vec<Identity> {
+    let mut items = Vec::new();
+    gather(answer, "accountItem", &mut items);
+    items
+        .into_iter()
+        .filter(|item| !item["isDisabled"].as_bool().unwrap_or(false))
+        .filter_map(|item| {
+            let tokens =
+                &item["serviceEndpoint"]["selectActiveIdentityEndpoint"]["supportedTokens"];
+            let page = tokens.as_array().and_then(|tokens| {
+                tokens
+                    .iter()
+                    .find_map(|token| string(&token["pageIdToken"]["pageId"]))
+            });
+            Some(Identity {
+                page,
+                name: text(&item["accountName"])?,
+                detail: text(&item["channelHandle"]).or_else(|| text(&item["accountByline"])),
+                avatar: thumbnail(&item["accountPhoto"]),
+                selected: item["isSelected"].as_bool().unwrap_or(false),
+            })
+        })
+        .collect()
 }
 
 /// Takes every Short out of an answer, wherever it sits.
@@ -77,14 +103,24 @@ pub(crate) fn watch(id: &str, answer: &Value) -> Result<Watch> {
 
     let counter = &primary["viewCount"]["videoViewCountRenderer"];
     let owner = secondary.map(|secondary| &secondary["owner"]["videoOwnerRenderer"]);
-    let channel = owner.and_then(|owner| {
-        Some(Channel {
-            id: first(owner, "browseId")?.as_str()?.to_owned(),
-            name: text(&owner["title"])?,
-            avatar: thumbnail(&owner["thumbnail"]),
-            subscribers: text(&owner["subscriberCountText"]),
-        })
-    });
+    // A video made together lists everyone in a sheet behind the owner's line instead.
+    let mut makers = owner.map(makers).unwrap_or_default();
+    let channel = match makers.is_empty() {
+        false => Some(makers.remove(0)),
+        true => owner.and_then(|owner| {
+            Some(Channel {
+                id: first(owner, "browseId")?.as_str()?.to_owned(),
+                name: text(&owner["title"])?,
+                avatar: thumbnail(&owner["thumbnail"]),
+                subscribers: text(&owner["subscriberCountText"]),
+            })
+        }),
+    };
+    let order = |place: usize| {
+        first(&answer["engagementPanels"], "sortFilterSubMenuRenderer")
+            .and_then(|menu| menu["subMenuItems"].get(place))
+            .and_then(token)
+    };
     let comments = contents
         .iter()
         .filter_map(|entry| entry.get("itemSectionRenderer"))
@@ -106,6 +142,9 @@ pub(crate) fn watch(id: &str, answer: &Value) -> Result<Watch> {
             .and_then(|secondary| text(&secondary["attributedDescription"]))
             .unwrap_or_default(),
         channel,
+        partners: makers,
+        top: order(0),
+        newest: order(1),
         related: videos(&columns["secondaryResults"]).items,
         liked: first(primary, "likeStatus")
             .or_else(|| first(answer, "likeStatus"))
@@ -239,7 +278,128 @@ pub(crate) fn channel(id: &str, answer: &Value) -> Result<ChannelPage> {
             .map(|address| whole_banner(&address)),
         description: string(&about["description"]).unwrap_or_default(),
         videos: videos(&answer["contents"]),
+        tabs: tabs(answer),
     })
+}
+
+/// The parts a channel's page offers, of those the app shows.
+fn tabs(answer: &Value) -> Vec<Tab> {
+    let mut found = Vec::new();
+    gather(&answer["contents"], "tabRenderer", &mut found);
+    found
+        .into_iter()
+        .filter_map(|tab| {
+            let address = first(&tab["endpoint"], "url")?.as_str()?;
+            match address.rsplit('/').next()? {
+                "videos" => Some(Tab::Videos),
+                "playlists" => Some(Tab::Playlists),
+                "posts" | "community" => Some(Tab::Posts),
+                "releases" => Some(Tab::Releases),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// The playlists and the posts of a part of a channel, whichever it holds.
+pub(crate) fn section(answer: &Value) -> Section {
+    let Page { items, more } = listing(answer);
+    let mut written = Vec::new();
+    gather(answer, "backstagePostRenderer", &mut written);
+    Section {
+        playlists: Page {
+            items: items
+                .into_iter()
+                .filter_map(|found| match found {
+                    Found::Playlist(playlist) => Some(playlist),
+                    Found::Video(_) | Found::Channel(_) => None,
+                })
+                .collect(),
+            more: more.clone(),
+        },
+        posts: Page {
+            items: written.into_iter().filter_map(post).collect(),
+            more,
+        },
+    }
+}
+
+fn post(node: &Value) -> Option<Post> {
+    let attached = &node["backstageAttachment"];
+    let mut shown = Vec::new();
+    gather(attached, "backstageImageRenderer", &mut shown);
+    Some(Post {
+        id: string(&node["postId"])?,
+        text: text(&node["contentText"]).unwrap_or_default(),
+        published: text(&node["publishedTimeText"]),
+        likes: text(&node["voteCount"]).filter(|likes| !likes.trim().is_empty()),
+        pictures: shown
+            .into_iter()
+            .filter_map(|picture| thumbnail(&picture["image"]))
+            .collect(),
+        video: attached.get("videoRenderer").and_then(video),
+    })
+}
+
+/// A playlist from the older renderer, which is how a channel lists its releases.
+fn playlist_card(node: &Value) -> Option<Playlist> {
+    Some(Playlist {
+        id: string(&node["playlistId"])?,
+        title: text(&node["title"])?,
+        thumbnail: node["thumbnails"].get(0).and_then(thumbnail),
+        detail: text(&node["videoCountText"]),
+    })
+}
+
+/// Everyone a video made together is credited to, in the order YouTube names them.
+fn makers(owner: &Value) -> Vec<Channel> {
+    let mut listed = Vec::new();
+    gather(
+        &owner["navigationEndpoint"],
+        "listItemViewModel",
+        &mut listed,
+    );
+    let mut makers: Vec<Channel> = Vec::new();
+    for entry in listed {
+        let Some(id) = first(&entry["title"], "browseId").and_then(string) else {
+            continue;
+        };
+        let Some(name) = string(&entry["title"]["content"]) else {
+            continue;
+        };
+        if makers.iter().any(|maker| maker.id == id) {
+            continue;
+        }
+        makers.push(Channel {
+            id,
+            name,
+            avatar: first(&entry["leadingAccessory"], "sources")
+                .and_then(|sources| sources.as_array()?.last())
+                .and_then(|source| string(&source["url"])),
+            subscribers: string(&entry["subtitle"]["content"]).and_then(|line| {
+                line.split('•')
+                    .map(plain)
+                    .find(|part| part.contains("subscriber"))
+            }),
+        });
+    }
+    makers
+}
+
+/// Every value stored under `name` anywhere below `node`, in the order the tree holds them.
+fn gather<'a>(node: &'a Value, name: &str, found: &mut Vec<&'a Value>) {
+    match node {
+        Value::Object(fields) => {
+            for (field, value) in fields {
+                match field == name {
+                    true => found.push(value),
+                    false => gather(value, name, found),
+                }
+            }
+        }
+        Value::Array(entries) => entries.iter().for_each(|entry| gather(entry, name, found)),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
 }
 
 pub(crate) fn playlist(id: &str, answer: &Value) -> PlaylistPage {
@@ -261,6 +421,9 @@ fn walk(node: &Value, page: &mut Page<Found>) {
                     | "gridVideoRenderer"
                     | "playlistVideoRenderer" => video(value).map(Found::Video),
                     "channelRenderer" => channel_card(value).map(Found::Channel),
+                    "playlistRenderer" | "gridPlaylistRenderer" => {
+                        playlist_card(value).map(Found::Playlist)
+                    }
                     "lockupViewModel" => lockup(value),
                     SHORT => short(value).map(Found::Video),
                     "continuationItemRenderer" | "continuationItemViewModel" => {
@@ -740,7 +903,7 @@ fn plain(said: &str) -> String {
     }
     read.push_str(rest);
     read.retain(|letter| {
-        !matches!(letter, '\u{200b}'..='\u{200f}' | '\u{2060}' | '\u{feff}')
+        !matches!(letter, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
             && (!letter.is_control() || letter.is_whitespace())
     });
     read.split_whitespace().collect::<Vec<_>>().join(" ")

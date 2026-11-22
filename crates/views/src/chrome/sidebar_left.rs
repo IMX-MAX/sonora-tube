@@ -22,7 +22,6 @@ use state::{
 };
 
 use super::title_bar::Busy;
-use i18n::t;
 use input::Refresh;
 
 use crate::shared::menus::{ItemMenu, item_menu};
@@ -607,30 +606,7 @@ impl SidebarLeft {
 
     /// The account menu and settings, at the foot of the rail.
     fn foot(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut items: Vec<MenuItem> = Vec::new();
-        if let Some(account) = state::VideoAccount::entity(cx) {
-            let held = account.read(cx);
-            items.push(match held.signed_in() {
-                true => MenuItem::new("account-video-out", t!("account-video-sign-out"))
-                    .icon("icons/log-out.svg")
-                    .on_click(move |_, _, cx| {
-                        account.update(cx, |account, cx| account.sign_out(cx));
-                    }),
-                false => {
-                    let idle = held.supported() && !held.signing_in();
-                    let item = MenuItem::new("account-video-in", t!("account-video-sign-in"))
-                        .icon("icons/log-in.svg")
-                        .on_click(move |_, _, cx| {
-                            let title = t!("login-choose-title", provider = "YouTube").to_string();
-                            account.update(cx, |account, cx| account.sign_in(title, cx));
-                        });
-                    match idle {
-                        true => item,
-                        false => item.disabled(),
-                    }
-                }
-            });
-        }
+        let items = crate::screens::video::account_items(cx);
         let settings = self.trail.read(cx).current().in_settings();
         let accent = cx.theme().sidebar_accent;
 

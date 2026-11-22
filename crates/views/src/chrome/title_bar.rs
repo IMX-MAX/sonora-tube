@@ -210,31 +210,7 @@ impl TitleBar {
     /// way to manage them, then History and Settings. A guest session shows as guest mode, and
     /// only while it is the one in use.
     fn account(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut services: Vec<MenuItem> = Vec::new();
-        if let Some(account) = state::VideoAccount::entity(cx) {
-            let held = account.read(cx);
-            let item = match held.signed_in() {
-                true => MenuItem::new("account-video-out", t!("account-video-sign-out"))
-                    .icon("icons/log-out.svg")
-                    .on_click(move |_, _, cx| {
-                        account.update(cx, |account, cx| account.sign_out(cx));
-                    }),
-                false => {
-                    let idle = held.supported() && !held.signing_in();
-                    let item = MenuItem::new("account-video-in", t!("account-video-sign-in"))
-                        .icon("icons/log-in.svg")
-                        .on_click(move |_, _, cx| {
-                            let title = t!("login-choose-title", provider = "YouTube").to_string();
-                            account.update(cx, |account, cx| account.sign_in(title, cx));
-                        });
-                    match idle {
-                        true => item,
-                        false => item.disabled(),
-                    }
-                }
-            };
-            services.insert(0, item);
-        }
+        let services = crate::screens::video::account_items(cx);
 
         div()
             .flex()
