@@ -7,13 +7,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{AnyView, App, AppContext as _, ClipboardItem, Context, Entity, Global, Image, Task};
+use tube::ai::{Said, Speaker};
 use tube::{
-    Caption, Channel, Client, Comment, Found, Identity, Line, Page, Peek, Playlist, Post, Quality,
-    Storyboard, Tab, Video, Watch,
+    Caption, Channel, Chapter, Client, Comment, Found, Identity, Line, Page, Peek, Playlist, Post,
+    Quality, Storyboard, Tab, Video, Watch,
 };
 use video::{Player, VideoView};
 
-use crate::{Io, Outcome, Playback, Toasts, VideoDownloads, join};
+use crate::{Assistant, Io, Outcome, Playback, Toasts, VideoDownloads, join};
 
 /// A search of YouTube and the results fetched so far.
 pub struct VideoSearch {
@@ -166,6 +167,19 @@ struct Thread {
     reply_tasks: Vec<Task<()>>,
 }
 
+/// A chat with the AI about the video being watched, which reads its transcript.
+#[derive(Default)]
+struct Chat {
+    said: Vec<Said>,
+    /// Whether an answer is on its way.
+    asking: bool,
+    /// Whether the question waits for the transcript to arrive before it is sent.
+    waiting: bool,
+    /// Why the last answer did not come.
+    failed: Option<String>,
+    task: Option<Task<()>>,
+}
+
 /// The transcript of the video being watched, fetched the first time its panel is opened.
 #[derive(Default)]
 struct Script {
@@ -205,6 +219,9 @@ pub struct Watching {
     full: bool,
     /// Whether the account liked the video, `None` as a guest.
     liked: bool,
+    /// Whether the video has gone into the history since it was opened, so that reading its
+    /// page again, perhaps under another profile, adds nothing.
+    seen: bool,
     like: Option<Task<()>>,
     /// The qualities the video can be played at, best first, once YouTube has named them.
     qualities: Vec<Quality>,
@@ -225,6 +242,16 @@ pub struct Watching {
     /// Writes down how far the video is watched while it plays.
     placing: Option<Task<()>>,
     shot: Option<Task<()>>,
+    /// The video's chapters in order: the description's, or the AI's when it lists none.
+    chapters: Arc<Vec<Chapter>>,
+    /// Whether the chapters were cut by the AI rather than written by the uploader.
+    chapters_ai: bool,
+    chaptering: Option<Task<()>>,
+    /// Whether cutting chapters for this video was tried and failed, so it is not retried.
+    chapters_failed: bool,
+    /// The key and model the chapters last failed with, so only a change of either tries again.
+    chapters_tried: Option<String>,
+    chat: Chat,
 }
 
 impl Watching {
@@ -252,6 +279,7 @@ impl Watching {
             floating: false,
             full: false,
             liked: false,
+            seen: false,
             like: None,
             qualities: Vec::new(),
             board: None,
@@ -264,7 +292,241 @@ impl Watching {
             newest: false,
             placing: None,
             shot: None,
+            chapters: Arc::default(),
+            chapters_ai: false,
+            chaptering: None,
+            chapters_failed: false,
+            chapters_tried: None,
+            chat: Chat::default(),
         }
+    }
+
+    /// The video's chapters in order, empty when it has none.
+    pub fn chapters(&self) -> Arc<Vec<Chapter>> {
+        self.chapters.clone()
+    }
+
+    /// Whether the chapters were made by the AI.
+    pub fn chapters_ai(&self) -> bool {
+        self.chapters_ai
+    }
+
+    /// Whether the AI is cutting chapters for the video right now.
+    pub fn chaptering(&self) -> bool {
+        self.chaptering.is_some()
+    }
+
+    /// The place of the chapter playing at `seconds`.
+    pub fn chapter_at(&self, seconds: f64) -> Option<usize> {
+        self.chapters
+            .iter()
+            .rposition(|chapter| chapter.start <= seconds)
+    }
+
+    /// The messages of the chat about the video, oldest first.
+    pub fn said(&self) -> &[Said] {
+        &self.chat.said
+    }
+
+    /// Whether the AI's answer is on its way.
+    pub fn asking(&self) -> bool {
+        self.chat.asking
+    }
+
+    /// Why the last answer did not come, until another question is asked.
+    pub fn chat_failed(&self) -> Option<&str> {
+        self.chat.failed.as_deref()
+    }
+
+    /// Whether the chat failed because the video has no transcript to go on.
+    pub fn chat_blind(&self) -> bool {
+        self.chat.failed.is_some() && self.script.lines.is_none() && self.script.failed
+    }
+
+    /// Sends `question` to the AI, with the transcript as what it knows about the video.
+    pub fn ask(&mut self, question: &str, cx: &mut Context<Self>) {
+        let question = question.trim();
+        if question.is_empty() || self.chat.asking {
+            return;
+        }
+        self.chat.said.push(Said {
+            speaker: Speaker::User,
+            text: question.to_owned(),
+        });
+        self.answer(cx);
+    }
+
+    /// Asks for the answer to the last question again, after it failed.
+    pub fn ask_again(&mut self, cx: &mut Context<Self>) {
+        let unanswered = self
+            .chat
+            .said
+            .last()
+            .is_some_and(|said| said.speaker == Speaker::User);
+        if !unanswered || self.chat.asking {
+            return;
+        }
+        if self.script.lines.is_none() && self.script.failed {
+            self.chat.failed = None;
+            self.chat.asking = true;
+            self.chat.waiting = true;
+            self.load_transcript(cx);
+            return;
+        }
+        self.answer(cx);
+    }
+
+    /// Forgets the chat, to start over.
+    pub fn clear_chat(&mut self, cx: &mut Context<Self>) {
+        self.chat = Chat::default();
+        cx.notify();
+    }
+
+    /// Sends the chat to the AI once the transcript is here, fetching it first when needed.
+    fn answer(&mut self, cx: &mut Context<Self>) {
+        self.chat.failed = None;
+        self.chat.asking = true;
+        cx.notify();
+        let lines = match &self.script.lines {
+            Some(lines) => lines.clone(),
+            None if !self.script.failed => {
+                self.chat.waiting = true;
+                self.load_transcript(cx);
+                return;
+            }
+            None => {
+                self.chat.asking = false;
+                self.chat.failed = Some("the transcript could not be loaded".to_owned());
+                return;
+            }
+        };
+        let assistant = Assistant::entity(cx);
+        let (client, model) = match &assistant {
+            Some(assistant) => {
+                let assistant = assistant.read(cx);
+                (assistant.client(), assistant.chat_model().to_owned())
+            }
+            None => (None, String::new()),
+        };
+        let Some(client) = client else {
+            self.chat.asking = false;
+            self.chat.failed = Some("no key".to_owned());
+            return;
+        };
+        let title = self
+            .watch
+            .as_ref()
+            .map(|watch| watch.title.clone())
+            .unwrap_or_default();
+        let (said, asked) = (self.chat.said.clone(), self.id.clone());
+        let request = self
+            .io
+            .spawn(async move { client.ask(&model, &title, &lines, &said).await });
+        self.chat.task = Some(cx.spawn(async move |this, cx| {
+            let answered = join(request).await;
+            this.update(cx, |this, cx| {
+                if this.id != asked {
+                    return;
+                }
+                this.chat.asking = false;
+                match answered {
+                    Ok(text) => this.chat.said.push(Said {
+                        speaker: Speaker::Assistant,
+                        text,
+                    }),
+                    Err(error) => {
+                        let reason = format!("{error:#}");
+                        log::warn!("video: the ai cannot answer: {reason}");
+                        refused(&reason, cx);
+                        this.chat.failed = Some(reason);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Has the AI cut chapters from the transcript, when the video lists none, a key is saved
+    /// and auto chapters are on.
+    fn chapter(&mut self, cx: &mut Context<Self>) {
+        if !self.chapters.is_empty()
+            || self.chaptering.is_some()
+            || self.chapters_failed
+            || self.watch.is_none()
+        {
+            return;
+        }
+        let Some(assistant) = Assistant::entity(cx) else {
+            return;
+        };
+        let (client, model) = {
+            let assistant = assistant.read(cx);
+            if !assistant.auto_chapters() {
+                return;
+            }
+            (assistant.client(), assistant.chapter_model().to_owned())
+        };
+        let Some(client) = client else { return };
+        let lines = match &self.script.lines {
+            Some(lines) if !lines.is_empty() => lines.clone(),
+            Some(_) => return,
+            None => {
+                if !self.script.failed {
+                    self.load_transcript(cx);
+                }
+                return;
+            }
+        };
+        let title = self
+            .watch
+            .as_ref()
+            .map(|watch| watch.title.clone())
+            .unwrap_or_default();
+        let length = self
+            .player()
+            .and_then(|player| player.duration())
+            .or_else(|| lines.last().map(|line| line.start + line.length))
+            .unwrap_or(0.);
+        let asked = self.id.clone();
+        let request = self
+            .io
+            .spawn(async move { client.chapters(&model, &title, &lines, length).await });
+        self.chaptering = Some(cx.spawn(async move |this, cx| {
+            let made = join(request).await;
+            this.update(cx, |this, cx| {
+                if this.id != asked {
+                    return;
+                }
+                this.chaptering = None;
+                match made {
+                    Ok(chapters) if !chapters.is_empty() => {
+                        this.chapters = Arc::new(chapters);
+                        this.chapters_ai = true;
+                    }
+                    Ok(_) => this.chapters_failed = true,
+                    Err(error) => {
+                        let reason = format!("{error:#}");
+                        log::warn!("video: the ai cannot cut chapters: {reason}");
+                        refused(&reason, cx);
+                        this.chapters_failed = true;
+                    }
+                }
+                if this.chapters_failed {
+                    this.chapters_tried = tried(cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Tries the AI chapters again, after a key was saved or auto chapters were turned on.
+    pub fn chapter_again(&mut self, cx: &mut Context<Self>) {
+        if self.chapters_failed && self.chapters_tried != tried(cx) {
+            self.chapters_failed = false;
+        }
+        self.chapter(cx);
     }
 
     /// Whether the comments come newest first.
@@ -539,6 +801,11 @@ impl Watching {
     /// Starts `id` playing and fetches its page. The music stops, since both would sound at once.
     pub fn open(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.id.as_deref() == Some(id) {
+            // Opened again, perhaps under another profile, whose history has yet to see it.
+            if let Some(seen) = self.video() {
+                self.subscriptions
+                    .update(cx, |kept, cx| kept.watched_now(seen, cx));
+            }
             self.set_paused(false, cx);
             return;
         }
@@ -546,6 +813,7 @@ impl Watching {
         self.newest = false;
         self.playback.update(cx, |playback, cx| playback.pause(cx));
         self.id = Some(id.to_owned());
+        self.seen = false;
         self.watch = None;
         self.error = None;
         self.thread = Thread::default();
@@ -553,6 +821,11 @@ impl Watching {
             open: self.script.open,
             ..Script::default()
         };
+        self.chat = Chat::default();
+        self.chapters = Arc::default();
+        self.chapters_ai = false;
+        self.chaptering = None;
+        self.chapters_failed = false;
         if self.script.open {
             self.load_transcript(cx);
         }
@@ -583,12 +856,15 @@ impl Watching {
                         if let Some(liked) = watch.liked {
                             this.liked = liked;
                         }
+                        this.chapters = Arc::new(tube::chapters(&watch.description));
                         this.watch = Some(Arc::new(watch));
-                        if let Some(seen) = this.video() {
+                        let again = std::mem::replace(&mut this.seen, true);
+                        if let Some(seen) = this.video().filter(|_| !again) {
                             this.subscriptions
                                 .update(cx, |kept, cx| kept.watched_now(seen, cx));
                         }
                         this.load_comments(cx);
+                        this.chapter(cx);
                     }
                     Err(reason) => this.error = Some(reason),
                 }
@@ -604,7 +880,9 @@ impl Watching {
             return;
         };
         let paused = self.player().is_some_and(|player| player.paused());
+        let seen = self.seen;
         self.open(&id, cx);
+        self.seen = seen;
         self.set_paused(paused, cx);
     }
 
@@ -941,6 +1219,10 @@ impl Watching {
                         this.script.failed = true;
                     }
                 }
+                if std::mem::take(&mut this.chat.waiting) {
+                    this.answer(cx);
+                }
+                this.chapter(cx);
                 cx.notify();
             })
             .ok();
@@ -1594,6 +1876,9 @@ pub struct Account {
     failed: bool,
     task: Option<Task<()>>,
     io: Io,
+    /// The cookies of the Google session kept on this machine. While a guest profile is in
+    /// use they stay here and no request carries them.
+    cookies: Option<String>,
     /// The channels the Google account can act as, once YouTube listed them.
     identities: Vec<Identity>,
     /// The channel picked among them, none being the account's own. Unset until one is picked
@@ -1617,7 +1902,11 @@ impl Account {
         let kept = path
             .as_ref()
             .and_then(|path| std::fs::read_to_string(path).ok());
-        if let Some(cookies) = kept
+        // The marker beside the cookies says a guest profile was in use, so Google stays out.
+        let away = path
+            .as_ref()
+            .is_some_and(|path| path.with_file_name(AWAY).exists());
+        if let Some(cookies) = kept.clone().filter(|_| !away)
             && let Err(error) = client.sign_in(Some(cookies))
         {
             log::warn!("video: cannot use the kept account: {error:#}");
@@ -1639,6 +1928,7 @@ impl Account {
                 failed: false,
                 task: None,
                 io,
+                cookies: kept,
                 identities: Vec::new(),
                 page,
                 acting: 0,
@@ -1659,8 +1949,54 @@ impl Account {
         cx.try_global::<Held>().map(|held| held.0.clone())
     }
 
+    /// Whether a Google profile is in use rather than a guest one.
     pub fn signed_in(&self) -> bool {
         self.client.signed_in()
+    }
+
+    /// Whether a Google session is kept on this machine, in use or not.
+    pub fn kept(&self) -> bool {
+        self.cookies.is_some()
+    }
+
+    /// Goes to the guest profiles and keeps the Google session for later. No request carries
+    /// it from here on.
+    pub fn leave(&mut self, cx: &mut Context<Self>) {
+        if !self.signed_in() {
+            return;
+        }
+        self.client.sign_in(None).ok();
+        self.client.act_as(0, None);
+        if let Some(path) = &self.path
+            && let Err(error) = write_private(&path.with_file_name(AWAY), b"")
+        {
+            log::warn!("video: cannot keep the guest profile in use: {error:#}");
+        }
+        self.acting += 1;
+        cx.notify();
+    }
+
+    /// Comes back to the kept Google session as the channel last used.
+    pub fn resume(&mut self, cx: &mut Context<Self>) {
+        if self.signed_in() {
+            return;
+        }
+        let Some(cookies) = self.cookies.clone() else {
+            return;
+        };
+        if let Err(error) = self.client.sign_in(Some(cookies)) {
+            log::warn!("video: cannot use the kept account: {error:#}");
+            return;
+        }
+        if let Some((user, page)) = &self.page {
+            self.client.act_as(*user, page.clone());
+        }
+        if let Some(path) = &self.path {
+            std::fs::remove_file(path.with_file_name(AWAY)).ok();
+        }
+        self.acting += 1;
+        self.list(cx);
+        cx.notify();
     }
 
     /// The channels the signed-in Google account can act as.
@@ -1668,8 +2004,11 @@ impl Account {
         &self.identities
     }
 
-    /// Whether `identity` is the channel the client acts as.
+    /// Whether `identity` is the channel the client acts as, which none is on a guest profile.
     pub fn acts_as(&self, identity: &Identity) -> bool {
+        if !self.signed_in() {
+            return false;
+        }
         match &self.page {
             Some((user, page)) => *user == identity.user && *page == identity.page,
             None => identity.selected,
@@ -1684,6 +2023,10 @@ impl Account {
     /// Acts as another channel of the account from now on, and remembers it.
     pub fn choose(&mut self, identity: &Identity, cx: &mut Context<Self>) {
         if self.acts_as(identity) && self.page.is_some() {
+            return;
+        }
+        self.resume(cx);
+        if !self.signed_in() {
             return;
         }
         self.settle(identity.user, identity.page.clone());
@@ -1717,6 +2060,11 @@ impl Account {
                 match crate::settled(listed, cx) {
                     Ok(identities) => {
                         this.identities = identities;
+                        // A guest profile taken while the list was on its way leaves the
+                        // remembered channel as it is.
+                        if !this.signed_in() {
+                            return cx.notify();
+                        }
                         let known = this.page.is_some()
                             && this
                                 .identities
@@ -1805,7 +2153,7 @@ impl Account {
                     };
                     this.window = None;
                     if let Some(cookies) = cookies {
-                        this.keep(cookies);
+                        this.keep(cookies, cx);
                         if this.signed_in() {
                             this.acting += 1;
                             this.list(cx);
@@ -1829,32 +2177,76 @@ impl Account {
         if let Some(path) = &self.path {
             std::fs::remove_file(path).ok();
             std::fs::remove_file(path.with_file_name("channel")).ok();
+            std::fs::remove_file(path.with_file_name(AWAY)).ok();
         }
+        self.cookies = None;
         self.identities.clear();
         self.page = None;
         self.listing = None;
         self.acting += 1;
+        forget_channels(cx);
         cx.notify();
     }
 
-    /// Hands the cookies to the client and writes them where the next launch finds them.
-    fn keep(&mut self, cookies: String) {
+    /// Hands the cookies to the client and writes them where the next launch finds them. They
+    /// take the place of a session kept before, whose channels and what they kept are
+    /// forgotten, since the new session may be another person's.
+    fn keep(&mut self, cookies: String, cx: &mut Context<Self>) {
         if let Err(error) = self.client.sign_in(Some(cookies.clone())) {
             log::warn!("video: cannot sign in: {error:#}");
             self.failed = true;
             return;
         }
+        if self.cookies.is_some() {
+            self.client.act_as(0, None);
+            self.identities.clear();
+            self.page = None;
+            if let Some(path) = &self.path {
+                std::fs::remove_file(path.with_file_name("channel")).ok();
+            }
+            forget_channels(cx);
+        }
+        self.cookies = Some(cookies.clone());
         let Some(path) = &self.path else {
             return;
         };
+        std::fs::remove_file(path.with_file_name(AWAY)).ok();
         if let Err(error) = write_private(path, cookies.as_bytes()) {
             log::warn!("video: cannot keep the account: {error:#}");
         }
     }
 }
 
+/// Deletes what every YouTube channel of the Google session kept on this machine, when the
+/// session is signed out of or replaced.
+fn forget_channels(cx: &mut App) {
+    if let Some(kept) = Subscriptions::entity(cx) {
+        kept.update(cx, |kept, cx| kept.forget_channels(cx));
+    }
+}
+
 /// Writes a file only its owner can read, making its folder first.
-fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+/// Tells the assistant Mistral turned its key down, when `reason` says so.
+/// The key and chapter model in use, told apart without holding the key.
+fn tried(cx: &App) -> Option<String> {
+    let assistant = Assistant::entity(cx)?.read(cx);
+    Some(format!(
+        "{:?} {} {}",
+        assistant.hint(),
+        assistant.refused(),
+        assistant.chapter_model()
+    ))
+}
+
+fn refused(reason: &str, cx: &mut App) {
+    if reason.contains("API key")
+        && let Some(assistant) = Assistant::entity(cx)
+    {
+        assistant.update(cx, |assistant, cx| assistant.mark_refused(cx));
+    }
+}
+
+pub(crate) fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
 
     if let Some(parent) = path.parent() {
@@ -1890,6 +2282,10 @@ const FIRST_PROFILE: usize = 1;
 const VIDEOS: &str = "videos.json";
 const PROFILES: &str = "profiles";
 const PROFILE: &str = "profile";
+/// The folder what each YouTube channel of a Google account keeps is in, apart from the guests.
+const CHANNELS: &str = "google";
+/// The file beside the cookies that says a guest profile is in use while they are kept.
+const AWAY: &str = "guest";
 
 /// The one [`Subscriptions`] of the app, where the chrome finds it.
 struct Following(Entity<Subscriptions>);
@@ -1904,12 +2300,29 @@ fn profile_path(folder: &std::path::Path, profile: usize) -> PathBuf {
     }
 }
 
-/// Reads what a profile kept, nothing when it has no file yet.
-fn read_kept(path: &std::path::Path) -> Kept {
-    std::fs::read(path)
+/// Where a YouTube channel of a Google account keeps what it follows and watched.
+fn channel_path(folder: &std::path::Path, user: usize, page: Option<&str>) -> PathBuf {
+    let page: String = page
+        .unwrap_or("own")
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect();
+    folder.join(CHANNELS).join(format!("{user}-{page}.json"))
+}
+
+/// Reads what a profile kept, nothing when it has no file yet. A guest profile leaves out the
+/// channels an account once brought into it.
+fn read_kept(path: &std::path::Path, guest: bool) -> Kept {
+    let mut kept: Kept = std::fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if guest {
+        let synced = std::mem::take(&mut kept.synced);
+        kept.channels
+            .retain(|channel| !synced.contains(&channel.id));
+    }
+    kept
 }
 
 /// What is kept on disk between runs: the channels followed and the videos watched, newest first.
@@ -1931,8 +2344,9 @@ struct Kept {
     synced: Vec<String>,
 }
 
-/// The channels the user follows, the feed of their newest uploads and the videos watched. All
-/// of it lives on this machine, so nothing here needs a YouTube account.
+/// The channels the user follows, the feed of their newest uploads and the videos watched, for
+/// the profile in use. A guest profile and a YouTube channel of a Google account each keep
+/// their own, and neither ever shows the other's.
 pub struct Subscriptions {
     client: Client,
     io: Io,
@@ -1995,8 +2409,11 @@ impl Subscriptions {
             .and_then(|kept| kept.trim().parse().ok())
             .filter(|profile| profiles.contains(profile))
             .unwrap_or(FIRST_PROFILE);
-        let path = profile_path(&folder, profile);
-        let kept = read_kept(&path);
+        let path = match client.acting() {
+            Some((user, page)) => channel_path(&folder, user, page.as_deref()),
+            None => profile_path(&folder, profile),
+        };
+        let kept = read_kept(&path, !client.signed_in());
         Self {
             client,
             io,
@@ -2019,9 +2436,30 @@ impl Subscriptions {
         }
     }
 
-    /// The profile in use, counted from one.
+    /// The guest profile in use, counted from one, or the one last used while a Google
+    /// profile is.
     pub fn profile(&self) -> usize {
         self.profile
+    }
+
+    /// Deletes what every YouTube channel kept here and reads the profile in use afresh, so
+    /// nothing of a Google session outlasts it.
+    pub(crate) fn forget_channels(&mut self, cx: &mut Context<Self>) {
+        match std::fs::remove_dir_all(self.folder.join(CHANNELS)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                log::warn!("video: cannot delete what the account kept: {error:#}");
+            }
+            _ => {}
+        }
+        self.load(cx);
+    }
+
+    /// Where the profile in use is kept: the YouTube channel acted as, or the guest profile.
+    fn place(&self) -> PathBuf {
+        match self.client.acting() {
+            Some((user, page)) => channel_path(&self.folder, user, page.as_deref()),
+            None => profile_path(&self.folder, self.profile),
+        }
     }
 
     /// Every profile kept on this machine, in order.
@@ -2032,10 +2470,12 @@ impl Subscriptions {
     /// Uses another profile from now on: its followed channels, history, saved videos and
     /// places. The one left stays on disk as it was.
     pub fn use_profile(&mut self, profile: usize, cx: &mut Context<Self>) {
-        if profile == self.profile || !self.profiles.contains(&profile) {
+        if !self.profiles.contains(&profile) {
             return;
         }
-        self.enter(profile, cx);
+        if profile != self.profile || self.place() != self.path {
+            self.enter(profile, cx);
+        }
     }
 
     /// Starts an empty profile and uses it.
@@ -2046,30 +2486,37 @@ impl Subscriptions {
         self.save();
     }
 
-    /// Deletes the profile in use with all it kept and goes back to the first one, which
-    /// cannot be deleted itself.
-    pub fn remove_profile(&mut self, cx: &mut Context<Self>) {
-        if self.profile == FIRST_PROFILE {
+    /// Deletes a guest profile with all it kept. The first one cannot be deleted, and it is
+    /// the one used next when the profile in use goes.
+    pub fn remove_profile(&mut self, gone: usize, cx: &mut Context<Self>) {
+        if gone == FIRST_PROFILE || !self.profiles.contains(&gone) {
             return;
         }
-        let gone = self.profile;
         self.profiles.retain(|profile| *profile != gone);
-        self.enter(FIRST_PROFILE, cx);
+        if self.profile == gone {
+            self.enter(FIRST_PROFILE, cx);
+        }
+        cx.notify();
         if let Err(error) = std::fs::remove_file(profile_path(&self.folder, gone)) {
             log::warn!("video: cannot delete the profile: {error:#}");
         }
     }
 
-    /// Reads `profile` from disk in place of the one in use and remembers it for next launch.
+    /// Takes `profile` as the guest profile in use and remembers it for next launch.
     fn enter(&mut self, profile: usize, cx: &mut Context<Self>) {
         self.profile = profile;
-        self.path = profile_path(&self.folder, profile);
-        self.kept = read_kept(&self.path);
         if let Err(error) = std::fs::create_dir_all(&self.folder)
             .and_then(|()| std::fs::write(self.folder.join(PROFILE), profile.to_string()))
         {
             log::warn!("video: cannot keep the chosen profile: {error:#}");
         }
+        self.load(cx);
+    }
+
+    /// Reads what the profile in use kept in place of what is held, and loads its feed.
+    fn load(&mut self, cx: &mut Context<Self>) {
+        self.path = self.place();
+        self.kept = read_kept(&self.path, !self.client.signed_in());
         self.feed.clear();
         self.loaded = false;
         self.loading = false;
@@ -2091,10 +2538,14 @@ impl Subscriptions {
         &self.recommended
     }
 
-    /// Follows what the YouTube account in use is subscribed to and reads its recommendations.
-    /// Channels followed here stay, channels a former sync brought and the account no longer
-    /// has go. As a guest only the recommendations are dropped.
+    /// Follows what the YouTube channel in use is subscribed to and reads its recommendations,
+    /// after changing to what that channel keeps when another profile was held. Channels
+    /// followed here stay, channels a former sync brought and the account no longer has go. A
+    /// guest profile asks YouTube nothing.
     pub fn sync(&mut self, cx: &mut Context<Self>) {
+        if self.place() != self.path {
+            return self.load(cx);
+        }
         self.recommended.clear();
         self.syncing = None;
         cx.notify();

@@ -1,6 +1,9 @@
 //! The video screens: the search results, the page a video plays on and the page of a channel or
 //! a playlist. All three lay videos out as the same thumbnail tiles.
 
+mod ai;
+mod markdown;
+
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -97,7 +100,6 @@ const BROWSE_HOLD: Duration = Duration::from_secs(4);
 /// How long the tray of player buttons stays open once the pointer has left it.
 const TRAY_LINGER: Duration = Duration::from_millis(450);
 /// The most the picture stands over its place on the page as it shrinks out of full screen.
-const SHRINK_FROM: f32 = 1.5;
 /// How wide a channel's post is at most, how many of its pictures show and how large, and how
 /// wide the thumbnail of a video it points at is.
 const POST_WIDTH: Pixels = px(720.);
@@ -485,101 +487,33 @@ fn watched_bar(width: Pixels, watched: f32, cx: &App) -> impl IntoElement + use<
         .child(div().h_full().w(width * watched).bg(theme.primary))
 }
 
-/// The account menu's entries for the profiles kept on this machine: one to use each, one to
-/// start another and, away from the first, one to delete the profile in use.
-fn profile_items(cx: &App) -> Vec<MenuItem> {
-    let Some(kept) = state::Subscriptions::entity(cx) else {
-        return Vec::new();
-    };
-    let held = kept.read(cx);
-    let used = held.profile();
-    let mut items: Vec<MenuItem> = held
-        .profiles()
-        .iter()
-        .map(|&profile| {
-            let kept = kept.clone();
-            MenuItem::new(
-                ("account-video-profile", profile),
-                t!("account-video-profile", number = profile),
-            )
-            .checked(profile == used)
-            .on_click(move |_, _, cx| {
-                kept.update(cx, |kept, cx| kept.use_profile(profile, cx));
-            })
-        })
-        .collect();
-    items.push(
-        MenuItem::new("account-video-profile-new", t!("account-video-profile-new"))
-            .icon("icons/plus.svg")
-            .on_click({
-                let kept = kept.clone();
-                move |_, _, cx| kept.update(cx, |kept, cx| kept.add_profile(cx))
-            }),
-    );
-    if held.profiles().first() != Some(&used) {
-        items.push(
-            MenuItem::new(
-                "account-video-profile-remove",
-                t!("account-video-profile-remove"),
-            )
-            .icon("icons/trash-2.svg")
-            .on_click(move |_, _, cx| kept.update(cx, |kept, cx| kept.remove_profile(cx))),
-        );
-    }
-    items.push(MenuItem::separator("account-video-profiles-end"));
-    items
-}
-
-/// The account menu's entries for YouTube: signing in or out, and with several channels under
-/// the Google account, one entry for each to act as.
+/// The account menu's entry for the profiles: the one in use by name, opening the Profiles
+/// tab of the settings where they are switched and managed.
 pub(crate) fn account_items(cx: &App) -> Vec<MenuItem> {
-    let Some(account) = state::VideoAccount::entity(cx) else {
+    let (Some(account), Some(kept)) = (
+        state::VideoAccount::entity(cx),
+        state::Subscriptions::entity(cx),
+    ) else {
         return Vec::new();
     };
     let held = account.read(cx);
-    if !held.signed_in() {
-        let idle = held.supported() && !held.signing_in();
-        let item = MenuItem::new("account-video-in", t!("account-video-sign-in"))
-            .icon("icons/log-in.svg")
-            .on_click(move |_, _, cx| {
-                let title = t!("login-choose-title", provider = "YouTube").to_string();
-                account.update(cx, |account, cx| account.sign_in(title, cx));
-            });
-        let mut items = profile_items(cx);
-        items.push(match idle {
-            true => item,
-            false => item.disabled(),
-        });
-        return items;
-    }
-    let identities = held.identities();
-    let mut items: Vec<MenuItem> = match identities.len() {
-        0 | 1 => Vec::new(),
-        _ => identities
+    let name = match held.signed_in() {
+        true => held
+            .identities()
             .iter()
-            .enumerate()
-            .map(|(place, identity)| {
-                let (account, chosen) = (account.clone(), identity.clone());
-                MenuItem::new(
-                    ("account-video-channel", place),
-                    t!("account-video-channel", name = identity.name.as_str()),
-                )
-                .checked(held.acts_as(identity))
-                .on_click(move |_, _, cx| {
-                    account.update(cx, |account, cx| account.choose(&chosen, cx));
-                })
-            })
-            .collect(),
+            .find(|identity| held.acts_as(identity))
+            .map(|identity| SharedString::from(identity.name.clone()))
+            .unwrap_or_else(|| t!("settings-google-account")),
+        false => t!("account-video-profile", number = kept.read(cx).profile()),
     };
-    items.extend(profile_items(cx));
-    items.push(
-        MenuItem::new("account-video-out", t!("account-video-sign-out"))
-            .icon("icons/log-out.svg")
-            .on_click(move |_, _, cx| {
-                account.update(cx, |account, cx| account.sign_out(cx));
+    vec![
+        MenuItem::new("account-video-profiles", name)
+            .icon("icons/circle-user-round.svg")
+            .detail(t!("account-video-profiles"))
+            .on_click(|_, _, cx| {
+                router::navigate(Destination::Settings(router::SettingsPage::Profiles), cx);
             }),
-    );
-    items
+    ]
 }
 
 /// The button over a thumbnail's corner that saves the video to watch later or takes it back out.
@@ -1153,6 +1087,14 @@ impl Render for VideoSearchView {
 
 /// The page a video plays on: the picture, its controls, what it is, its comments and what to
 /// watch next.
+/// Which page the side panel beside the picture shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Panel {
+    Transcript,
+    Chapters,
+    Chat,
+}
+
 pub(crate) struct WatchView {
     watching: Entity<Watching>,
     subscriptions: Entity<Subscriptions>,
@@ -1186,6 +1128,8 @@ pub(crate) struct WatchView {
     folding: Option<Task<()>>,
     /// When full screen was last entered or left, which the picture grows or shrinks from.
     turned: Instant,
+    /// Where the picture stands on the page, in the window, as last laid out.
+    slot: Rc<Cell<Bounds<Pixels>>>,
     /// Scrolls the transcript, which follows what is being said.
     script_scroll: ScrollHandle,
     /// The transcript line last scrolled to.
@@ -1225,6 +1169,14 @@ pub(crate) struct WatchView {
     entered: bool,
     /// When the pointer last moved over the full screen picture, which keeps its controls up.
     stirred: Option<Instant>,
+    /// Which page of the side panel shows: the transcript, the chapters or the AI chat.
+    panel: Panel,
+    /// The field a question to the AI is written in.
+    query: Entity<Input>,
+    /// Scrolls the chat, which follows its newest message.
+    chat_scroll: ScrollHandle,
+    /// How many messages the chat held when it was last scrolled to its end.
+    heard: Cell<usize>,
     _tick: Task<()>,
 }
 
@@ -1237,6 +1189,11 @@ impl WatchView {
         let id = cx.entity_id();
         cx.observe(&watching, |_, _, cx| cx.notify()).detach();
         cx.observe(&subscriptions, |_, _, cx| cx.notify()).detach();
+        if let Some(assistant) = state::Assistant::entity(cx) {
+            cx.observe(&assistant, |_, _, cx| cx.notify()).detach();
+        }
+        let query = cx.new(|cx| Input::new("video-ai-placeholder", cx));
+        cx.observe(&query, |_, _, cx| cx.notify()).detach();
         let chrome = Chrome::entity(cx);
         cx.observe(&chrome, |_, _, cx| cx.notify()).detach();
 
@@ -1279,6 +1236,7 @@ impl WatchView {
             loud: false,
             folding: None,
             turned: Instant::now(),
+            slot: Rc::default(),
             script_scroll: ScrollHandle::new(),
             said: Cell::new(None),
             browsed: Rc::new(Cell::new(None)),
@@ -1298,6 +1256,10 @@ impl WatchView {
             theater: false,
             entered: false,
             stirred: None,
+            panel: Panel::Transcript,
+            query,
+            chat_scroll: ScrollHandle::new(),
+            heard: Cell::new(0),
             _tick: tick,
         }
     }
@@ -1558,7 +1520,13 @@ impl WatchView {
         let theme = cx.theme();
         let fraction = self.peek?;
         let seconds = f64::from(fraction) * total;
-        let peek = self.watching.read(cx).peek(seconds);
+        let watching = self.watching.read(cx);
+        let peek = watching.peek(seconds);
+        let chapters = watching.chapters();
+        let chapter = watching
+            .chapter_at(seconds)
+            .and_then(|place| chapters.get(place))
+            .map(|chapter| SharedString::from(chapter.title.clone()));
         let width = match &peek {
             Some((_, (width, _))) => px(*width as f32),
             None => PEEK_BARE,
@@ -1602,12 +1570,26 @@ impl WatchView {
                 })
                 .child(
                     div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .max_w(width.max(PEEK_BARE))
                         .px_1p5()
                         .py_0p5()
                         .rounded(theme.radius)
+                        .corner_smoothing(theme.smoothing)
                         .bg(theme.overlay)
                         .text_size(theme.text(Text::Small))
                         .text_color(theme.overlay_foreground)
+                        .when_some(chapter, |this, chapter| {
+                            this.child(
+                                div()
+                                    .max_w_full()
+                                    .truncate()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(chapter),
+                            )
+                        })
                         .child(clock(Duration::from_secs_f64(seconds.max(0.)))),
                 ),
         )
@@ -1899,6 +1881,16 @@ impl WatchView {
         let paused = player.is_none_or(|player| player.paused());
         let position = player.and_then(|player| player.position()).unwrap_or(0.);
         let total = player.and_then(|player| player.duration()).unwrap_or(0.);
+        let cuts: Vec<f32> = match total > 0. {
+            true => self
+                .watching
+                .read(cx)
+                .chapters()
+                .iter()
+                .map(|chapter| (chapter.start / total) as f32)
+                .collect(),
+            false => Vec::new(),
+        };
         let seekable = total > 0.;
         let (level, muted, captions) = (watching.volume(), watching.muted(), watching.captions());
         let (captioned, silenced) = (self.watching.clone(), self.watching.clone());
@@ -2172,6 +2164,7 @@ impl WatchView {
                     }),
             )
             .child(time(ends))
+            .children(self.chapter_now(position, cx))
             .child(div().flex_1())
             .child(tray)
             .child(
@@ -2215,6 +2208,7 @@ impl WatchView {
                     .children(self.preview(total, cx))
                     .child(
                         Scrubber::new(&self.seek, fraction)
+                            .cuts(cuts, theme.background)
                             .name(t!("video-position"))
                             .value(elapsed)
                             .colors(theme.progress_bar, theme.muted, theme.foreground)
@@ -2249,9 +2243,33 @@ impl WatchView {
             .player()
             .and_then(|player| player.position())
             .unwrap_or(0.);
-        let title = t!("video-transcript");
         let (closed, retried) = (self.watching.clone(), self.watching.clone());
-        let copied = lines.clone().filter(|lines| !lines.is_empty());
+        let cleared = self.watching.clone();
+        let charted = !watching.chapters().is_empty() || watching.chaptering();
+        let panel = match self.panel {
+            Panel::Chapters if !charted => Panel::Transcript,
+            panel => panel,
+        };
+        let copied = lines
+            .clone()
+            .filter(|lines| panel == Panel::Transcript && !lines.is_empty());
+        let chatted = panel == Panel::Chat && !watching.said().is_empty();
+        let tab = |key: &'static str, shown: Panel| {
+            Button::new(key)
+                .label(i18n::lookup(key, None))
+                .small()
+                .ghost()
+                .selected(panel == shown)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.panel = shown;
+                    cx.notify();
+                }))
+        };
+        let mut tabs = vec![tab("video-panel-transcript", Panel::Transcript)];
+        if charted {
+            tabs.push(tab("video-panel-chapters", Panel::Chapters));
+        }
+        tabs.push(tab("video-panel-chat", Panel::Chat));
         let note = |id: &'static str, label: SharedString| {
             div()
                 .id(id)
@@ -2262,81 +2280,85 @@ impl WatchView {
                 .text_color(theme.muted_foreground)
                 .child(label)
         };
-        let body = match lines {
-            None if watching.transcript_failed() => div()
-                .flex()
-                .flex_col()
-                .items_start()
-                .child(note("video-transcript-lost", t!("video-transcript-lost")))
-                .child(
-                    div().px_3().child(
-                        Button::new("video-transcript-retry")
-                            .label(t!("video-transcript-retry"))
-                            .on_click(move |_, _, cx| {
-                                retried.update(cx, |watching, cx| watching.load_transcript(cx));
-                            }),
-                    ),
-                )
-                .into_any_element(),
-            None => waiting("video-transcript-waiting").into_any_element(),
-            Some(lines) if lines.is_empty() => {
-                note("video-transcript-none", t!("video-transcript-none")).into_any_element()
-            }
-            Some(lines) => {
-                let spoken = lines.iter().rposition(|line| line.start <= now);
-                let total = lines.len();
-                self.keep_up(spoken);
-                div()
-                    .id("video-transcript-lines")
+        let body = match panel {
+            Panel::Chapters => self.chapter_list(now, cx),
+            Panel::Chat => self.chat(cx),
+            Panel::Transcript => match lines {
+                None if watching.transcript_failed() => div()
                     .flex()
                     .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .p_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.script_scroll)
-                    .children(lines.iter().enumerate().map(|(place, line)| {
-                        let (sought, start) = (self.watching.clone(), line.start);
-                        let text = SharedString::from(line.text.clone());
-                        let lit = spoken == Some(place);
-                        div()
-                            .id(("video-transcript-line", (start * 1000.) as usize))
-                            .role(Role::Button)
-                            .aria_label(text.clone())
-                            .aria_position_in_set(place + 1)
-                            .aria_size_of_set(total)
-                            .flex()
-                            .gap_3()
-                            .px_2()
-                            .py_1()
-                            .rounded(theme.radius)
-                            .corner_smoothing(theme.smoothing)
-                            .cursor_pointer()
-                            .text_size(theme.text(Text::Small))
-                            .when(lit, |this| this.bg(theme.secondary))
-                            .hover(|this| this.bg(theme.secondary_hover))
-                            .on_click(move |_, _, cx| {
-                                sought.update(cx, |watching, cx| watching.seek_to(start, cx));
-                            })
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_color(theme.muted_foreground)
-                                    .child(clock(Duration::from_secs_f64(start.max(0.)))),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_color(match lit {
-                                        true => theme.foreground,
-                                        false => theme.muted_foreground,
-                                    })
-                                    .child(text),
-                            )
-                    }))
-                    .into_any_element()
-            }
+                    .items_start()
+                    .child(note("video-transcript-lost", t!("video-transcript-lost")))
+                    .child(
+                        div().px_3().child(
+                            Button::new("video-transcript-retry")
+                                .label(t!("video-transcript-retry"))
+                                .on_click(move |_, _, cx| {
+                                    retried.update(cx, |watching, cx| watching.load_transcript(cx));
+                                }),
+                        ),
+                    )
+                    .into_any_element(),
+                None => waiting("video-transcript-waiting").into_any_element(),
+                Some(lines) if lines.is_empty() => {
+                    note("video-transcript-none", t!("video-transcript-none")).into_any_element()
+                }
+                Some(lines) => {
+                    let spoken = lines.iter().rposition(|line| line.start <= now);
+                    let total = lines.len();
+                    self.keep_up(spoken);
+                    div()
+                        .id("video-transcript-lines")
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h_0()
+                        .p_1()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.script_scroll)
+                        .children(lines.iter().enumerate().map(|(place, line)| {
+                            let (sought, start) = (self.watching.clone(), line.start);
+                            let text = SharedString::from(line.text.clone());
+                            let lit = spoken == Some(place);
+                            div()
+                                .id(("video-transcript-line", (start * 1000.) as usize))
+                                .role(Role::Button)
+                                .aria_label(text.clone())
+                                .aria_position_in_set(place + 1)
+                                .aria_size_of_set(total)
+                                .flex()
+                                .gap_3()
+                                .px_2()
+                                .py_1()
+                                .rounded(theme.radius)
+                                .corner_smoothing(theme.smoothing)
+                                .cursor_pointer()
+                                .text_size(theme.text(Text::Small))
+                                .when(lit, |this| this.bg(theme.secondary))
+                                .hover(|this| this.bg(theme.secondary_hover))
+                                .on_click(move |_, _, cx| {
+                                    sought.update(cx, |watching, cx| watching.seek_to(start, cx));
+                                })
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(theme.muted_foreground)
+                                        .child(clock(Duration::from_secs_f64(start.max(0.)))),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_color(match lit {
+                                            true => theme.foreground,
+                                            false => theme.muted_foreground,
+                                        })
+                                        .child(text),
+                                )
+                        }))
+                        .into_any_element()
+                }
+            },
         };
 
         Some(
@@ -2367,23 +2389,29 @@ impl WatchView {
                         .flex_none()
                         .items_center()
                         .gap_1()
-                        .pl_3()
+                        .pl_1()
                         .pr_1()
                         .py_1()
                         .border_b_1()
                         .border_color(theme.border)
                         .child(
-                            div()
-                                .id("video-transcript-heading")
-                                .role(Role::Heading)
-                                .aria_level(2)
-                                .aria_label(title.clone())
-                                .flex_1()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_size(theme.text(Text::Label))
-                                .text_color(theme.foreground)
-                                .child(title),
+                            div().flex_1().min_w_0().child(
+                                TabBar::new("video-panel")
+                                    .name(t!("video-panel"))
+                                    .items(tabs),
+                            ),
                         )
+                        .when(chatted, |this| {
+                            this.child(
+                                Button::new("video-ai-clear")
+                                    .icon("icons/square-pen.svg")
+                                    .ghost()
+                                    .tooltip("video-ai-clear")
+                                    .on_click(move |_, _, cx| {
+                                        cleared.update(cx, |watching, cx| watching.clear_chat(cx));
+                                    }),
+                            )
+                        })
                         .when_some(copied, |this, lines| {
                             this.child(
                                 Button::new("video-transcript-copy")
@@ -2551,6 +2579,25 @@ impl WatchView {
         ui::ease_in_out_cubic((self.turned.elapsed().as_secs_f32() / span).min(1.))
     }
 
+    /// The place of the picture `back` of the way from the whole window, `room` large, to its
+    /// place on the page. A page that was never laid out has it grow out of the middle.
+    fn between(&self, room: Size<Pixels>, back: f32) -> Bounds<Pixels> {
+        let mut slot = self.slot.get();
+        if slot.size.width <= Pixels::ZERO {
+            slot = Bounds::new(
+                gpui::point(room.width / 2., room.height / 2.),
+                Size::default(),
+            );
+        }
+        Bounds::new(
+            gpui::point(slot.origin.x * back, slot.origin.y * back),
+            size(
+                (room.width + (slot.size.width - room.width) * back).floor(),
+                (room.height + (slot.size.height - room.height) * back).floor(),
+            ),
+        )
+    }
+
     /// How far the full screen controls have come in, from 0 to 1, as they rise and sink.
     fn strip_lit(&self, cx: &Context<Self>) -> f32 {
         let (shown, since) = self.strip;
@@ -2602,15 +2649,12 @@ impl WatchView {
                     }))
                     .child({
                         // The picture grows out of the place it had on the page.
-                        let from = (self.width / room.width).min(1.);
-                        let scale = from + (1. - from) * self.zoomed(cx);
+                        let at = self.between(room, 1. - self.zoomed(cx));
                         div()
-                            .w(room.width)
-                            .h(room.height)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(self.stage(room.map(|side| (side * scale).floor()), cx))
+                            .absolute()
+                            .left(at.origin.x)
+                            .top(at.origin.y)
+                            .child(self.stage(at.size, cx))
                     })
                     .when(lit > 0., |this| {
                         this.child(
@@ -3443,6 +3487,7 @@ impl Render for WatchView {
         let loading = watching.is_loading();
         let failure = watching.error().map(str::to_owned);
         let retried = self.watching.clone();
+        let shrinking = self.zoomed(cx) < 1.;
         let player = (!full).then(|| {
             div()
                 .flex()
@@ -3451,22 +3496,30 @@ impl Render for WatchView {
                 .w(stage.width)
                 .gap_2()
                 .child({
-                    // The picture shrinks into its place from the size it filled the screen at.
-                    let from = (viewport.width / stage.width).clamp(1., SHRINK_FROM);
-                    let scale = from + (1. - from) * self.zoomed(cx);
-                    let grown = stage.map(|side| (side * scale).floor());
+                    // The picture shrinks into its place from the whole window, over the page
+                    // and any panel beside it.
+                    let slot = self.slot.clone();
                     div()
                         .relative()
                         .w(stage.width)
                         .h(stage.height)
                         .flex_none()
                         .child(
-                            div()
+                            gpui::canvas(move |bounds, _, _| slot.set(bounds), |_, (), _, _| {})
                                 .absolute()
-                                .left((stage.width - grown.width) / 2.)
-                                .top((stage.height - grown.height) / 2.)
-                                .child(self.stage(grown, cx)),
+                                .size_full(),
                         )
+                        .map(|this| match shrinking {
+                            true => {
+                                let at = self.between(viewport, self.zoomed(cx));
+                                this.child(deferred(
+                                    anchored()
+                                        .position(at.origin)
+                                        .child(div().occlude().child(self.stage(at.size, cx))),
+                                ))
+                            }
+                            false => this.child(self.stage(stage, cx)),
+                        })
                 })
                 .child(self.controls(cx))
         });

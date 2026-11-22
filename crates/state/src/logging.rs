@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-const FILE: &str = "sonora.log";
+const FILE: &str = "youtube-plus.log";
 
 /// The file the running Sonora appends its log to, `sonora.log` under the platform's
 /// state folder, or the cache folder where the platform has none. `None` when neither is known.

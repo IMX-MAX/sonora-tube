@@ -43,8 +43,6 @@ Source: "{#BuildMetadata}"; DestDir: "{app}"; DestName: "build.json"; Flags: ign
 #if Extras != ""
 Source: "{#Extras}\*"; DestDir: "{app}"; Flags: ignoreversion
 #endif
-Source: "..\..\COPYING"; DestDir: "{app}"; DestName: "LICENSE"; Flags: ignoreversion
-Source: "..\..\THIRD-PARTY.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]
 Type: files; Name: "{app}\build.json"

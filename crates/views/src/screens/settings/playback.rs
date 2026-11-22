@@ -11,11 +11,19 @@ const SLEEP_WIDTH: f32 = 1.;
 const SLEEP_LABEL: f32 = 0.7;
 impl SettingsView {
     pub(super) fn playback_groups(&self, _: &App) -> Vec<Group> {
-        vec![Group::new("settings-group-videos", "icons/play.svg").rows([
-            Slot::HideShorts,
-            Slot::Captions,
-            Slot::Ambient,
-        ])]
+        vec![
+            Group::new("settings-group-videos", "icons/play.svg").rows([
+                Slot::HideShorts,
+                Slot::Captions,
+                Slot::Ambient,
+            ]),
+            Group::new("settings-group-ai", "icons/message-square.svg").rows([
+                Slot::AiKey,
+                Slot::AiChatModel,
+                Slot::AiChapterModel,
+                Slot::AutoChapters,
+            ]),
+        ]
     }
 
     /// The switch that keeps played tracks on disk. Soloist streams every track and keeps its

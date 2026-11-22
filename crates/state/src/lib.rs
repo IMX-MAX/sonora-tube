@@ -1,4 +1,5 @@
 mod artist;
+mod assistant;
 mod catalog;
 mod control;
 mod cover;
@@ -50,6 +51,7 @@ mod wake;
 mod window_shape;
 
 pub use artist::{ArtistDetail, ArtistDetailEvent};
+pub use assistant::Assistant;
 pub use control::Control;
 pub use cover::Cover;
 pub use detail::{Collection, Detail, DetailEvent, Header, Reorder};

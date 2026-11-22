@@ -7,8 +7,8 @@ pub fn is_address(item: &str) -> bool {
         && (item.contains("://")
             || item.starts_with("spotify:")
             || item
-                .get(.."sonora:".len())
-                .is_some_and(|scheme| scheme.eq_ignore_ascii_case("sonora:")))
+                .get(.."youtubeplus:".len())
+                .is_some_and(|scheme| scheme.eq_ignore_ascii_case("youtubeplus:")))
 }
 
 /// An item as the running Sonora should read it. A path is made absolute against this
@@ -81,10 +81,10 @@ mod tests {
 
     #[test]
     fn a_bare_sonora_link_is_an_address() {
-        assert!(is_address("sonora:"));
-        assert!(is_address("SONORA:"));
-        assert!(is_address("sonora://"));
-        assert!(!is_address("/music/sonora:"));
+        assert!(is_address("youtubeplus:"));
+        assert!(is_address("YOUTUBEPLUS:"));
+        assert!(is_address("youtubeplus://"));
+        assert!(!is_address("/music/youtubeplus:"));
     }
 
     #[test]

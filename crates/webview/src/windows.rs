@@ -251,7 +251,7 @@ fn begin_controller(
     let options = unsafe { environment.CreateCoreWebView2ControllerOptions() }
         .context("cannot configure the private sign-in profile")?;
     let profile = GUID::new().context("cannot identify the private sign-in profile")?;
-    let profile = wide(&format!("Sonora-{profile:?}"));
+    let profile = wide(&format!("YouTubePlus-{profile:?}"));
     unsafe { options.SetProfileName(PCWSTR(profile.as_ptr())) }
         .context("cannot name the sign-in profile")?;
     unsafe { options.SetIsInPrivateModeEnabled(true) }
@@ -357,7 +357,7 @@ fn create_window(title: &str) -> Result<HWND> {
     let class = WNDCLASSW {
         lpfnWndProc: Some(window_proc),
         hInstance: HINSTANCE(instance.0),
-        lpszClassName: w!("SonoraSignInWebView"),
+        lpszClassName: w!("YouTubePlusSignInWebView"),
         ..Default::default()
     };
     unsafe { RegisterClassW(&class) };
@@ -378,7 +378,7 @@ fn create_window(title: &str) -> Result<HWND> {
     let hwnd = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
-            w!("SonoraSignInWebView"),
+            w!("YouTubePlusSignInWebView"),
             PCWSTR(title.as_ptr()),
             WS_OVERLAPPEDWINDOW,
             x,

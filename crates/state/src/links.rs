@@ -73,7 +73,7 @@ impl Links {
         self.following = None;
         self.waiting = None;
         if let Some(address) = link::address(text).filter(|address| {
-            address.scheme() == "sonora"
+            address.scheme() == "youtubeplus"
                 && address
                     .host_str()
                     .is_some_and(|host| host.eq_ignore_ascii_case("open"))
@@ -261,22 +261,22 @@ mod tests {
     #[test]
     fn only_a_sonora_link_with_nothing_to_open_is_bare() {
         for link in [
-            "sonora:",
-            "sonora://",
-            "sonora:///",
-            "SONORA://",
-            "sonora://open",
-            "sonora://open?url=",
-            "SONORA://OPEN?url=",
+            "youtubeplus:",
+            "youtubeplus://",
+            "youtubeplus:///",
+            "YOUTUBEPLUS://",
+            "youtubeplus://open",
+            "youtubeplus://open?url=",
+            "YOUTUBEPLUS://OPEN?url=",
         ] {
             assert!(is_bare_own_link(link), "{link}");
             // `recognizes` must accept these, or `follow` treats them as files.
             assert!(is_own_link(link), "{link}");
         }
         for link in [
-            "sonora://open?url=https%3A%2F%2Fopen.spotify.com%2Ftrack%2Fabc",
-            "sonora://theme/abc",
-            "sonora:open",
+            "youtubeplus://open?url=https%3A%2F%2Fopen.spotify.com%2Ftrack%2Fabc",
+            "youtubeplus://theme/abc",
+            "youtubeplus:open",
         ] {
             assert!(!is_bare_own_link(link), "{link}");
         }

@@ -160,7 +160,7 @@ impl Screen {
     }
 }
 
-/// One page of settings. The first thirteen are sections of the six tabs, each tab showing its sections
+/// One page of settings. The first fourteen are sections of the six tabs, each tab showing its sections
 /// one after another on one scrolling page, and the last two are drill-ins that open from a row
 /// on their parent page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,13 +178,14 @@ pub enum SettingsPage {
     Scrobbling,
     About,
     Keybinds,
+    Profiles,
     LyricsSources,
     MusicFolders,
 }
 
 impl SettingsPage {
     /// Every page, the sections first and the drill-ins after them.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Providers,
         Self::General,
         Self::Appearance,
@@ -198,6 +199,7 @@ impl SettingsPage {
         Self::Scrobbling,
         Self::About,
         Self::Keybinds,
+        Self::Profiles,
         Self::LyricsSources,
         Self::MusicFolders,
     ];
@@ -217,6 +219,7 @@ impl SettingsPage {
             Self::Scrobbling => "scrobbling",
             Self::About => "about",
             Self::Keybinds => "keybinds",
+            Self::Profiles => "profiles",
             Self::LyricsSources => "lyrics-sources",
             Self::MusicFolders => "music-folders",
         }
@@ -238,6 +241,7 @@ impl SettingsPage {
             Self::Scrobbling => "settings-page-scrobbling",
             Self::About => "settings-page-about",
             Self::Keybinds => "settings-page-keybinds",
+            Self::Profiles => "settings-page-profiles",
             Self::LyricsSources => "settings-lyrics-sources",
             Self::MusicFolders => "settings-music-folders",
         }
@@ -267,6 +271,7 @@ impl SettingsPage {
             Self::Playback | Self::Sound | Self::Storage => SettingsTab::Playback,
             Self::Discord | Self::Scrobbling => SettingsTab::Integrations,
             Self::Keybinds => SettingsTab::Keybinds,
+            Self::Profiles => SettingsTab::Profiles,
         }
     }
 }
@@ -281,12 +286,14 @@ pub enum SettingsTab {
     Playback,
     Integrations,
     Keybinds,
+    Profiles,
 }
 
 impl SettingsTab {
     /// Every tab, in the order the header shows them.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::General,
+        Self::Profiles,
         Self::Appearance,
         Self::Playback,
         Self::Keybinds,
@@ -300,6 +307,7 @@ impl SettingsTab {
             Self::Playback => "playback",
             Self::Integrations => "integrations",
             Self::Keybinds => "keybinds",
+            Self::Profiles => "profiles",
         }
     }
 
@@ -312,6 +320,7 @@ impl SettingsTab {
             Self::Playback => "settings-page-playback",
             Self::Integrations => "settings-tab-integrations",
             Self::Keybinds => "settings-page-keybinds",
+            Self::Profiles => "settings-page-profiles",
         }
     }
 
@@ -324,6 +333,7 @@ impl SettingsTab {
             Self::Playback => "icons/play.svg",
             Self::Integrations => "icons/link.svg",
             Self::Keybinds => "icons/keyboard.svg",
+            Self::Profiles => "icons/circle-user-round.svg",
         }
     }
 
@@ -336,6 +346,7 @@ impl SettingsTab {
             Self::Playback => &[SettingsPage::Playback],
             Self::Integrations => &[SettingsPage::Discord, SettingsPage::Scrobbling],
             Self::Keybinds => &[SettingsPage::Keybinds],
+            Self::Profiles => &[SettingsPage::Profiles],
         }
     }
 
