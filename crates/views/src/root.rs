@@ -307,7 +307,7 @@ impl Root {
         let account = state::VideoAccount::install(tube.clone(), cx);
         state::VideoDownloads::install(tube.clone(), cx);
         let video_search = cx.new(|_| VideoSearch::new(tube.clone(), io.clone()));
-        let subscriptions = cx.new(|_| Subscriptions::new(tube.clone(), io.clone()));
+        let subscriptions = Subscriptions::shared(tube.clone(), io.clone(), cx);
         let videos =
             cx.new(|cx| VideoSearchView::new(video_search.clone(), subscriptions.clone(), cx));
         let watching = cx.new(|_| {

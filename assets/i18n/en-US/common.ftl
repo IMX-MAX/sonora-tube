@@ -254,3 +254,6 @@ wake-reason = Music is playing
 account-video-sign-in = Sign in to YouTube
 account-video-sign-out = Sign out of YouTube
 account-video-channel = Use { $name }
+account-video-profile = Profile { $number }
+account-video-profile-new = New profile
+account-video-profile-remove = Delete this profile
