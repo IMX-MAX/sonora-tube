@@ -135,7 +135,7 @@ impl Pen {
             .gap_1()
             .p_2()
             .rounded(theme.radius)
-            .bg(theme.secondary)
+            .bg(theme.muted)
             .text_size(theme.text(Text::Small))
             .child(
                 div()
@@ -272,7 +272,7 @@ impl Pen {
                         style.font_style = Some(FontStyle::Italic);
                     }
                     if look.code {
-                        style.background_color = Some(theme.secondary);
+                        style.background_color = Some(theme.muted);
                     }
                     if look.struck {
                         style.strikethrough = Some(StrikethroughStyle {
@@ -550,7 +550,7 @@ impl WatchView {
                     .px_3()
                     .py_1p5()
                     .rounded(theme.radius)
-                    .bg(theme.secondary)
+                    .bg(theme.muted)
                     .text_size(theme.text(Text::Label))
                     .child(text),
             )
@@ -684,7 +684,7 @@ impl WatchView {
                     .rounded(theme.radius)
                     .corner_smoothing(theme.smoothing)
                     .cursor_pointer()
-                    .when(lit, |this| this.bg(theme.secondary))
+                    .when(lit, |this| this.bg(theme.muted))
                     .hover(|this| this.bg(theme.secondary_hover))
                     .on_click(move |_, _, cx| {
                         sought.update(cx, |watching, cx| watching.seek_to(start, cx));
