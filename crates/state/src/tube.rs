@@ -2147,7 +2147,7 @@ impl Account {
                     };
                     this.window = None;
                     if let Some(cookies) = cookies {
-                        this.keep(cookies);
+                        this.keep(cookies, cx);
                         if this.signed_in() {
                             this.acting += 1;
                             this.list(cx);
@@ -2178,15 +2178,27 @@ impl Account {
         self.page = None;
         self.listing = None;
         self.acting += 1;
+        forget_channels(cx);
         cx.notify();
     }
 
-    /// Hands the cookies to the client and writes them where the next launch finds them.
-    fn keep(&mut self, cookies: String) {
+    /// Hands the cookies to the client and writes them where the next launch finds them. They
+    /// take the place of a session kept before, whose channels and what they kept are
+    /// forgotten, since the new session may be another person's.
+    fn keep(&mut self, cookies: String, cx: &mut Context<Self>) {
         if let Err(error) = self.client.sign_in(Some(cookies.clone())) {
             log::warn!("video: cannot sign in: {error:#}");
             self.failed = true;
             return;
+        }
+        if self.cookies.is_some() {
+            self.client.act_as(0, None);
+            self.identities.clear();
+            self.page = None;
+            if let Some(path) = &self.path {
+                std::fs::remove_file(path.with_file_name("channel")).ok();
+            }
+            forget_channels(cx);
         }
         self.cookies = Some(cookies.clone());
         let Some(path) = &self.path else {
@@ -2196,6 +2208,14 @@ impl Account {
         if let Err(error) = write_private(path, cookies.as_bytes()) {
             log::warn!("video: cannot keep the account: {error:#}");
         }
+    }
+}
+
+/// Deletes what every YouTube channel of the Google session kept on this machine, when the
+/// session is signed out of or replaced.
+fn forget_channels(cx: &mut App) {
+    if let Some(kept) = Subscriptions::entity(cx) {
+        kept.update(cx, |kept, cx| kept.forget_channels(cx));
     }
 }
 
@@ -2414,6 +2434,18 @@ impl Subscriptions {
     /// profile is.
     pub fn profile(&self) -> usize {
         self.profile
+    }
+
+    /// Deletes what every YouTube channel kept here and reads the profile in use afresh, so
+    /// nothing of a Google session outlasts it.
+    pub(crate) fn forget_channels(&mut self, cx: &mut Context<Self>) {
+        match std::fs::remove_dir_all(self.folder.join(CHANNELS)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                log::warn!("video: cannot delete what the account kept: {error:#}");
+            }
+            _ => {}
+        }
+        self.load(cx);
     }
 
     /// Where the profile in use is kept: the YouTube channel acted as, or the guest profile.
