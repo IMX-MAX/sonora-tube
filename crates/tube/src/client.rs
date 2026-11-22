@@ -139,6 +139,14 @@ impl Client {
         *self.acting.write().unwrap_or_else(|held| held.into_inner()) = Acting { user, page };
     }
 
+    /// The Google account of the session and the channel of it requests go out as, nothing as
+    /// a guest.
+    pub fn acting(&self) -> Option<(usize, Option<String>)> {
+        self.account()?;
+        let acting = self.acting.read().unwrap_or_else(|held| held.into_inner());
+        Some((acting.user, acting.page.clone()))
+    }
+
     /// The channels the signed-in session can act as, over every Google account in it.
     pub async fn identities(&self) -> Result<Vec<Identity>> {
         ensure!(self.signed_in(), "no account is signed in");
