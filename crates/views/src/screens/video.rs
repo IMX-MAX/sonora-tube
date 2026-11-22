@@ -487,101 +487,33 @@ fn watched_bar(width: Pixels, watched: f32, cx: &App) -> impl IntoElement + use<
         .child(div().h_full().w(width * watched).bg(theme.primary))
 }
 
-/// The account menu's entries for the profiles kept on this machine: one to use each, one to
-/// start another and, away from the first, one to delete the profile in use.
-fn profile_items(cx: &App) -> Vec<MenuItem> {
-    let Some(kept) = state::Subscriptions::entity(cx) else {
-        return Vec::new();
-    };
-    let held = kept.read(cx);
-    let used = held.profile();
-    let mut items: Vec<MenuItem> = held
-        .profiles()
-        .iter()
-        .map(|&profile| {
-            let kept = kept.clone();
-            MenuItem::new(
-                ("account-video-profile", profile),
-                t!("account-video-profile", number = profile),
-            )
-            .checked(profile == used)
-            .on_click(move |_, _, cx| {
-                kept.update(cx, |kept, cx| kept.use_profile(profile, cx));
-            })
-        })
-        .collect();
-    items.push(
-        MenuItem::new("account-video-profile-new", t!("account-video-profile-new"))
-            .icon("icons/plus.svg")
-            .on_click({
-                let kept = kept.clone();
-                move |_, _, cx| kept.update(cx, |kept, cx| kept.add_profile(cx))
-            }),
-    );
-    if held.profiles().first() != Some(&used) {
-        items.push(
-            MenuItem::new(
-                "account-video-profile-remove",
-                t!("account-video-profile-remove"),
-            )
-            .icon("icons/trash-2.svg")
-            .on_click(move |_, _, cx| kept.update(cx, |kept, cx| kept.remove_profile(cx))),
-        );
-    }
-    items.push(MenuItem::separator("account-video-profiles-end"));
-    items
-}
-
-/// The account menu's entries for YouTube: signing in or out, and with several channels under
-/// the Google account, one entry for each to act as.
+/// The account menu's entry for the profiles: the one in use by name, opening the Profiles
+/// tab of the settings where they are switched and managed.
 pub(crate) fn account_items(cx: &App) -> Vec<MenuItem> {
-    let Some(account) = state::VideoAccount::entity(cx) else {
+    let (Some(account), Some(kept)) = (
+        state::VideoAccount::entity(cx),
+        state::Subscriptions::entity(cx),
+    ) else {
         return Vec::new();
     };
     let held = account.read(cx);
-    if !held.signed_in() {
-        let idle = held.supported() && !held.signing_in();
-        let item = MenuItem::new("account-video-in", t!("account-video-sign-in"))
-            .icon("icons/log-in.svg")
-            .on_click(move |_, _, cx| {
-                let title = t!("login-choose-title", provider = "YouTube").to_string();
-                account.update(cx, |account, cx| account.sign_in(title, cx));
-            });
-        let mut items = profile_items(cx);
-        items.push(match idle {
-            true => item,
-            false => item.disabled(),
-        });
-        return items;
-    }
-    let identities = held.identities();
-    let mut items: Vec<MenuItem> = match identities.len() {
-        0 | 1 => Vec::new(),
-        _ => identities
+    let name = match held.signed_in() {
+        true => held
+            .identities()
             .iter()
-            .enumerate()
-            .map(|(place, identity)| {
-                let (account, chosen) = (account.clone(), identity.clone());
-                MenuItem::new(
-                    ("account-video-channel", place),
-                    t!("account-video-channel", name = identity.name.as_str()),
-                )
-                .checked(held.acts_as(identity))
-                .on_click(move |_, _, cx| {
-                    account.update(cx, |account, cx| account.choose(&chosen, cx));
-                })
-            })
-            .collect(),
+            .find(|identity| held.acts_as(identity))
+            .map(|identity| SharedString::from(identity.name.clone()))
+            .unwrap_or_else(|| t!("settings-google-account")),
+        false => t!("account-video-profile", number = kept.read(cx).profile()),
     };
-    items.extend(profile_items(cx));
-    items.push(
-        MenuItem::new("account-video-out", t!("account-video-sign-out"))
-            .icon("icons/log-out.svg")
-            .on_click(move |_, _, cx| {
-                account.update(cx, |account, cx| account.sign_out(cx));
+    vec![
+        MenuItem::new("account-video-profiles", name)
+            .icon("icons/circle-user-round.svg")
+            .detail(t!("account-video-profiles"))
+            .on_click(|_, _, cx| {
+                router::navigate(Destination::Settings(router::SettingsPage::Profiles), cx);
             }),
-    );
-    items
+    ]
 }
 
 /// The button over a thumbnail's corner that saves the video to watch later or takes it back out.
