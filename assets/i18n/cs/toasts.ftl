@@ -62,7 +62,7 @@ toast-sleep-ended = Časovač usnutí skončil
 toast-radio-failed = Rádio pro { $name } se nepodařilo spustit
 toast-similar-failed = Ke skladbě { $name } se nepodařilo najít podobné skladby
 toast-open-failed = { $name } se nepodařilo otevřít
-toast-open-unsupported = { $name } není zvukový soubor, který Sonora umí přehrát
+toast-open-unsupported = { $name } není zvukový soubor, který YouTube+ umí přehrát
 toast-open-all-failed = { $count ->
     [one] { $count } soubor se nepodařilo otevřít
     [few] { $count } soubory se nepodařilo otevřít
@@ -73,7 +73,7 @@ toast-keys-error = Chyba klíče pro přehrávání
 toast-keys-refused = Spotify tu nemusí fungovat
 toast-why = Proč?
 toast-sign-in-to-play = { $name } lze streamovat jen po přihlášení
-toast-restore-failed = Službu { $name } se nepodařilo znovu přihlásit, a tak Sonora pokračovala bez ní
+toast-restore-failed = Službu { $name } se nepodařilo znovu přihlásit, a tak YouTube+ pokračovala bez ní
 toast-track-unplayable = { $name } se nepodařilo přehrát
 toast-playback-stopped = Přehrávání se zastavilo, protože několik skladeb za sebou nešlo přehrát
 toast-widevine-failed = Přehrávání se nezdařilo
@@ -159,7 +159,7 @@ toast-settings-broken = Oprav řádek { $name } v settings.json, aby se změny u
 toast-tray-unavailable = Systémová lišta není k dispozici, ikonu nelze zobrazit
 toast-link-copied = Odkaz zkopírován
 toast-link-sign-in = Pro otevření tohoto odkazu se přihlas k { $name }
-toast-link-unreadable = Tento odkaz Sonora neumí otevřít
+toast-link-unreadable = Tento odkaz YouTube+ neumí otevřít
 toast-code-copied = Kód zkopírován
 toast-settings-save-failed = Nastavení se nepodařilo uložit
 toast-settings-overwritten = Soubor settings.json se na disku změnil, a tak se tvoje poslední změna neuložila

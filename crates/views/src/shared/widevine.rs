@@ -126,6 +126,7 @@ impl Render for WidevinePrompt {
                                 .aria_label(license.clone())
                                 .p(theme.metrics.pad)
                                 .rounded(theme.radius)
+                                .corner_smoothing(theme.smoothing)
                                 .border_1()
                                 .border_color(theme.border)
                                 .bg(theme.secondary)

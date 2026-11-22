@@ -67,8 +67,8 @@ jobs:
             libasound2-dev libfontconfig1-dev libfreetype-dev
             libx11-dev libxcb1-dev libxcursor-dev libxi-dev
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
-            libvulkan-dev libdbus-1-dev
-          version: 1
+            libvulkan-dev libdbus-1-dev libmpv-dev
+          version: 2
 
       # rust-toolchain.toml pins the toolchain cargo runs, along with its components.
       - name: rust toolchain
@@ -209,7 +209,7 @@ jobs:
             libasound2-dev libfontconfig1-dev libfreetype-dev \
             libx11-dev libxcb1-dev libxcursor-dev libxi-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libvulkan-dev libdbus-1-dev
+            libvulkan-dev libdbus-1-dev libmpv-dev
 
       # rust-toolchain.toml pins the toolchain cargo runs, and it only comes with the host's
       # standard library, so a cross-compiled target has to be added to it.
@@ -277,7 +277,7 @@ jobs:
           $env:SONORA_VERSION = "0.0.0"
           $env:SONORA_EXE = (Resolve-Path "target/$env:TARGET/release/sonora.exe").Path
           $env:SONORA_DIST = (Resolve-Path "dist").Path
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "scripts/windows/sonora.iss"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "scripts/windows/youtube-plus.iss"
 
       # A convenience binary, not a release artefact: GitHub's artifact service times out often
       # enough that it must not be what turns a green build red.

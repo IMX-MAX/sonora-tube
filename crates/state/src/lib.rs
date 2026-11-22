@@ -41,9 +41,11 @@ mod sponsorblock;
 mod stations;
 mod tags;
 mod toast;
+mod tube;
 mod updates;
 mod usage;
 mod vault;
+mod video_downloads;
 mod wake;
 mod window_shape;
 
@@ -100,11 +102,16 @@ pub use sponsorblock::SponsorBlock;
 pub use stations::Stations;
 pub use tags::{TagState, Tags};
 pub use toast::{Outcome, Target, Toast, ToastAction, Toasts};
+pub use tube::{
+    Account as VideoAccount, HURRY, Shelf as VideoShelf, Subscriptions, VideoList, VideoSearch,
+    Watching,
+};
 pub use updates::{
     Channel, Release, UpdateState, Updates, commit, start_staged, updates_itself, version,
 };
 pub use usage::Usage;
 pub use vault::CACHE_GB_RANGE;
+pub use video_downloads::VideoDownloads;
 pub use wake::Wake;
 pub use window_shape::{apply_window_rounding, install_rounded_window_hook};
 

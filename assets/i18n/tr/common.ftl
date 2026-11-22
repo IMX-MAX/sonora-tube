@@ -27,7 +27,7 @@ common-server-address = Sunucu adresi
 common-api-key = API anahtarı
 common-not-now = Şimdi değil
 common-not-connected = Bağlı değil
-common-sonora = Sonora
+common-sonora = YouTube+
 common-more-count = +{ $count }
 option-variants = { $name } seçenekleri
 table-sorted-ascending = Artan sırada
@@ -94,7 +94,7 @@ app-refresh = Yenile
 app-sign-out = Oturumu Kapat
 app-quit = Çık
 app-settings = Ayarlar…
-app-hide = Sonora'yı Gizle
+app-hide = YouTube+'yı Gizle
 app-hide-others = Diğerlerini Gizle
 app-show-all = Tümünü Göster
 app-edit = Düzen
@@ -105,7 +105,7 @@ app-minimize = Simge Durumuna Küçült
 app-zoom = Yakınlaştır
 
 # tray menu
-tray-show = Sonora'yı Göster
+tray-show = YouTube+'yı Göster
 tray-play = Çal
 tray-pause = Duraklat
 

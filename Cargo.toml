@@ -21,6 +21,8 @@ input = { path = "crates/input" }
 logic = { path = "crates/logic" }
 router = { path = "crates/router" }
 ui = { path = "crates/ui" }
+tube = { path = "crates/tube" }
+video = { path = "crates/video" }
 views = { path = "crates/views" }
 webview = { path = "crates/webview" }
 widevine = { path = "crates/widevine" }
@@ -105,6 +107,7 @@ zbus = { version = "6", default-features = false, features = [
     "tokio",
 ] }
 libc = "0.2"
+libmpv2-sys = "4.0"
 lofty = "0.25"
 log = "0.4"
 md-5 = "0.11"

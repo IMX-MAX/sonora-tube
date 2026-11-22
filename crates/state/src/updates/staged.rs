@@ -81,7 +81,7 @@ impl Staged {
 
 /// Where downloads and the staged update's manifest live.
 pub(super) fn folder() -> Option<PathBuf> {
-    Some(dirs::cache_dir()?.join("sonora").join("updates"))
+    Some(dirs::cache_dir()?.join("youtube-plus").join("updates"))
 }
 
 /// Puts an update an earlier run staged in place and arranges for the new version to start once

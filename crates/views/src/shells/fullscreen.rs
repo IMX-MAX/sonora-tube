@@ -1123,6 +1123,7 @@ impl FullscreenView {
                 .tooltip_above(hint)
                 .selected(showing)
                 .rounded(theme.radius)
+                .corner_smoothing(theme.smoothing)
                 .tint(match showing {
                     true => theme.foreground,
                     false => theme.muted_foreground,

@@ -62,7 +62,7 @@ toast-sleep-ended = Таймер сна сработал
 toast-radio-failed = Не удалось запустить радио по { $name }
 toast-similar-failed = Не удалось найти треки, похожие на { $name }
 toast-open-failed = Не удалось открыть { $name }
-toast-open-unsupported = Sonora не может включить { $name }
+toast-open-unsupported = YouTube+ не может включить { $name }
 toast-open-all-failed = { $count ->
     [one] Не удалось открыть { $count } файл
     [few] Не удалось открыть { $count } файла
@@ -76,7 +76,7 @@ toast-soloist-refused = Soloist больше не может войти
 toast-soloist-ready = Spotify теперь играет через Soloist
 toast-soloist-remove-failed = Не удалось удалить Soloist
 toast-sign-in-to-play = { $name } отдаёт музыку только тем, кто вошёл в аккаунт
-toast-restore-failed = Не удалось снова войти в { $name }, Sonora продолжила работу без него
+toast-restore-failed = Не удалось снова войти в { $name }, YouTube+ продолжила работу без него
 toast-track-unplayable = Не удалось включить { $name }
 toast-playback-stopped = Воспроизведение остановлено: несколько треков подряд не удалось включить
 toast-widevine-failed = Ошибка воспроизведения
@@ -146,7 +146,7 @@ toast-session-provider = Эта сессия играет из { $name }. Вой
 toast-session-full = В этой сессии нет мест.
 toast-session-rate-limited = Слишком много неверных кодов. Попробуйте через несколько минут.
 toast-session-too-many = Из вашей сети уже запущено максимальное число сессий. Завершите одну, чтобы начать новую.
-toast-session-unreachable = Не удалось связаться с Sonora Session. Попробуйте позже.
+toast-session-unreachable = Не удалось связаться с YouTube+ Session. Попробуйте позже.
 toast-session-failed = Не удалось начать сессию или присоединиться к ней.
 toast-session-lost = Связь с сессией потеряна
 toast-session-ended = Сессия завершена
@@ -155,7 +155,7 @@ toast-session-kicked = Хост удалил вас из сессии
 toast-sessions-server-saved = Сервер сессий сохранён
 toast-sessions-server-empty = Сначала введите адрес вашего сервера
 toast-sessions-server-malformed = Это не похоже на адрес сервера
-toast-sessions-server-silent = По этому адресу не отвечает сервер Sonora Sessions, поэтому он не сохранён
+toast-sessions-server-silent = По этому адресу не отвечает сервер YouTube+ Sessions, поэтому он не сохранён
 
 # trouble
 trouble-offline = Нет соединения
@@ -180,7 +180,7 @@ toast-settings-broken = Исправьте строку { $name } в settings.js
 toast-tray-unavailable = Системного трея нет, значок некуда поместить
 toast-link-copied = Ссылка скопирована
 toast-link-sign-in = Войдите в { $name }, чтобы открыть эту ссылку
-toast-link-unreadable = Sonora не может открыть эту ссылку
+toast-link-unreadable = YouTube+ не может открыть эту ссылку
 toast-code-copied = Код скопирован
 toast-settings-save-failed = Не удалось сохранить настройки
 toast-settings-overwritten = settings.json изменён на диске, поэтому последнее изменение не сохранено

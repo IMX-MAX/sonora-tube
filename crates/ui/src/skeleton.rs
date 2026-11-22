@@ -58,7 +58,7 @@ impl RenderOnce for Skeleton {
         let mut skeleton = base.bg(theme.muted).when_else(
             circle,
             |this| this.rounded_full(),
-            |this| this.rounded(theme.radius),
+            |this| this.rounded(theme.radius).corner_smoothing(theme.smoothing),
         );
         skeleton.style().refine(&overrides);
 

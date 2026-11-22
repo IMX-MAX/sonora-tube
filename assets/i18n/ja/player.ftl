@@ -53,9 +53,6 @@ fullscreen-artwork = アートワーク
 # play button
 play-pause = 一時停止
 play-resume = 再開
-signal-path-codec-alac = ALAC
-signal-path-codec-pcm = PCM
-signal-path-codec-other = その他のコーデック
 
 # lyrics
 lyrics-title = 歌詞

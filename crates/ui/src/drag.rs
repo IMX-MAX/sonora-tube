@@ -144,6 +144,7 @@ impl RenderOnce for Ghost {
             .px_2()
             .py_1()
             .rounded(theme.radius)
+            .corner_smoothing(theme.smoothing)
             .bg(theme.secondary)
             .text_color(theme.foreground)
             .children(leading)

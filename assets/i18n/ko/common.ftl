@@ -27,7 +27,7 @@ common-server-address = 서버 주소
 common-api-key = API 키
 common-not-now = 나중에
 common-not-connected = 연결되지 않음
-common-sonora = Sonora
+common-sonora = YouTube+
 common-more-count = +{ $count }
 option-variants = { $name }의 다른 버전
 table-sorted-ascending = 오름차순 정렬됨
@@ -105,7 +105,7 @@ downloads-cancel-all = 모든 다운로드 취소
 app-sign-out = 로그아웃
 app-quit = 종료
 app-settings = 설정…
-app-hide = Sonora 숨기기
+app-hide = YouTube+ 숨기기
 app-hide-others = 다른 앱 숨기기
 app-show-all = 모두 보여주기
 app-edit = 편집
@@ -118,7 +118,7 @@ window-maximize = 최대화
 window-restore = 이전 크기로 복원
 
 # tray menu
-tray-show = Sonora 표시
+tray-show = YouTube+ 표시
 tray-play = 재생
 tray-pause = 일시정지
 

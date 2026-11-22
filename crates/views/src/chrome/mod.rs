@@ -4,12 +4,14 @@ mod jam;
 mod members;
 mod notice;
 mod output_picker;
+// The music player's bar. The workspace no longer shows it; it stays until the music side of
+// the app is taken out.
+#[allow(dead_code)]
 mod player_bar;
 mod session;
 mod sessions_button;
 mod sidebar_left;
 mod sidebar_right;
-mod swipe_cue;
 mod theme_invite;
 mod timeline;
 mod title_bar;
@@ -26,7 +28,6 @@ pub(crate) use player_bar::PlayerBar;
 pub(crate) use session::{SessionCode, SessionJoin};
 pub(crate) use sidebar_left::SidebarLeft;
 pub(crate) use sidebar_right::SidebarRight;
-pub(crate) use swipe_cue::SwipeCue;
 pub(crate) use theme_invite::ThemeInvite;
 pub(crate) use timeline::Timeline;
 #[cfg(target_os = "macos")]
@@ -124,6 +125,11 @@ impl Chrome {
                 cx.notify();
             }
         });
+    }
+
+    /// How much of the window's left the sidebar takes.
+    pub fn left(self) -> Pixels {
+        self.sidebar_left
     }
 
     pub fn get(cx: &App) -> Self {

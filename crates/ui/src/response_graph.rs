@@ -502,6 +502,7 @@ impl RenderOnce for ResponseGraph {
             .h(theme.metrics.cover * 2.)
             .overflow_hidden()
             .rounded(theme.radius)
+            .corner_smoothing(theme.smoothing)
             .text_size(theme.text(Text::Tiny))
             .child(
                 canvas(

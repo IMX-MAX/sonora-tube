@@ -79,9 +79,6 @@ fullscreen-panels = Chế độ xem Đang phát
 # play button
 play-pause = Tạm dừng
 play-resume = Tiếp tục
-signal-path-codec-alac = ALAC
-signal-path-codec-pcm = PCM
-signal-path-codec-other = Codec khác
 
 # lyrics
 lyrics-title = Lời bài hát

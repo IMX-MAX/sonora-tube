@@ -931,6 +931,7 @@ impl RenderOnce for Menu {
                 .px_3()
                 .when_else(detailed, |this| this.py_2(), |this| this.py_1())
                 .rounded(tucked)
+                .corner_smoothing(theme.smoothing)
                 .role(gpui::accesskit::Role::MenuItem)
                 .aria_label(label.clone())
                 .when_some(positions[place], |this, position| {
@@ -1269,6 +1270,7 @@ impl RenderOnce for Menu {
             .line_height(phi())
             .p_1()
             .rounded(theme.radius)
+            .corner_smoothing(theme.smoothing)
             .border_1()
             .gap_1()
             .border_color(theme.border)
@@ -1311,6 +1313,7 @@ impl RenderOnce for Menu {
                             .absolute()
                             .inset_0()
                             .rounded(theme.radius)
+                            .corner_smoothing(theme.smoothing)
                             .backdrop_blur(GLASS_BLUR)
                             .fading("menu-frost"),
                     )

@@ -27,7 +27,7 @@ common-server-address = Serveradresse
 common-api-key = API-Schlüssel
 common-not-now = Nicht jetzt
 common-not-connected = Nicht verbunden
-common-sonora = Sonora
+common-sonora = YouTube+
 common-more-count = +{ $count }
 number-group = { "." }
 
@@ -87,7 +87,7 @@ app-refresh = Aktualisieren
 app-sign-out = Abmelden
 app-quit = Beenden
 app-settings = Einstellungen …
-app-hide = Sonora ausblenden
+app-hide = YouTube+ ausblenden
 app-hide-others = Andere ausblenden
 app-show-all = Alle einblenden
 app-edit = Bearbeiten
@@ -98,7 +98,7 @@ app-minimize = Im Dock ablegen
 app-zoom = Zoomen
 
 # tray menu
-tray-show = Sonora anzeigen
+tray-show = YouTube+ anzeigen
 tray-play = Spielen
 tray-pause = Pause
 

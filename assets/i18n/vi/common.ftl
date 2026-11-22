@@ -27,7 +27,7 @@ common-server-address = Địa chỉ máy chủ
 common-api-key = Khóa API
 common-not-now = Để sau
 common-not-connected = Chưa kết nối
-common-sonora = Sonora
+common-sonora = YouTube+
 common-more-count = +{ $count }
 option-variants = Các biến thể của { $name }
 table-sorted-ascending = Sắp xếp tăng dần
@@ -104,7 +104,7 @@ downloads-cancel-all = Hủy tất cả lượt tải xuống
 app-sign-out = Đăng xuất
 app-quit = Thoát
 app-settings = Cài đặt…
-app-hide = Ẩn Sonora
+app-hide = Ẩn YouTube+
 app-hide-others = Ẩn ứng dụng khác
 app-show-all = Hiện tất cả
 app-edit = Sửa
@@ -117,7 +117,7 @@ window-maximize = Phóng to
 window-restore = Khôi phục
 
 # tray menu
-tray-show = Hiện Sonora
+tray-show = Hiện YouTube+
 tray-play = Phát
 tray-pause = Tạm dừng
 

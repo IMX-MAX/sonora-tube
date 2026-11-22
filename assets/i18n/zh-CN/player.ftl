@@ -54,9 +54,6 @@ fullscreen-artwork = 封面
 # play button
 play-pause = 暂停
 play-resume = 继续播放
-signal-path-codec-alac = ALAC
-signal-path-codec-pcm = PCM
-signal-path-codec-other = 其他编解码器
 
 # lyrics
 lyrics-title = 歌词

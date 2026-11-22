@@ -268,6 +268,7 @@ impl SettingsView {
             .min_h(theme.metrics.control)
             .px_2()
             .rounded(theme.radius)
+            .corner_smoothing(theme.smoothing)
             .cursor_pointer()
             .when(cursor, |this| this.bg(theme.secondary_hover))
             .hover(|this| this.bg(theme.secondary_hover))
@@ -356,7 +357,8 @@ impl SettingsView {
                             Skeleton::new()
                                 .w_full()
                                 .h(theme.metrics.control)
-                                .rounded(theme.radius),
+                                .rounded(theme.radius)
+                                .corner_smoothing(theme.smoothing),
                         )
                         .into_any_element()
                 }))
@@ -1324,6 +1326,7 @@ impl RenderOnce for ProviderRow {
             .mx_neg_3()
             .px_3()
             .rounded(theme.radius)
+            .corner_smoothing(theme.smoothing)
             .bg(fill)
             .on_hover(move |hovered, window, cx| {
                 fade.update(cx, |fade, _| fade.set(*hovered));

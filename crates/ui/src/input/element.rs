@@ -402,6 +402,7 @@ impl Render for Input {
             .h(height)
             .px_3()
             .rounded(radius)
+            .corner_smoothing(theme.smoothing)
             // a field tucked into a frosted menu takes the menu's own translucent row fill, since
             // a flat one would sit on the frost as a solid slab
             .map(

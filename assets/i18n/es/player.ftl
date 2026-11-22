@@ -54,9 +54,6 @@ fullscreen-artwork = Portada
 # play button
 play-pause = Pausar
 play-resume = Reanudar
-signal-path-codec-alac = ALAC
-signal-path-codec-pcm = PCM
-signal-path-codec-other = Otro códec
 
 # lyrics
 lyrics-title = Letra

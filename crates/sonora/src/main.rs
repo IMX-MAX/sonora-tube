@@ -140,7 +140,7 @@ fn main() -> ExitCode {
             Arc::new(music::local::LocalProvider::new(
                 dirs::cache_dir()
                     .unwrap_or_else(std::env::temp_dir)
-                    .join("sonora"),
+                    .join("youtube-plus"),
                 database.clone(),
                 storage::Cache::standard(),
             ));
@@ -415,7 +415,7 @@ fn open_window(cx: &mut App) {
             display_id,
             window_background: background,
             titlebar: Some(TitlebarOptions {
-                title: Some("Sonora".into()),
+                title: Some("YouTube+".into()),
                 appears_transparent: true,
                 traffic_light_position: Some(traffic_lights),
             }),
@@ -474,7 +474,7 @@ fn set_corner_preference(window: &gpui::Window, rounding: ui::Rounding) {
     let preference: DWM_WINDOW_CORNER_PREFERENCE = match rounding {
         ui::Rounding::Square => DWMWCP_DONOTROUND,
         ui::Rounding::Subtle => DWMWCP_ROUNDSMALL,
-        ui::Rounding::Rounded | ui::Rounding::Round => DWMWCP_ROUND,
+        ui::Rounding::Rounded | ui::Rounding::Round | ui::Rounding::Squircle => DWMWCP_ROUND,
     };
     unsafe {
         DwmSetWindowAttribute(
@@ -514,7 +514,7 @@ fn set_toolbar_style(window: &gpui::Window, rounding: ui::Rounding) {
     let style = match rounding {
         ui::Rounding::Square | ui::Rounding::Subtle => None,
         ui::Rounding::Rounded => Some(NSWindowToolbarStyle::UnifiedCompact),
-        ui::Rounding::Round => Some(NSWindowToolbarStyle::Unified),
+        ui::Rounding::Round | ui::Rounding::Squircle => Some(NSWindowToolbarStyle::Unified),
     };
     match style {
         None => native.setToolbar(None),

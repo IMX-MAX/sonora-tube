@@ -27,7 +27,7 @@ common-server-address = Endereço do servidor
 common-api-key = Chave de API
 common-not-now = Agora não
 common-not-connected = Não conectado
-common-sonora = Sonora
+common-sonora = YouTube+
 common-more-count = +{ $count }
 option-variants = Variações de { $name }
 table-sorted-ascending = Em ordem crescente
@@ -105,7 +105,7 @@ downloads-cancel-all = Cancelar todos os downloads
 app-sign-out = Sair
 app-quit = Sair do aplicativo
 app-settings = Ajustes…
-app-hide = Ocultar Sonora
+app-hide = Ocultar YouTube+
 app-hide-others = Ocultar outros
 app-show-all = Mostrar tudo
 app-edit = Editar
@@ -118,7 +118,7 @@ app-zoom = Zoom
 # tray menu
 window-maximize = Maximizar
 window-restore = Restaurar
-tray-show = Mostrar Sonora
+tray-show = Mostrar YouTube+
 tray-play = Tocar
 tray-pause = Pausar
 

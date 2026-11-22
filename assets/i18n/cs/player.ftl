@@ -55,9 +55,6 @@ fullscreen-artwork = Obálka
 # play button
 play-pause = Pozastavit
 play-resume = Pokračovat
-signal-path-codec-alac = ALAC
-signal-path-codec-pcm = PCM
-signal-path-codec-other = Jiný kodek
 
 # lyrics
 lyrics-title = Text písně

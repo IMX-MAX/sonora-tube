@@ -27,7 +27,7 @@ common-server-address = Adres serwera
 common-api-key = Klucz API
 common-not-now = Nie teraz
 common-not-connected = Niepodłączone
-common-sonora = Sonora
+common-sonora = YouTube+
 common-more-count = +{ $count }
 number-group = { "\u00A0" }
 
@@ -87,7 +87,7 @@ app-refresh = Odśwież
 app-sign-out = Wyloguj się
 app-quit = Zakończ
 app-settings = Ustawienia…
-app-hide = Ukryj Sonora
+app-hide = Ukryj YouTube+
 app-hide-others = Ukryj pozostałe
 app-show-all = Pokaż wszystkie
 app-edit = Edycja

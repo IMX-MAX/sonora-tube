@@ -27,7 +27,7 @@ common-server-address = Alamat server
 common-api-key = Kunci API
 common-not-now = Nanti saja
 common-not-connected = Tidak terhubung
-common-sonora = Sonora
+common-sonora = YouTube+
 common-more-count = +{ $count }
 option-variants = Varian dari { $name }
 table-sorted-ascending = Diurutkan secara naik
@@ -104,7 +104,7 @@ downloads-cancel-all = Batalkan semua unduhan
 app-sign-out = Keluar
 app-quit = Tutup Aplikasi
 app-settings = Pengaturan…
-app-hide = Sembunyikan Sonora
+app-hide = Sembunyikan YouTube+
 app-hide-others = Sembunyikan Lainnya
 app-show-all = Tampilkan Semua
 app-edit = Edit
@@ -117,7 +117,7 @@ window-maximize = Maksimalkan
 window-restore = Kembalikan
 
 # tray menu
-tray-show = Tampilkan Sonora
+tray-show = Tampilkan YouTube+
 tray-play = Putar
 tray-pause = Jeda
 

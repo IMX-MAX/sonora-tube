@@ -308,6 +308,7 @@ impl EqualizerView {
             .mx_neg_3()
             .px_3()
             .rounded(theme.radius)
+            .corner_smoothing(theme.smoothing)
             .when(selected, |row| row.bg(theme.secondary_active))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.graph
@@ -412,6 +413,7 @@ impl EqualizerView {
                         .role(Role::Label)
                         .aria_value(empty)
                         .rounded(theme.radius)
+                        .corner_smoothing(theme.smoothing)
                         .border_1()
                         .border_dashed()
                         .border_color(theme.border),

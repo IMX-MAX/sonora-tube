@@ -27,7 +27,7 @@ common-server-address = サーバーアドレス
 common-api-key = API キー
 common-not-now = 後で
 common-not-connected = 未接続
-common-sonora = Sonora
+common-sonora = YouTube+
 common-more-count = +{ $count }
 number-group = { "," }
 
@@ -87,7 +87,7 @@ app-refresh = 再読み込み
 app-sign-out = サインアウト
 app-quit = 終了
 app-settings = 設定…
-app-hide = Sonoraを隠す
+app-hide = YouTube+を隠す
 app-hide-others = ほかを隠す
 app-show-all = すべてを表示
 app-edit = 編集
@@ -98,7 +98,7 @@ app-minimize = しまう
 app-zoom = 拡大/縮小
 
 # tray menu
-tray-show = Sonora を表示
+tray-show = YouTube+ を表示
 tray-play = 再生
 tray-pause = 一時停止
 

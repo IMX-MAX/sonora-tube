@@ -82,9 +82,6 @@ fullscreen-panels = Now playing views
 # play button
 play-pause = Pause
 play-resume = Resume
-signal-path-codec-alac = ALAC
-signal-path-codec-pcm = PCM
-signal-path-codec-other = Other codec
 
 # lyrics
 lyrics-title = Lyrics

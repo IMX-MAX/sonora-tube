@@ -264,6 +264,7 @@ fn node(step: Step, (index, count): (usize, usize), cx: &gpui::App) -> Stateful<
         .py_3()
         .px_2()
         .rounded(theme.radius)
+        .corner_smoothing(theme.smoothing)
         .border_1()
         .border_color(theme.border)
         .bg(theme.background)

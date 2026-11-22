@@ -10,12 +10,10 @@ use ui::{
     Picker, Rounding, Scrubber, Switch, Theme, ThemeKind,
 };
 
-use super::rows::{Announced as _, grid, outward};
+use super::rows::{Announced as _, grid};
 use super::{Group, SettingsView, Slot, TYPEFACES};
 use crate::shared::popups::matches_query;
 
-/// The website's gallery of themes people made, whose install buttons hand a theme to Sonora.
-const COMMUNITY_THEMES: &str = "https://sonorahq.org/themes";
 /// How large a pack's sample glyphs draw on its card.
 const SAMPLE: Pixels = px(14.);
 const TYPEFACE_LIMIT: usize = 200;
@@ -32,7 +30,7 @@ impl SettingsView {
         vec![
             Group::new("settings-theme", "icons/palette.svg")
                 .cards(Slot::Theme)
-                .rows([Slot::Adaptive, Slot::CommunityThemes]),
+                .rows([Slot::Adaptive]),
             Group::new("settings-icons", "icons/layout-grid.svg").cards(Slot::Icons),
             Group::new("settings-corners", "icons/maximize.svg").cards(Slot::Corners),
             Group::new("settings-page-width", "icons/columns-3.svg").cards(Slot::PageWidth),
@@ -464,12 +462,6 @@ impl SettingsView {
         self.row(t!("settings-opacity"), control.into_any_element())
     }
 
-    pub(super) fn community_themes_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        outward("community-themes", t!("settings-theme-explore"), None, cx)
-            .on_click(|_, _, cx| cx.open_url(COMMUNITY_THEMES))
-            .into_any_element()
-    }
-
     pub(super) fn adaptive_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let (on, neutral) = {
             let settings = self.settings.read(cx);
@@ -550,6 +542,7 @@ pub(super) fn corner(rounding: Rounding, cx: &App) -> Div {
             .w_full()
             .h_full()
             .rounded(rounding.radius())
+            .corner_smoothing(rounding.smoothing())
             .border_2()
             .border_color(theme.muted_foreground)
             .bg(theme.secondary),

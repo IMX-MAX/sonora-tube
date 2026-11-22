@@ -62,7 +62,7 @@ equalizer-skipped-more = 외 { $count ->
        *[other] { $count }개 더 있음
     }
 equalizer-skip-unknown-type = 알 수 없는 필터 유형 { $name }
-equalizer-skip-unreadable = Sonora에서 읽을 수 없는 필터입니다.
+equalizer-skip-unreadable = YouTube+에서 읽을 수 없는 필터입니다.
 equalizer-skip-no-frequency = 주파수 없음
 equalizer-skip-no-gain = 게인 없음
 equalizer-skip-no-width = Q 값 또는 대역폭 없음
@@ -102,14 +102,14 @@ equalizer-overload-slight = 0.1 dB 미만 클리핑 발생
 equalizer-lower-preamp = 프리앰프 낮추기
 equalizer-level = 레벨
 equalizer-status-bit-perfect = 비트 퍼펙트
-equalizer-status-bit-perfect-detail = Sonora에서 비트 퍼펙트로 출력됨
+equalizer-status-bit-perfect-detail = YouTube+에서 비트 퍼펙트로 출력됨
 equalizer-status-server = 이후 사운드 서버에서 { $khz } kHz로 변환됩니다.
 equalizer-status-altered = 비트 퍼펙트가 아닌 이유:
 equalizer-status-separator = {", "}
 equalizer-status-equalized = EQ
 equalizer-status-volume = 볼륨
 equalizer-status-normalized = 음량 평준화
-equalizer-status-direct = Sonora를 거치지 않고 Soloist에서 직접 재생됨
+equalizer-status-direct = YouTube+를 거치지 않고 Soloist에서 직접 재생됨
 equalizer-status-rate = { $from } → { $to } kHz
 equalizer-status-bits = { $from } → { $to } bit
 equalizer-status-float = Float → { $to } bit

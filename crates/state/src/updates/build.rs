@@ -64,9 +64,9 @@ fn metadata() -> Vec<PathBuf> {
     let Some(directory) = exe.parent() else {
         return Vec::new();
     };
-    let mut paths = vec![directory.join("sonora-build.json")];
+    let mut paths = vec![directory.join("build.json")];
     if let Some(prefix) = directory.parent() {
-        paths.push(prefix.join("Resources/sonora-build.json"));
+        paths.push(prefix.join("Resources/build.json"));
         paths.push(prefix.join("lib/sonora/build.json"));
     }
     paths

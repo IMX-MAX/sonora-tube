@@ -103,7 +103,7 @@ playlist-create-shelf = Simpan ke
 playlist-edit-title = Edit playlist
 playlist-cover-choose = Pilih gambar
 playlist-cover-remove = Hapus sampul
-playlist-cover-unopenable = Sonora tidak bisa membuka file ini
+playlist-cover-unopenable = YouTube+ tidak bisa membuka file ini
 playlist-cover-too-large = Gambar ini lebih besar dari 40 MB
 playlist-cover-not-a-picture = File ini bukan gambar JPEG, PNG, atau WebP
 
@@ -124,10 +124,6 @@ cover-zoom-fit = Sesuaikan dengan jendela
 # confirm
 confirm-delete-track-files-title = Hapus file lagu?
 confirm-delete-track-files = File akan dihapus permanen dari disk. Tindakan ini tidak dapat dibatalkan.
-confirm-uninstall-widevine-title = Copot modul Widevine?
-confirm-uninstall-widevine = Sonora akan menghapus salinan yang diunduhnya dari Google. Lagu Apple Music tidak dapat diputar sampai modul diunduh lagi.
-confirm-remove-soloist-title = Hapus Soloist?
-confirm-remove-soloist = Sonora akan menghapus program Soloist, kunci API Anda, dan data masuknya. Spotify akan kembali ke pemutar bawaan.
 confirm-remove-downloads-title = Hapus semua unduhan?
 confirm-remove-downloads = Semua lagu yang Anda unduh dari semua layanan akan dihapus dari komputer ini. Lagu-lagu itu akan di-stream lagi sampai Anda mengunduhnya kembali.
 confirm-delete-named = Hapus “{ $name }”? Tindakan ini tidak dapat dibatalkan.

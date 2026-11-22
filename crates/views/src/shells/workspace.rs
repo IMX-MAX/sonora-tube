@@ -5,26 +5,22 @@ use gpui::prelude::*;
 use gpui::{AnyView, App, Context, Entity, FocusHandle, Pixels, Render, StyleRefinement};
 use gpui::{Window, deferred, div};
 use input::WORKSPACE_CONTEXT;
-use state::{AppSettings, Playback, Queue, SideTab, Sonora};
+use state::{Playback, Queue, SideTab, Sonora};
 use ui::{
     Activate, ActiveTheme as _, Deselect, Entrance, Remove, SelectNext, SelectPrevious, entering,
     shown_listing, veiled,
 };
 
-use crate::chrome::{
-    AppNotice, Chrome, PlayerBar, SidebarLeft, SidebarRight, SwipeCue, TitleBarOptions,
-};
+use crate::chrome::{AppNotice, Chrome, SidebarLeft, SidebarRight, TitleBarOptions};
 use crate::shared::menus::CardMenu;
 use crate::shells::Shell;
 
 pub(crate) struct Workspace {
     sidebar: Entity<SidebarLeft>,
-    player_bar: Entity<PlayerBar>,
-    settings: Entity<AppSettings>,
     sidebar_right: Entity<SidebarRight>,
     card_menu: Entity<CardMenu>,
+    video_menu: Entity<crate::screens::video::VideoMenu>,
     notice: Entity<AppNotice>,
-    swipe_cue: Entity<SwipeCue>,
     content: AnyView,
     /// A screen's own header, floated over the top of the page and outside its transition.
     /// The page pads itself to start beneath it.
@@ -42,22 +38,21 @@ impl Workspace {
         playback: Entity<Playback>,
         queue: Entity<Queue>,
         content: AnyView,
+        subscriptions: Entity<state::Subscriptions>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let sidebar = cx.new(SidebarLeft::new);
+        let video_menu = crate::screens::video::VideoMenu::install(subscriptions.clone(), cx);
+        let sidebar = cx.new(|cx| SidebarLeft::new(subscriptions, cx));
         let sidebar_right = cx.new(|cx| SidebarRight::new(queue.clone(), playback.clone(), cx));
-        let player_bar = cx.new(|cx| PlayerBar::new(playback.clone(), queue, cx));
         let settings = Sonora::global(cx).settings.clone();
         cx.observe(&settings, |_, _, cx| cx.notify()).detach();
 
         Self {
             sidebar,
-            player_bar,
-            settings,
             sidebar_right,
             card_menu: CardMenu::entity(cx),
+            video_menu,
             notice: cx.new(AppNotice::new),
-            swipe_cue: cx.new(SwipeCue::new),
             content,
             header: None,
             cached: true,
@@ -137,6 +132,14 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    /// Turns the rail's refresh button until `busy` says the reloaded page has its data.
+    pub fn refreshing(&mut self, busy: crate::chrome::Busy, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.refreshing(busy, cx));
+    }
+}
+
 impl Shell for Workspace {
     fn title_bar(&self, content: Option<AnyView>, cx: &App) -> TitleBarOptions {
         TitleBarOptions {
@@ -161,13 +164,7 @@ impl Render for Workspace {
         Chrome::publish(left, right, reserved, cx);
         let covered = self.sidebar_right.read(cx).covers_content(window);
         let overlay = self.sidebar.read(cx).overlays();
-        let bar_height = PlayerBar::height(window, cx);
-        let underlap = self.settings.read(cx).player_bar_translucent();
-        let bottom = match underlap {
-            true => bar_height,
-            false => Pixels::ZERO,
-        };
-        Chrome::set_bottom(bottom, cx);
+        Chrome::set_bottom(Pixels::ZERO, cx);
         // A cached view is laid out from the style given here and its own root
         // style is never consulted, so it can only be cached while it is in the
         // flow at a width this knows: an overlaid sidebar places itself, and a
@@ -281,14 +278,6 @@ impl Render for Workspace {
                             .ml(overlay_width)
                             .when(overlay, |this| this.overflow_hidden())
                             .when(covered, |this| this.hidden())
-                            // A two-finger swipe across the page steps through its history,
-                            // as in a browser.
-                            .on_scroll_wheel({
-                                let cue = self.swipe_cue.clone();
-                                move |event, window, cx| {
-                                    cue.update(cx, |cue, cx| cue.follow(event, window, cx));
-                                }
-                            })
                             .child(
                                 div()
                                     .relative()
@@ -337,25 +326,15 @@ impl Render for Workspace {
                                                 .child(header),
                                         )
                                     }),
-                            )
-                            .child(self.swipe_cue.clone()),
+                            ),
                     )
                     .child(self.sidebar_right.clone())
                     .when(overlay, |this| this.child(self.sidebar.clone())),
-            )
-            .child(
-                div()
-                    .relative()
-                    .when(underlap, |bar| bar.absolute().left_0().right_0().bottom_0())
-                    .child(
-                        self.player_bar
-                            .clone()
-                            .cached(StyleRefinement::default().w_full().h(bar_height)),
-                    ),
             )
             // Deferred so the cards sit above the sidebars' resize grips. The root draws the
             // dialogs after the shell, so those still cover them.
             .child(deferred(self.notice.clone()))
             .child(self.card_menu.clone())
+            .child(self.video_menu.clone())
     }
 }

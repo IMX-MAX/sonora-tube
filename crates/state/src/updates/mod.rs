@@ -18,7 +18,7 @@ use staged::Staged;
 
 pub use staged::start_staged;
 
-const RELEASES: &str = "https://api.github.com/repos/sonorahq/sonora/releases";
+const RELEASES: &str = "https://api.github.com/repos/IMX-MAX/sonora-tube/releases";
 const SUMS: &str = "SHA256SUMS";
 /// The tag of the one nightly prerelease. The older `nightly` release is immutable and frozen, so
 /// its tag can never be reused.

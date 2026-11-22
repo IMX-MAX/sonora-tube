@@ -132,6 +132,7 @@ impl RenderOnce for Checkbox {
             .justify_center()
             .size(side)
             .rounded(radius)
+            .corner_smoothing(theme.smoothing)
             .border_1()
             .child(mark);
 

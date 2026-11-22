@@ -190,6 +190,7 @@ impl DownloadsButton {
                     .aria_position_in_set(*place)
                     .aria_size_of_set(self.songs)
                     .rounded(theme.radius)
+                    .corner_smoothing(theme.smoothing)
                     .cursor_pointer()
                     .child(div().flex_none().child(ring(&key, pending, &theme)))
                     .child(

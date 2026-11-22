@@ -84,6 +84,7 @@ impl RenderOnce for AboutArtist {
             .gap_5()
             .p_5()
             .rounded(theme.radius)
+            .corner_smoothing(theme.smoothing)
             .border_1()
             .border_color(theme.border)
             .when_some(self.on_open, |this, open| {

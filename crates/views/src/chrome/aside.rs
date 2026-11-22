@@ -1294,6 +1294,7 @@ impl Aside {
                         )
                         .px(verse_pad)
                         .rounded(theme.radius)
+                        .corner_smoothing(theme.smoothing)
                         .when(notes_touch.warmth > 0., |this| {
                             this.bg(theme.table_hover.opacity(notes_touch.warmth))
                         });
@@ -1517,6 +1518,7 @@ impl Aside {
                         .when(spans_row, |this| this.w_full())
                         .py(verse * VERSE_PADDING)
                         .rounded(theme.radius)
+                        .corner_smoothing(theme.smoothing)
                         .when(warmth > 0., |this| {
                             this.bg(theme.table_hover.opacity(warmth))
                         })

@@ -82,9 +82,6 @@ fullscreen-artwork = Capa
 fullscreen-panels = Visualizações de Tocando agora
 play-pause = Pausar
 play-resume = Retomar
-signal-path-codec-alac = ALAC
-signal-path-codec-pcm = PCM
-signal-path-codec-other = Outro codec
 
 # lyrics
 lyrics-title = Letras

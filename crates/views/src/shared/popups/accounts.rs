@@ -91,6 +91,7 @@ impl RenderOnce for AccountPicker {
                             .w_full()
                             .p_2()
                             .rounded(theme.radius)
+                            .corner_smoothing(theme.smoothing)
                             .border_1()
                             .border_color(theme.border)
                             .cursor_pointer()

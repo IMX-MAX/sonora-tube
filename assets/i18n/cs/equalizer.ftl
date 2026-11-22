@@ -62,7 +62,7 @@ equalizer-skipped-more = a { $count ->
        *[other] { $count } dalších
     }
 equalizer-skip-unknown-type = neznámý typ filtru { $name }
-equalizer-skip-unreadable = není filtr, který Sonora umí přečíst
+equalizer-skip-unreadable = není filtr, který YouTube+ umí přečíst
 equalizer-skip-no-frequency = chybí frekvence
 equalizer-skip-no-gain = chybí zisk
 equalizer-skip-no-width = chybí Q nebo šířka pásma

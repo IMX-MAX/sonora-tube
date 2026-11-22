@@ -59,7 +59,7 @@ playlist-create-title = Crear lista de reproducción
 playlist-edit-title = Editar lista
 playlist-cover-choose = Elegir imagen
 playlist-cover-remove = Quitar portada
-playlist-cover-unopenable = Sonora no puede abrir este archivo
+playlist-cover-unopenable = YouTube+ no puede abrir este archivo
 playlist-cover-too-large = Esta imagen pesa más de 40 MB
 playlist-cover-not-a-picture = Este archivo no es una imagen JPEG, PNG ni WebP
 playlist-delete-title = Eliminar lista de reproducción
@@ -72,8 +72,6 @@ playlist-again-add = Añadir otra vez
 # confirm
 confirm-delete-track-files-title = ¿Eliminar los archivos de las pistas?
 confirm-delete-track-files = El archivo o los archivos se eliminarán del disco de forma permanente. Esta acción no se puede deshacer.
-confirm-uninstall-widevine-title = ¿Desinstalar el módulo Widevine?
-confirm-uninstall-widevine = Sonora eliminará la copia que descargó de Google. Las pistas de Apple Music dejarán de reproducirse hasta que se vuelva a descargar.
 confirm-remove-downloads-title = ¿Eliminar todas las descargas?
 confirm-remove-downloads = Todas las canciones que descargaste se eliminarán de este equipo, de todos los servicios. Volverán a reproducirse en streaming hasta que las descargues de nuevo.
 confirm-delete-named = ¿Eliminar “{ $name }”? Esta acción no se puede deshacer.

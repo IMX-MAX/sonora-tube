@@ -40,14 +40,20 @@ pub enum NavEntry {
     Playlists,
     Radio,
     History,
+    /// The videos saved to watch later.
+    Later,
+    /// Videos from channels not followed yet, picked from what was watched.
+    Discover,
     Settings,
     Pins,
 }
 
 impl NavEntry {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 12] = [
         Self::Home,
         Self::Search,
+        Self::Discover,
+        Self::Later,
         Self::History,
         Self::Settings,
         Self::Songs,
@@ -68,6 +74,8 @@ impl NavEntry {
             Self::Playlists => "playlists",
             Self::Radio => "radio",
             Self::History => "history",
+            Self::Later => "later",
+            Self::Discover => "discover",
             Self::Settings => "settings",
             Self::Pins => "sidebar-pins",
         }
@@ -83,6 +91,8 @@ impl NavEntry {
             Self::Playlists => "nav-playlists",
             Self::Radio => "nav-radio",
             Self::History => "nav-history",
+            Self::Later => "nav-later",
+            Self::Discover => "nav-discover",
             Self::Settings => "nav-settings",
             Self::Pins => "nav-pinned",
         }
@@ -95,25 +105,22 @@ impl NavEntry {
     }
 }
 
+/// A screen the app can open on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Home,
     Search,
+    Later,
     History,
-    Songs,
-    Albums,
-    Playlists,
-    Artists,
+    Discover,
 }
 
 impl Screen {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 5] = [
         Self::Home,
         Self::Search,
-        Self::Songs,
-        Self::Albums,
-        Self::Artists,
-        Self::Playlists,
+        Self::Discover,
+        Self::Later,
         Self::History,
     ];
 
@@ -121,11 +128,9 @@ impl Screen {
         match self {
             Self::Home => "home",
             Self::Search => "search",
+            Self::Later => "later",
             Self::History => "history",
-            Self::Songs => "songs",
-            Self::Albums => "albums",
-            Self::Playlists => "playlists",
-            Self::Artists => "artists",
+            Self::Discover => "discover",
         }
     }
 
@@ -133,31 +138,24 @@ impl Screen {
         match self {
             Self::Home => "nav-home",
             Self::Search => "nav-search",
+            Self::Later => "nav-later",
             Self::History => "nav-history",
-            Self::Songs => "nav-songs",
-            Self::Albums => "nav-albums",
-            Self::Playlists => "nav-playlists",
-            Self::Artists => "nav-artists",
+            Self::Discover => "nav-discover",
         }
     }
 
-    /// The screen a stored id names. The local music screen joined Songs, so its old id opens there.
+    /// The screen a stored id names, or `None` for one that no longer exists.
     pub fn from_id(id: &str) -> Option<Self> {
-        match id {
-            "imported" => Some(Self::Songs),
-            id => Self::ALL.into_iter().find(|screen| screen.id() == id),
-        }
+        Self::ALL.into_iter().find(|screen| screen.id() == id)
     }
 
     pub fn destination(self) -> Destination {
         match self {
             Self::Home => Destination::Home,
             Self::Search => Destination::Search,
+            Self::Later => Destination::Later,
             Self::History => Destination::History,
-            Self::Songs => Destination::Library(LibraryTab::Songs),
-            Self::Albums => Destination::Library(LibraryTab::Albums),
-            Self::Playlists => Destination::Library(LibraryTab::Playlists),
-            Self::Artists => Destination::Library(LibraryTab::Artists),
+            Self::Discover => Destination::Discover,
         }
     }
 }
@@ -287,12 +285,10 @@ pub enum SettingsTab {
 
 impl SettingsTab {
     /// Every tab, in the order the header shows them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 4] = [
         Self::General,
         Self::Appearance,
-        Self::Lyrics,
         Self::Playback,
-        Self::Integrations,
         Self::Keybinds,
     ];
 
@@ -334,22 +330,10 @@ impl SettingsTab {
     /// The pages the tab shows, top to bottom. The first is the one the tab opens on.
     pub fn sections(self) -> &'static [SettingsPage] {
         match self {
-            Self::General => &[
-                SettingsPage::Providers,
-                SettingsPage::General,
-                SettingsPage::About,
-            ],
-            Self::Appearance => &[
-                SettingsPage::Appearance,
-                SettingsPage::PlayerBar,
-                SettingsPage::NowPlaying,
-            ],
+            Self::General => &[SettingsPage::General, SettingsPage::About],
+            Self::Appearance => &[SettingsPage::Appearance],
             Self::Lyrics => &[SettingsPage::Lyrics],
-            Self::Playback => &[
-                SettingsPage::Playback,
-                SettingsPage::Sound,
-                SettingsPage::Storage,
-            ],
+            Self::Playback => &[SettingsPage::Playback],
             Self::Integrations => &[SettingsPage::Discord, SettingsPage::Scrobbling],
             Self::Keybinds => &[SettingsPage::Keybinds],
         }
@@ -365,6 +349,10 @@ impl SettingsTab {
 pub enum Destination {
     Home,
     History,
+    /// The videos saved to watch later.
+    Later,
+    /// Videos from channels not followed yet, picked from what was watched.
+    Discover,
     Library(LibraryTab),
     Album(SharedString),
     Song(SharedString),
@@ -374,6 +362,12 @@ pub enum Destination {
     Genre(SharedString),
     /// The internet radio stations of a provider that lists them.
     Radio,
+    /// A video, by its YouTube id.
+    Watch(SharedString),
+    /// A YouTube channel's uploads.
+    Channel(SharedString),
+    /// A YouTube playlist's videos.
+    Videos(SharedString),
     Search,
     Settings(SettingsPage),
     /// The equalizer's own settings page, opened from Sound.

@@ -62,7 +62,7 @@ equalizer-skipped-more = і ще { $count ->
        *[other] { $count }
     }
 equalizer-skip-unknown-type = невідомий тип фільтра { $name }
-equalizer-skip-unreadable = фільтр, який Sonora не може прочитати
+equalizer-skip-unreadable = фільтр, який YouTube+ не може прочитати
 equalizer-skip-no-frequency = немає частоти
 equalizer-skip-no-gain = немає підсилення
 equalizer-skip-no-width = немає Q або ширини смуги
@@ -89,7 +89,7 @@ equalizer-overload-slight = Перевантаження менш ніж на 0,
 equalizer-lower-preamp = Знизити передпідсилення
 equalizer-level = Рівень
 equalizer-status-bit-perfect = Bit-perfect
-equalizer-status-bit-perfect-detail = Sonora передає сигнал bit-perfect
+equalizer-status-bit-perfect-detail = YouTube+ передає сигнал bit-perfect
 equalizer-status-server = Далі звуковий сервер перетворює його на { $khz } кГц
 equalizer-status-altered = Не bit-perfect через:
 equalizer-status-separator = {", "}

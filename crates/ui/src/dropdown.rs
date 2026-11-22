@@ -89,6 +89,7 @@ impl RenderOnce for Dropdown {
             .p_1()
             .gap_px()
             .rounded(theme.radius)
+            .corner_smoothing(theme.smoothing)
             .border_1()
             .border_color(theme.border)
             .bg(popover_fill(cx))
@@ -110,6 +111,7 @@ impl RenderOnce for Dropdown {
                             .absolute()
                             .inset_0()
                             .rounded(theme.radius)
+                            .corner_smoothing(theme.smoothing)
                             .backdrop_blur(GLASS_BLUR)
                             .fading("dropdown-frost"),
                     )

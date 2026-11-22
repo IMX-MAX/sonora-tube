@@ -798,6 +798,7 @@ impl RenderOnce for Button {
             .h(height)
             .px(padding)
             .rounded(radius)
+            .corner_smoothing(theme.smoothing)
             // Mid-resize the box is narrower or wider than what it holds, so the content keeps
             // its own width from the leading edge and the box clips it as it grows. It leaves the
             // pixel grid while it springs, so its edge glides instead of stepping a pixel at a

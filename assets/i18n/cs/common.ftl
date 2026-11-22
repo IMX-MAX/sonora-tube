@@ -27,7 +27,7 @@ common-server-address = Adresa serveru
 common-api-key = API klíč
 common-not-now = Teď ne
 common-not-connected = Nepřipojeno
-common-sonora = Sonora
+common-sonora = YouTube+
 common-more-count = +{ $count }
 number-group = { "\u00A0" }
 

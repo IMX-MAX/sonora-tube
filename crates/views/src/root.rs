@@ -3,14 +3,14 @@ use gpui::{App, Font, FontFallbacks, SharedString, StyleRefinement, font, prelud
 use gpui::{Pixels, Window, deferred, div};
 use input::{
     CloseWindow, MinimizeWindow, NavigateBack, NavigateForward, OpenFilter, OpenSearch,
-    OpenSettings, Refresh, ShowMembers, ToggleFullscreen, ToggleLyrics, TogglePowerbar,
-    ToggleQueue, ToggleWindowFullscreen, ZoomWindow,
+    OpenSettings, Refresh, SeekBack, SeekForward, ShowMembers, ToggleFullscreen, TogglePlayback,
+    TogglePowerbar, ToggleWindowFullscreen, VolumeDown, VolumeUp, ZoomWindow,
 };
 use router::{Destination, NavigationEvent, back, forward, navigate};
 use state::{
-    ArtistDetail, Detail, GenreDetails, Genres, HistoryState, Home, Io, Library, LibraryState,
-    Network, Playback, Profile, Queue, Reconnected, SYSTEM_FONT, Scan, Search, Session,
-    SessionState, Shelf, SideTab, SongDetail, Sonora, Stations,
+    ArtistDetail, Detail, GenreDetails, Genres, Io, Library, LibraryState, Network, Playback,
+    Profile, Queue, Reconnected, SYSTEM_FONT, Scan, Session, SessionState, Shelf, SideTab,
+    SongDetail, Sonora, Stations, Subscriptions, VideoList, VideoSearch, VideoShelf, Watching,
 };
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use ui::WindowFrame;
@@ -20,12 +20,12 @@ use ui::{
 };
 
 use crate::chrome::{
-    Busy, JamCode, JamInvite, JamJoin, PlayerBar, SessionCode, SessionJoin, ThemeInvite, TitleBar,
+    Busy, JamCode, JamInvite, JamJoin, SessionCode, SessionJoin, ThemeInvite, TitleBar,
     TitleBarEvent, TitleBarOptions, ToastStack, Toolbar, Tooled,
 };
 use crate::screens::radio::RadioView;
-use crate::screens::search::SearchView;
 use crate::screens::settings::SettingsHeader;
+use crate::screens::video::{Feed, VideoFeedView, VideoListView, VideoSearchView, WatchView};
 use crate::shared::ambient::{self, Ambient};
 use crate::shared::confirm::Confirm;
 use crate::shared::playlist_editor::PlaylistEditor;
@@ -39,12 +39,16 @@ use crate::shared::widevine::WidevinePrompt;
 use crate::shells::Shell;
 use crate::shells::workspace::Workspace;
 use crate::{
-    Adaptive, ArtistView, DetailView, EqualizerView, FullscreenView, GenreView, HistoryView,
-    HomeView, LibraryView, LoginView, SettingsView, SongView, UserView,
+    Adaptive, ArtistView, DetailView, EqualizerView, FullscreenView, GenreView, LibraryView,
+    LoginView, SettingsView, SongView, UserView,
 };
 
 /// How much smaller than its size the fullscreen player starts as it opens, zooming up to fill
 /// the window.
+/// How far a seek shortcut moves the video, in seconds.
+const SKIP: f64 = 5.;
+/// How much a volume shortcut changes the video's volume.
+const LOUDER: f32 = 0.05;
 const SHELL_ZOOM: f32 = 0.03;
 /// How close the opening zoom comes to its end before it counts as landed.
 const SHELL_ZOOM_REST: f32 = 1e-3;
@@ -52,9 +56,12 @@ const SHELL_ZOOM_REST: f32 = 1e-3;
 /// open dialog and a menu opened after it still shows over the toast.
 const TOAST_LAYER: usize = 1;
 
+/// The YouTube client every window of the app shares.
+struct Tube(tube::Client);
+
+impl gpui::Global for Tube {}
+
 struct Screens {
-    home: Entity<HomeView>,
-    history: Entity<HistoryView>,
     radio: Entity<RadioView>,
     library: Entity<LibraryView>,
     artist: Option<Entity<ArtistView>>,
@@ -67,7 +74,17 @@ struct Screens {
     user_profile: Entity<Profile>,
     playlist: Option<Entity<DetailView>>,
     playlist_detail: Option<Entity<Detail>>,
-    search: Entity<SearchView>,
+    videos: Entity<VideoSearchView>,
+    video_search: Entity<VideoSearch>,
+    watch: Entity<WatchView>,
+    watching: Entity<Watching>,
+    video_list: Entity<VideoListView>,
+    video_shelf: Entity<VideoList>,
+    subscriptions: Entity<Subscriptions>,
+    video_home: Entity<VideoFeedView>,
+    video_history: Entity<VideoFeedView>,
+    video_later: Entity<VideoFeedView>,
+    video_discover: Entity<VideoFeedView>,
     genres: Entity<Genres>,
     genre: Option<Entity<GenreView>>,
     genre_detail: Option<Entity<GenreDetails>>,
@@ -271,34 +288,105 @@ impl Root {
             cx.new(|cx| LibraryView::new(library.clone(), playback.clone(), window, cx));
 
         let io = Io::global(cx);
-        let home_state = cx.new(|cx| Home::new(library.clone(), session.clone(), io.clone(), cx));
-        let home = cx.new(|cx| HomeView::new(home_state, playback.clone(), cx));
-        let history = Sonora::global(cx).history.clone();
-        let history = cx.new(|cx| HistoryView::new(history, playback.clone(), window, cx));
         let stations = cx.new(|cx| Stations::new(session.clone(), io.clone(), cx));
         let radio = cx.new(|cx| RadioView::new(stations, playback.clone(), cx));
 
-        let queries = cx.new(|cx| Search::new(session.clone(), library.clone(), io.clone(), cx));
-        let suggestions =
-            cx.new(|cx| Search::new(session.clone(), library.clone(), io.clone(), cx));
         // The quick search asks on its own, so typing in it leaves the search screen as it was.
-        let quick = cx.new(|cx| Search::new(session.clone(), library.clone(), io.clone(), cx));
-        let powerbar = Powerbar::entity(quick, playback.clone(), cx);
+        let genres = cx.new(|cx| Genres::new(session.clone(), io.clone(), cx));
+
+        // One client for the life of the app, so a window opened again signs in and out the
+        // same one the quick search asks through.
+        let tube = match cx.try_global::<Tube>() {
+            Some(kept) => kept.0.clone(),
+            None => {
+                let made = tube::Client::new();
+                cx.set_global(Tube(made.clone()));
+                made
+            }
+        };
+        let account = state::VideoAccount::install(tube.clone(), cx);
+        state::VideoDownloads::install(tube.clone(), cx);
+        let video_search = cx.new(|_| VideoSearch::new(tube.clone(), io.clone()));
+        let subscriptions = cx.new(|_| Subscriptions::new(tube.clone(), io.clone()));
+        let videos =
+            cx.new(|cx| VideoSearchView::new(video_search.clone(), subscriptions.clone(), cx));
+        let watching = cx.new(|_| {
+            Watching::new(
+                tube.clone(),
+                io.clone(),
+                playback.clone(),
+                subscriptions.clone(),
+            )
+        });
+        let watch = cx.new(|cx| WatchView::new(watching.clone(), subscriptions.clone(), cx));
+        // The quick search asks on its own, so typing in it leaves the search screen as it was.
+        let quick = cx.new(|_| VideoSearch::new(tube.clone(), io.clone()));
+        let powerbar = Powerbar::entity(quick, watching.clone(), subscriptions.clone(), cx);
         cx.subscribe(&powerbar, |this, _, event, cx| match event {
             PowerbarEvent::Search(query) => this.search_for(query, cx),
         })
         .detach();
-        let genres = cx.new(|cx| Genres::new(session.clone(), io.clone(), cx));
-        let search = cx.new(|cx| {
-            SearchView::new(
-                queries,
-                suggestions,
-                genres.clone(),
-                playback.clone(),
-                window,
-                cx,
-            )
-        });
+        // The page of the video on screen is read again as the account, or as a guest again.
+        // An account kept from the last launch is synced right away.
+        let acted = account.read(cx).acting();
+        if acted != 0 {
+            subscriptions.update(cx, |kept, cx| kept.sync(cx));
+        }
+        cx.observe(&account, {
+            let watching = watching.clone();
+            let subscriptions = subscriptions.clone();
+            let acted = std::cell::Cell::new(acted);
+            move |_, account, cx| {
+                if !account.read(cx).signing_in() {
+                    watching.update(cx, |watching, cx| watching.refresh(cx));
+                }
+                // A change of who the client acts as brings that channel's subscriptions and
+                // recommendations along.
+                let acting = account.read(cx).acting();
+                if acted.replace(acting) != acting {
+                    subscriptions.update(cx, |kept, cx| kept.sync(cx));
+                }
+            }
+        })
+        .detach();
+        // The video settings reach the client and the player from here, now and on every change.
+        let video_settings = Sonora::global(cx).settings.clone();
+        let apply = {
+            let (tube, watching) = (tube.clone(), watching.clone());
+            let last = std::cell::Cell::new(None);
+            move |settings: Entity<state::AppSettings>, cx: &mut App| {
+                let (hidden, captions, ambient) = {
+                    let settings = settings.read(cx);
+                    (
+                        settings.hide_shorts(),
+                        settings.captions(),
+                        settings.video_glow(),
+                    )
+                };
+                tube.hide_shorts(hidden);
+                if watching.read(cx).ambient() != ambient {
+                    watching.update(cx, |watching, cx| watching.set_ambient(ambient, cx));
+                }
+                // Only a change of the setting moves the captions, so that another setting saved
+                // does not undo what the button under the video chose.
+                if last.replace(Some(captions)) != Some(captions) {
+                    watching.update(cx, |watching, cx| watching.show_captions(captions, cx));
+                }
+            }
+        };
+        apply(video_settings.clone(), cx);
+        cx.observe(&video_settings, move |_, settings, cx| apply(settings, cx))
+            .detach();
+        let video_shelf = cx.new(|_| VideoList::new(tube, io.clone()));
+        let video_home =
+            cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::Subscriptions, cx));
+        let video_later = cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::Later, cx));
+        let video_discover =
+            cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::Discover, cx));
+        let video_history =
+            cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::History, cx));
+        let video_list =
+            cx.new(|cx| VideoListView::new(video_shelf.clone(), subscriptions.clone(), cx));
 
         let settings = cx.new(|cx| SettingsView::new(session.clone(), playback.clone(), cx));
         let equalizer = Sonora::global(cx).equalizer.clone();
@@ -318,6 +406,7 @@ impl Root {
                 playback.clone(),
                 queue.clone(),
                 library_view.clone().into(),
+                subscriptions.clone(),
                 cx,
             )
         });
@@ -416,8 +505,6 @@ impl Root {
             os_entered: false,
             parted: None,
             screens: Screens {
-                home,
-                history,
                 radio,
                 library: library_view,
                 artist: None,
@@ -430,7 +517,17 @@ impl Root {
                 user_profile,
                 playlist: None,
                 playlist_detail: None,
-                search,
+                videos,
+                video_search,
+                watch,
+                watching,
+                video_list,
+                video_shelf,
+                subscriptions,
+                video_home,
+                video_history,
+                video_later,
+                video_discover,
                 genres,
                 genre: None,
                 genre_detail: None,
@@ -559,7 +656,7 @@ impl Root {
     fn search_for(&mut self, query: &str, cx: &mut Context<Self>) {
         if !query.is_empty() {
             self.screens
-                .search
+                .videos
                 .update(cx, |search, cx| search.search_for(query, cx));
         }
         self.open_search(cx);
@@ -579,6 +676,7 @@ impl Root {
         toolbar.update(cx, |toolbar, cx| toolbar.focus(window, cx));
     }
 
+    #[allow(dead_code)]
     fn show_side(&self, tab: SideTab, cx: &mut Context<Self>) {
         self.shells
             .workspace
@@ -624,6 +722,19 @@ impl Root {
         }
     }
 
+    /// Runs a keyboard shortcut on the video, when the page showing is the one playing it.
+    fn watching(
+        &self,
+        cx: &mut Context<Self>,
+        act: impl FnOnce(&mut Watching, &mut Context<Watching>),
+    ) {
+        if !matches!(router::trail(cx).read(cx).current(), Destination::Watch(_)) {
+            return;
+        }
+        self.screens.watching.update(cx, act);
+    }
+
+    #[allow(dead_code)]
     fn toggle_fullscreen(&mut self, cx: &mut Context<Self>) {
         match self.view {
             RootView::Workspace => navigate(Destination::Fullscreen, cx),
@@ -654,6 +765,12 @@ impl Root {
         }
         if let RootView::Fullscreen = self.view {
             back(cx);
+            return;
+        }
+        if self.screens.watching.read(cx).full() {
+            self.screens
+                .watching
+                .update(cx, |watching, cx| watching.set_full(false, cx));
             return;
         }
         match router::trail(cx).read(cx).current() {
@@ -707,8 +824,9 @@ impl Root {
             return;
         }
         self.reload_page(destination, cx);
-        self.title_bar
-            .update(cx, |bar, cx| bar.refreshing(busy, cx));
+        self.shells
+            .workspace
+            .update(cx, |workspace, cx| workspace.refreshing(busy, cx));
     }
 
     /// How to tell whether `destination` is still loading, or `None` for a page with nothing
@@ -721,13 +839,14 @@ impl Root {
         };
         Some(match destination {
             Destination::Home => {
-                let home = self.screens.home.clone();
-                Box::new(move |cx| home.read(cx).is_loading(cx))
+                let kept = self.screens.subscriptions.clone();
+                Box::new(move |cx| kept.read(cx).is_loading())
             }
-            Destination::History => {
-                let history = Sonora::global(cx).history.clone();
-                Box::new(move |cx| matches!(history.read(cx).state(), HistoryState::Loading))
+            Destination::Discover => {
+                let kept = self.screens.subscriptions.clone();
+                Box::new(move |cx| kept.read(cx).is_finding())
             }
+            Destination::History | Destination::Later => return None,
             Destination::Library(_) => {
                 let session = Sonora::global(cx).session.clone();
                 let streaming = shelf(Shelf::Streaming);
@@ -762,6 +881,14 @@ impl Root {
                 let radio = self.screens.radio.clone();
                 Box::new(move |cx| radio.read(cx).is_loading(cx))
             }
+            Destination::Watch(_) => {
+                let watching = self.screens.watching.clone();
+                Box::new(move |cx| watching.read(cx).is_loading())
+            }
+            Destination::Channel(_) | Destination::Videos(_) => {
+                let list = self.screens.video_shelf.clone();
+                Box::new(move |cx| list.read(cx).is_loading())
+            }
             Destination::Search
             | Destination::Settings(_)
             | Destination::Equalizer
@@ -773,11 +900,15 @@ impl Root {
     fn reload_page(&mut self, destination: Destination, cx: &mut Context<Self>) {
         let library = Sonora::global(cx).library.clone();
         match destination {
-            Destination::Home => self.screens.home.update(cx, |home, cx| home.refresh(cx)),
-            Destination::History => {
-                let history = Sonora::global(cx).history.clone();
-                history.update(cx, |history, cx| history.reload(cx));
-            }
+            Destination::Home => self
+                .screens
+                .subscriptions
+                .update(cx, |kept, cx| kept.refresh(cx)),
+            Destination::Discover => self
+                .screens
+                .subscriptions
+                .update(cx, |kept, cx| kept.find_again(cx)),
+            Destination::History | Destination::Later => {}
             Destination::Library(_) => library.update(cx, |library, cx| {
                 library.reload(Shelf::Streaming, cx);
                 library.reload(Shelf::Local, cx);
@@ -813,10 +944,19 @@ impl Root {
                 .user_profile
                 .update(cx, |profile, cx| profile.refresh(cx)),
             Destination::Radio => self.screens.radio.update(cx, |radio, cx| radio.reload(cx)),
-            Destination::Search
-            | Destination::Settings(_)
-            | Destination::Equalizer
-            | Destination::Fullscreen => {}
+            Destination::Watch(_) => self
+                .screens
+                .watching
+                .update(cx, |watching, cx| watching.refresh(cx)),
+            Destination::Channel(_) | Destination::Videos(_) => self
+                .screens
+                .video_shelf
+                .update(cx, |list, cx| list.refresh(cx)),
+            Destination::Search => self
+                .screens
+                .video_search
+                .update(cx, |search, cx| search.refresh(cx)),
+            Destination::Settings(_) | Destination::Equalizer | Destination::Fullscreen => {}
         }
     }
 
@@ -1005,10 +1145,6 @@ impl Root {
         // Leaving settings is what clears the note about the last scan, so every move tells it.
         let settings = destination.in_settings();
         Scan::global(cx).update(cx, |scan, cx| scan.viewing_settings(settings, cx));
-        let home = matches!(destination, Destination::Home);
-        self.screens
-            .home
-            .update(cx, |view, cx| view.set_visible(home, cx));
         self.follow_settings(&destination, cx);
         if let Destination::Fullscreen = destination {
             self.view = RootView::Fullscreen;
@@ -1028,14 +1164,53 @@ impl Root {
         let mut header = None;
         let cached = destination != Destination::Equalizer;
 
+        // A video still playing as its page is left carries on in a small window of its own.
+        let on_page = matches!(destination, Destination::Watch(_));
+        if destination != Destination::Fullscreen {
+            let carried = self
+                .screens
+                .watch
+                .update(cx, |watch, cx| watch.follow(on_page, cx));
+            if !on_page && !carried {
+                self.screens
+                    .watching
+                    .update(cx, |watching, cx| watching.leave(cx));
+            }
+        }
+
         let content: AnyView = match destination {
             Destination::Fullscreen => return,
-            Destination::Home => self.screens.home.clone().into(),
-            Destination::History => {
-                let history = self.screens.history.clone();
-                history.update(cx, |history, cx| history.refresh(cx));
-                toolbar = Some(history.read(cx).toolbar());
-                history.into()
+            Destination::Watch(id) => {
+                self.screens
+                    .watching
+                    .update(cx, |watching, cx| watching.open(&id, cx));
+                self.screens.watch.clone().into()
+            }
+            Destination::Channel(id) => {
+                self.screens.video_shelf.update(cx, |list, cx| {
+                    list.open(VideoShelf::Channel(id.to_string()), cx);
+                });
+                self.screens.video_list.clone().into()
+            }
+            Destination::Videos(id) => {
+                self.screens.video_shelf.update(cx, |list, cx| {
+                    list.open(VideoShelf::Playlist(id.to_string()), cx);
+                });
+                self.screens.video_list.clone().into()
+            }
+            Destination::Home => {
+                self.screens
+                    .subscriptions
+                    .update(cx, |kept, cx| kept.open(cx));
+                self.screens.video_home.clone().into()
+            }
+            Destination::History => self.screens.video_history.clone().into(),
+            Destination::Later => self.screens.video_later.clone().into(),
+            Destination::Discover => {
+                self.screens
+                    .subscriptions
+                    .update(cx, |kept, cx| kept.find(cx));
+                self.screens.video_discover.clone().into()
             }
             Destination::Library(tab) => {
                 self.screens
@@ -1086,10 +1261,7 @@ impl Root {
                 radio.update(cx, |radio, cx| radio.open(cx));
                 radio.into()
             }
-            Destination::Search => {
-                self.screens.genres.update(cx, |genres, cx| genres.load(cx));
-                self.screens.search.clone().into()
-            }
+            Destination::Search => self.screens.videos.clone().into(),
             Destination::Equalizer => {
                 header = Some(self.screens.settings_header.clone().into());
                 self.screens.equalizer.clone().into()
@@ -1212,7 +1384,7 @@ impl Render for Root {
         match self.pending.take() {
             Some(Focus::Search) => self
                 .screens
-                .search
+                .videos
                 .update(cx, |search, cx| search.focus(window, cx)),
             Some(Focus::Workspace) => self
                 .shells
@@ -1360,7 +1532,7 @@ impl Render for Root {
         };
         // How far above the bottom of the window the toasts hang.
         let floor = match self.view {
-            RootView::Workspace => PlayerBar::height(window, cx),
+            RootView::Workspace => Pixels::ZERO,
             RootView::Fullscreen => FullscreenView::dock_height(cx),
         };
         // The shell on its way out keeps the theme it wore, so a light workspace stays light
@@ -1514,18 +1686,33 @@ impl Render for Root {
             .on_action(cx.listener(|this, _: &OpenSearch, _, cx| this.open_search(cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_settings(cx)))
             .on_action(cx.listener(|this, _: &Refresh, _, cx| this.refresh(cx)))
-            .on_action(cx.listener(|this, _: &ToggleFullscreen, _, cx| this.toggle_fullscreen(cx)))
+            .on_action(cx.listener(|this, _: &ToggleFullscreen, _, cx| {
+                this.watching(cx, |watching, cx| watching.set_full(!watching.full(), cx));
+            }))
             .on_action(|_: &CloseWindow, window, _| window.remove_window())
             .on_action(|_: &MinimizeWindow, window, _| window.minimize_window())
             .on_action(|_: &ZoomWindow, window, _| window.zoom_window())
             .on_action(|_: &ToggleWindowFullscreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss(window, cx)))
-            .on_action(
-                cx.listener(|this, _: &ToggleQueue, _, cx| this.show_side(SideTab::Queue, cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &ToggleLyrics, _, cx| this.show_side(SideTab::Lyrics, cx)),
-            )
+            .on_action(cx.listener(|this, _: &TogglePlayback, _, cx| {
+                this.watching(cx, |watching, cx| watching.toggle(cx));
+            }))
+            .on_action(cx.listener(|this, _: &SeekBack, _, cx| {
+                this.watching(cx, |watching, cx| watching.seek_by(-SKIP, cx));
+            }))
+            .on_action(cx.listener(|this, _: &SeekForward, _, cx| {
+                this.watching(cx, |watching, cx| watching.seek_by(SKIP, cx));
+            }))
+            .on_action(cx.listener(|this, _: &VolumeUp, _, cx| {
+                this.watching(cx, |watching, cx| {
+                    watching.set_volume((watching.volume() + LOUDER).min(1.), cx)
+                });
+            }))
+            .on_action(cx.listener(|this, _: &VolumeDown, _, cx| {
+                this.watching(cx, |watching, cx| {
+                    watching.set_volume((watching.volume() - LOUDER).max(0.), cx)
+                });
+            }))
             .on_action(cx.listener(|this, _: &TogglePowerbar, window, cx| {
                 // The sign-in screen stands in for every shell, so there is nothing to search.
                 if !this.signing_in {

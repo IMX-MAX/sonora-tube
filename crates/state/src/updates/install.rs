@@ -8,11 +8,11 @@ use anyhow::{Context as _, Result};
 const UNINSTALLER: &str = "unins000.exe";
 /// The uninstall entry Inno Setup writes for Sonora's `AppId`, under the user or the machine.
 #[cfg(target_os = "windows")]
-const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{8D65C17E-79E8-46D7-9A37-42E85E73F738}_is1";
+const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{5B0F3C1A-2E64-4C1D-9A7B-6D0E7C52A914}_is1";
 #[cfg(target_os = "windows")]
 const INSTALLER: &str = match cfg!(target_arch = "aarch64") {
-    true => "Sonora-Setup-arm64.exe",
-    false => "Sonora-Setup.exe",
+    true => "YouTubePlus-Setup-arm64.exe",
+    false => "YouTubePlus-Setup.exe",
 };
 /// Where Homebrew keeps the stable and the nightly cask, on Apple silicon and on Intel. Any of
 /// them existing means Homebrew owns /Applications/Sonora.app, though not a copy installed

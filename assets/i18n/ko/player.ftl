@@ -82,9 +82,6 @@ fullscreen-panels = 지금 재생 중 보기
 # play button
 play-pause = 일시정지
 play-resume = 다시 재생
-signal-path-codec-alac = ALAC
-signal-path-codec-pcm = PCM
-signal-path-codec-other = 기타 코덱
 
 # lyrics
 lyrics-title = 가사

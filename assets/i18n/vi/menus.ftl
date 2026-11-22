@@ -60,7 +60,7 @@ playlist-create-title = Tạo danh sách phát
 playlist-edit-title = Sửa danh sách phát
 playlist-cover-choose = Chọn ảnh
 playlist-cover-remove = Xóa ảnh bìa
-playlist-cover-unopenable = Sonora không mở được tệp này
+playlist-cover-unopenable = YouTube+ không mở được tệp này
 playlist-cover-too-large = Ảnh này lớn hơn 40 MB
 playlist-cover-not-a-picture = Tệp này không phải ảnh JPEG, PNG hoặc WebP
 
@@ -81,10 +81,6 @@ cover-zoom-fit = Vừa với cửa sổ
 # confirm
 confirm-delete-track-files-title = Xóa tệp bài hát?
 confirm-delete-track-files = Các tệp sẽ bị xóa vĩnh viễn khỏi ổ đĩa. Không thể hoàn tác thao tác này.
-confirm-uninstall-widevine-title = Gỡ cài đặt mô-đun Widevine?
-confirm-uninstall-widevine = Sonora sẽ xóa bản đã tải từ Google. Bài hát Apple Music sẽ không phát được cho đến khi tải lại mô-đun.
-confirm-remove-soloist-title = Gỡ bỏ Soloist?
-confirm-remove-soloist = Sonora sẽ xóa chương trình Soloist, khóa API và thông tin đăng nhập của nó. Spotify quay lại dùng trình phát tích hợp.
 confirm-remove-downloads-title = Xóa tất cả bản tải xuống?
 confirm-remove-downloads = Mọi bài hát bạn đã tải xuống từ mọi dịch vụ sẽ bị xóa khỏi máy tính này. Chúng sẽ được phát trực tuyến lại cho đến khi bạn tải xuống lần nữa.
 confirm-delete-named = Xóa “{ $name }”? Không thể hoàn tác thao tác này.

@@ -60,7 +60,7 @@ equalizer-skipped-more = e { $count ->
        *[other] altre { $count }
     }
 equalizer-skip-unknown-type = tipo di filtro sconosciuto { $name }
-equalizer-skip-unreadable = non è un filtro che Sonora può leggere
+equalizer-skip-unreadable = non è un filtro che YouTube+ può leggere
 equalizer-skip-no-frequency = nessuna frequenza
 equalizer-skip-no-gain = nessun guadagno
 equalizer-skip-no-width = nessun Q o larghezza di banda
@@ -87,7 +87,7 @@ equalizer-overload-slight = Clipping inferiore a 0,1 dB
 equalizer-lower-preamp = Abbassa il preamp
 equalizer-level = Livello
 equalizer-status-bit-perfect = Bit-perfect
-equalizer-status-bit-perfect-detail = Bit-perfect da Sonora
+equalizer-status-bit-perfect-detail = Bit-perfect da YouTube+
 equalizer-status-server = Il server audio poi lo converte a { $khz } kHz
 equalizer-status-altered = Non bit-perfect a causa di:
 equalizer-status-separator = {", "}

@@ -65,7 +65,7 @@ playlist-create-title = Створити плейлист
 playlist-edit-title = Редагувати плейлист
 playlist-cover-choose = Вибрати зображення
 playlist-cover-remove = Прибрати обкладинку
-playlist-cover-unopenable = Sonora не може відкрити цей файл
+playlist-cover-unopenable = YouTube+ не може відкрити цей файл
 playlist-cover-too-large = Зображення більше за 40 МБ
 playlist-cover-not-a-picture = Це не зображення JPEG, PNG чи WebP
 playlist-delete-title = Видалити плейлист
@@ -78,8 +78,6 @@ playlist-again-add = Додати ще раз
 # confirm
 confirm-delete-track-files-title = Видалити файли треків?
 confirm-delete-track-files = Файли буде остаточно видалено з диска. Цю дію неможливо скасувати.
-confirm-uninstall-widevine-title = Видалити модуль Widevine?
-confirm-uninstall-widevine = Sonora видалить копію, завантажену від Google. Треки Apple Music перестануть грати, доки модуль не буде завантажено знову.
 confirm-remove-downloads-title = Видалити всі завантаження?
 confirm-remove-downloads = Усі завантажені треки з усіх сервісів буде видалено з цього комп'ютера. Вони знову гратимуть із мережі, доки ви не завантажите їх ще раз.
 confirm-delete-named = Видалити «{ $name }»? Цю дію неможливо скасувати.

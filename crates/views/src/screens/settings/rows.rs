@@ -35,13 +35,6 @@ impl Row {
         }
     }
 
-    /// Lets the control give up width before the label does, for a text field that still works
-    /// narrowed while a cut label says nothing.
-    pub(crate) fn yielding(mut self) -> Self {
-        self.yielding = true;
-        self
-    }
-
     /// Adds a muted explanation below the label. It wraps well short of the control, so a long
     /// one never runs up against a switch or picker.
     pub(crate) fn detail(mut self, detail: SharedString) -> Self {
@@ -145,11 +138,6 @@ impl SettingsView {
     /// A plain row: the label and the control.
     pub(super) fn row(&self, title: SharedString, control: AnyElement) -> AnyElement {
         Row::new(title, control).into_any_element()
-    }
-
-    /// A row whose control narrows before its label is cut, for a text field.
-    pub(super) fn yielding_row(&self, title: SharedString, control: AnyElement) -> AnyElement {
-        Row::new(title, control).yielding().into_any_element()
     }
 
     /// A row whose choice is drawn as option cards: the label on a row of its own, then the

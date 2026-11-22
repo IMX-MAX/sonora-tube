@@ -62,7 +62,7 @@ equalizer-skipped-more = dan { $count ->
        *[other] { $count } lagi
     }
 equalizer-skip-unknown-type = jenis filter { $name } tidak dikenal
-equalizer-skip-unreadable = bukan filter yang dapat dibaca Sonora
+equalizer-skip-unreadable = bukan filter yang dapat dibaca YouTube+
 equalizer-skip-no-frequency = tanpa frekuensi
 equalizer-skip-no-gain = tanpa gain
 equalizer-skip-no-width = tanpa Q atau bandwidth
@@ -102,14 +102,14 @@ equalizer-overload-slight = Clipping di bawah 0,1 dB
 equalizer-lower-preamp = Turunkan preamp
 equalizer-level = Level
 equalizer-status-bit-perfect = Bit-perfect
-equalizer-status-bit-perfect-detail = Bit-perfect dari Sonora
+equalizer-status-bit-perfect-detail = Bit-perfect dari YouTube+
 equalizer-status-server = Server suara lalu mengonversinya ke { $khz } kHz
 equalizer-status-altered = Tidak bit-perfect karena:
 equalizer-status-separator = {", "}
 equalizer-status-equalized = EQ
 equalizer-status-volume = Volume
 equalizer-status-normalized = Dinormalisasi
-equalizer-status-direct = Dimainkan oleh Soloist, melewati Sonora
+equalizer-status-direct = Dimainkan oleh Soloist, melewati YouTube+
 equalizer-status-rate = { $from } → { $to } kHz
 equalizer-status-bits = { $from } → { $to } bit
 equalizer-status-float = Float → { $to } bit

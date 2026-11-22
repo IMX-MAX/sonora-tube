@@ -22,7 +22,7 @@ $env:SONORA_VERSION = $Version.TrimStart("v")
 $env:SONORA_EXE = $source.Path
 $env:SONORA_DIST = (Resolve-Path $outputPath).Path
 
-& $iscc (Join-Path $PSScriptRoot "sonora.iss")
+& $iscc (Join-Path $PSScriptRoot "youtube-plus.iss")
 if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup failed with exit code $LASTEXITCODE"
 }

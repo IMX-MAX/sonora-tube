@@ -207,6 +207,7 @@ impl RenderOnce for Picks {
             .flex_col()
             .overflow_hidden()
             .rounded(theme.radius)
+            .corner_smoothing(theme.smoothing)
             .border_1()
             .border_color(theme.border)
             .child(
