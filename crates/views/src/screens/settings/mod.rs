@@ -26,6 +26,7 @@ use crate::shared::text;
 
 mod about;
 mod accounts;
+mod ai;
 mod appearance;
 mod connect;
 mod discord;
@@ -149,6 +150,10 @@ enum Slot {
     Saver,
     HideShorts,
     Captions,
+    AiKey,
+    AiChatModel,
+    AiChapterModel,
+    AutoChapters,
     Version,
     Log,
 }
@@ -257,6 +262,8 @@ pub struct SettingsView {
     /// The field for the custom name Sonora goes by in Spotify's device list.
     /// The address of the listener's own Sonora Sessions server.
     sessions_server: Entity<Input>,
+    /// The field a Mistral API key is pasted in.
+    ai_key: Entity<Input>,
     /// The service whose link dialog is open, by slug.
     scrobble_prompt: Option<&'static str>,
     /// The provider whose sign-in choice is up, by slug and name.
@@ -384,6 +391,11 @@ impl SettingsView {
         })
         .detach();
 
+        let ai_key = cx.new(|cx| Input::new("settings-ai-key-hint", cx).compact().masked());
+        cx.observe(&ai_key, |_, _, cx| cx.notify()).detach();
+        if let Some(assistant) = state::Assistant::entity(cx) {
+            cx.observe(&assistant, |_, _, cx| cx.notify()).detach();
+        }
         let sessions_server =
             cx.new(|cx| Input::new("settings-sessions-server-hint", cx).compact());
         let typed = settings.read(cx).sessions_server().to_owned();
@@ -447,6 +459,7 @@ impl SettingsView {
             scrobble_first: cx.new(|cx| Input::new("common-api-key", cx)),
             scrobble_second: cx.new(|cx| Input::new("settings-scrobble-secret", cx)),
             sessions_server,
+            ai_key,
             scrobble_prompt: None,
             languages,
             typefaces,
@@ -808,6 +821,19 @@ impl SettingsView {
                 t!("settings-hide-shorts-detail"),
             ),
             Slot::Captions => (t!("settings-captions"), t!("settings-captions-detail")),
+            Slot::AiKey => (t!("settings-ai-key"), t!("settings-ai-key-detail")),
+            Slot::AiChatModel => (
+                t!("settings-ai-chat-model"),
+                t!("settings-ai-chat-model-detail"),
+            ),
+            Slot::AiChapterModel => (
+                t!("settings-ai-chapter-model"),
+                t!("settings-ai-chapter-model-detail"),
+            ),
+            Slot::AutoChapters => (
+                t!("settings-ai-auto-chapters"),
+                t!("settings-ai-auto-chapters-detail"),
+            ),
             Slot::KeepTracks => (
                 t!("settings-keep-tracks"),
                 t!("settings-keep-tracks-detail"),
@@ -965,6 +991,10 @@ impl SettingsView {
             Slot::WindowRounding => self.window_rounding_row(window, cx),
             Slot::HideShorts => self.hide_shorts_row(cx),
             Slot::Captions => self.captions_row(cx),
+            Slot::AiKey => self.ai_key_row(cx),
+            Slot::AiChatModel => self.ai_chat_model_row(cx),
+            Slot::AiChapterModel => self.ai_chapter_model_row(cx),
+            Slot::AutoChapters => self.auto_chapters_row(cx),
             Slot::KeepTracks => self.keep_tracks_row(cx),
             Slot::CacheSize => self.cache_size_row(cx),
             Slot::CacheUsage => self.cache_usage_row(cx),

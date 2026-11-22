@@ -4,6 +4,7 @@
 //! playlists. Ads and promoted shelves are dropped while parsing and never reach a caller, and
 //! Shorts come back as ordinary videos unless the client is told to leave them out.
 
+pub mod ai;
 mod client;
 mod parse;
 
@@ -252,6 +253,45 @@ pub fn marks(text: &str) -> Vec<(std::ops::Range<usize>, Mark)> {
         found.push((at + lead..at + lead + moment.len(), Mark::Moment(seconds)));
     }
     found
+}
+
+/// A named stretch of a video, from the second it starts to where the next one does.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chapter {
+    pub start: f64,
+    pub title: String,
+}
+
+/// The chapters a description lists as lines that open with a moment, when there are at least
+/// three and the first is at the start, as YouTube itself requires.
+pub fn chapters(description: &str) -> Vec<Chapter> {
+    let mut found = Vec::new();
+    for line in description.lines() {
+        let line = line.trim();
+        let Some((range, Mark::Moment(start))) = marks(line).into_iter().next() else {
+            continue;
+        };
+        if range.start != 0 {
+            continue;
+        }
+        let title = line[range.end..]
+            .trim_start_matches(|letter: char| {
+                letter.is_whitespace() || matches!(letter, '-' | '–' | '—' | ':' | '|' | ')')
+            })
+            .trim();
+        if title.is_empty() {
+            continue;
+        }
+        found.push(Chapter {
+            start,
+            title: title.to_owned(),
+        });
+    }
+    let ordered = found.windows(2).all(|pair| pair[0].start < pair[1].start);
+    match found.first() {
+        Some(first) if first.start == 0. && found.len() >= 3 && ordered => found,
+        _ => Vec::new(),
+    }
 }
 
 /// One line of a video's transcript and the second it is spoken at.

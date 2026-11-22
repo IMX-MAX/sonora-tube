@@ -68,7 +68,7 @@ impl SettingsView {
 /// Notepad on Windows refuses a file that Sonora still writes to, so the button opens a copy.
 /// `File::open` shares write access, and `fs::copy` documents no share mode.
 fn snapshot(log: &Path) -> io::Result<PathBuf> {
-    let copy = log.with_file_name("sonora.copy.log");
+    let copy = log.with_file_name("youtube-plus.copy.log");
     io::copy(&mut File::open(log)?, &mut File::create(&copy)?)?;
     Ok(copy)
 }

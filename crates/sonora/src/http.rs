@@ -14,7 +14,7 @@ use gpui::http_client::{AsyncBody, HttpClient, Inner, Request, Response, Url};
 use sha2::{Digest, Sha256};
 use tokio::runtime::Handle;
 
-const USER_AGENT: &str = "sonora";
+const USER_AGENT: &str = "youtube-plus";
 const CACHE_BYTES: u64 = 128 * 1024 * 1024;
 const CACHE_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const CACHE_SWEEP: Duration = Duration::from_secs(60 * 60);

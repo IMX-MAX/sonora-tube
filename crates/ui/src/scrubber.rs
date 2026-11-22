@@ -107,6 +107,7 @@ pub struct Scrubber {
     value: Option<SharedString>,
     bubble: Option<(f32, SharedString)>,
     ranges: Vec<(f32, f32, Hsla)>,
+    cuts: (Vec<f32>, Hsla),
     lift: Pixels,
     on_move: Option<Slide>,
     on_release: Option<Release>,
@@ -128,6 +129,7 @@ impl Scrubber {
             value: None,
             bubble: None,
             ranges: Vec::new(),
+            cuts: (Vec::new(), gpui::transparent_black()),
             lift: LIFT,
             on_move: None,
             on_release: None,
@@ -170,6 +172,18 @@ impl Scrubber {
                 (end > start).then_some((start, end, color))
             })
             .collect();
+        self
+    }
+
+    /// Splits a horizontal track with thin gaps at each fraction, painted `color` to match what
+    /// lies behind the track, such as the chapters of a video.
+    pub fn cuts(mut self, cuts: impl IntoIterator<Item = f32>, color: Hsla) -> Self {
+        self.cuts = (
+            cuts.into_iter()
+                .filter(|cut| *cut > 0. && *cut < 1.)
+                .collect(),
+            color,
+        );
         self
     }
 
@@ -242,6 +256,7 @@ impl RenderOnce for Scrubber {
             value,
             bubble,
             ranges,
+            cuts,
             lift,
             on_move,
             on_release,
@@ -435,6 +450,16 @@ impl RenderOnce for Scrubber {
                                 .w(relative(end - start))
                                 .rounded_full()
                                 .bg(color)
+                        }))
+                        .children(cuts.0.into_iter().map(move |at| {
+                            div()
+                                .absolute()
+                                .top(Pixels::ZERO - line)
+                                .bottom(Pixels::ZERO - line)
+                                .left(relative(at))
+                                .ml(Pixels::ZERO - line / 2.)
+                                .w(line)
+                                .bg(cuts.1)
                         }))
                         .when(enabled, |this| {
                             this.child(

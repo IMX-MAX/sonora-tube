@@ -8,11 +8,7 @@ use storage::Database;
 use crate::{Io, Session, SessionEvent, join, version};
 
 const ENDPOINT: &str = "https://sonora-stats.nolight.dev/install";
-const AGENT: &str = concat!(
-    "sonora/",
-    env!("CARGO_PKG_VERSION"),
-    " (https://github.com/sonorahq/sonora)"
-);
+const AGENT: &str = concat!("youtube-plus/", env!("CARGO_PKG_VERSION"), "");
 const REPORTED: &str = "reported_usage";
 const LOGGED_IN: &str = "logged_in_once";
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -112,8 +108,9 @@ impl Usage {
         usage
     }
 
+    /// Whether to ask about reporting the install. Never, since this app reports nothing.
     pub fn asking(&self) -> bool {
-        self.loaded && !self.settled && !self.logged_in
+        false
     }
 
     pub fn consented(&self) -> bool {
