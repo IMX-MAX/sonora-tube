@@ -94,7 +94,7 @@ const CAPTION_FOOT: f32 = 0.06;
 const SMOOTH: u32 = 30;
 /// The strip of controls that floats over a full screen picture: how wide it may be, how far
 /// from the foot it sits, how see-through it is and how much it blurs what is under it.
-const FLOAT_WIDTH: Pixels = px(860.);
+const FLOAT_WIDTH: Pixels = px(640.);
 const FLOAT_FOOT: Pixels = px(20.);
 /// About how tall the full screen controls stand, which captions are lifted over.
 const FLOAT_HEIGHT: Pixels = px(84.);
@@ -104,15 +104,8 @@ const WAKE_HEAD: Pixels = px(56.);
 const WAKE_FOOT: f32 = 0.18;
 const FLOAT_FILL: f32 = 0.55;
 const FLOAT_BLUR: Pixels = px(20.);
-/// A picture darker than `BAR_DARK` takes a light strip of controls in full screen and one
-/// lighter than `BAR_LIGHT` a dark one. Between the two it stays as it was, so it does not flicker.
 /// How wide a picture is for its height.
 const SHAPE: f32 = 16. / 9.;
-const BAR_DARK: f32 = 0.4;
-const BAR_LIGHT: f32 = 0.6;
-/// How much of the controls' own colour a hovered and a switched on button are filled with there.
-const BAR_HOVER: f32 = 0.14;
-const BAR_ON: f32 = 0.24;
 /// How long the full screen controls stay after the pointer last moved.
 /// How long the transcript stays where it was scrolled by hand before following again.
 const BROWSE_HOLD: Duration = Duration::from_secs(4);
@@ -1232,50 +1225,6 @@ enum Panel {
     Chat,
 }
 
-/// The colours the playback controls are drawn in. On the page they are the theme's. Floating
-/// over the picture in full screen they are whichever of the theme's page and text colours
-/// stands out from it: a light strip with dark marks over a dark picture, and a dark one with
-/// light marks over a light picture.
-#[derive(Clone, Copy)]
-pub(super) struct Ink {
-    /// Whether the controls float over the picture, where a button brings its own fills.
-    floating: bool,
-    fill: Hsla,
-    edge: Hsla,
-    pub(super) text: Hsla,
-    pub(super) quiet: Hsla,
-    played: Hsla,
-    unplayed: Hsla,
-}
-
-impl Ink {
-    /// A button of the controls in these colours.
-    fn dress(&self, button: Button) -> Button {
-        match self.floating {
-            true => button
-                .tint(self.text)
-                .fill(self.text.opacity(0.), self.text.opacity(BAR_HOVER)),
-            false => button,
-        }
-    }
-
-    /// A button of the controls that is switched `on`, filled so that it shows on these colours.
-    fn select(&self, button: Button, on: bool) -> Button {
-        match self.floating && on {
-            true => button.bg(self.text.opacity(BAR_ON)),
-            false => button,
-        }
-    }
-
-    /// What a hovered row of the controls is filled with.
-    pub(super) fn hover(&self, theme: &ui::Theme) -> Hsla {
-        match self.floating {
-            true => self.text.opacity(BAR_HOVER),
-            false => theme.secondary_hover,
-        }
-    }
-}
-
 pub(crate) struct WatchView {
     watching: Entity<Watching>,
     subscriptions: Entity<Subscriptions>,
@@ -1351,7 +1300,6 @@ pub(crate) struct WatchView {
     /// When the pointer last moved over the full screen picture, which keeps its controls up.
     stirred: Option<Instant>,
     /// Whether the full screen controls were last drawn light, over a dark picture.
-    pale: Cell<bool>,
     /// When the wheel last stepped to another Short.
     stepped: Option<Instant>,
     /// Which page of the side panel shows: the transcript, the chapters or the AI chat.
@@ -1442,7 +1390,6 @@ impl WatchView {
             theater: false,
             entered: false,
             stirred: None,
-            pale: Cell::new(true),
             stepped: None,
             panel: Panel::Transcript,
             query,
@@ -2064,49 +2011,6 @@ impl WatchView {
         )
     }
 
-    /// The colours of the playback controls where they are now: the theme's on the page, and
-    /// the ones that stand out from the picture in full screen.
-    fn ink(&self, cx: &Context<Self>) -> Ink {
-        let theme = cx.theme();
-        let watching = self.watching.read(cx);
-        let page = Ink {
-            floating: false,
-            fill: theme.background,
-            edge: theme.border,
-            text: theme.foreground,
-            quiet: theme.muted_foreground,
-            played: theme.progress_bar,
-            unplayed: ui::motion::mix(theme.progress_bar, theme.background, UNPLAYED),
-        };
-        let Some(player) = watching.player().filter(|_| watching.full()) else {
-            return page;
-        };
-        let (left, right) = player.glow();
-        let light = (brightness(left) + brightness(right)) / 2.;
-        if light < BAR_DARK {
-            self.pale.set(true);
-        } else if light > BAR_LIGHT {
-            self.pale.set(false);
-        }
-        let (dark, pale) = match theme.background.l < theme.foreground.l {
-            true => (theme.background, theme.foreground),
-            false => (theme.foreground, theme.background),
-        };
-        let (fill, text) = match self.pale.get() {
-            true => (pale, dark),
-            false => (dark, pale),
-        };
-        Ink {
-            floating: true,
-            fill,
-            edge: ui::motion::mix(text, fill, UNPLAYED),
-            text,
-            quiet: ui::motion::mix(text, fill, SELECTED),
-            played: text,
-            unplayed: ui::motion::mix(text, fill, UNPLAYED),
-        }
-    }
-
     fn controls(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let watching = self.watching.read(cx);
@@ -2132,7 +2036,6 @@ impl WatchView {
         let (full, filled) = (watching.full(), self.watching.clone());
         let (discussed, theater) = (self.discussed, self.theater);
         let pad = theme.metrics.pad;
-        let ink = self.ink(cx);
         let fraction = match self.pending {
             Some(pending) => pending,
             None if seekable => (position / total).clamp(0., 1.) as f32,
@@ -2148,7 +2051,7 @@ impl WatchView {
             div()
                 .flex_none()
                 .text_size(theme.text(Text::Small))
-                .text_color(ink.quiet)
+                .text_color(theme.muted_foreground)
                 .child(text)
         };
 
@@ -2201,9 +2104,7 @@ impl WatchView {
                             Button::new("video-transcript")
                                 .icon("icons/text-select.svg")
                                 .ghost()
-                                .map(|button| ink.dress(button))
                                 .selected(scripted)
-                                .map(|button| ink.select(button, scripted))
                                 .tooltip(match scripted {
                                     true => "video-transcript-hide",
                                     false => "video-transcript-show",
@@ -2217,9 +2118,7 @@ impl WatchView {
                             Button::new("video-discussion")
                                 .icon("icons/message-square.svg")
                                 .ghost()
-                                .map(|button| ink.dress(button))
                                 .selected(discussed)
-                                .map(|button| ink.select(button, discussed))
                                 .tooltip(match discussed {
                                     true => "video-discussion-hide",
                                     false => "video-discussion-show",
@@ -2247,9 +2146,7 @@ impl WatchView {
                                     Button::new("video-captions")
                                         .label(t!("video-captions"))
                                         .ghost()
-                                        .map(|button| ink.dress(button))
                                         .selected(captions)
-                                        .map(|button| ink.select(button, captions))
                                         .tooltip(match captions {
                                             true => "video-captions-hide",
                                             false => "video-captions-show",
@@ -2265,9 +2162,7 @@ impl WatchView {
                             Button::new("video-speed")
                                 .label(pace(watching.speed()))
                                 .ghost()
-                                .map(|button| ink.dress(button))
                                 .selected(self.pacing.is_some())
-                                .map(|button| ink.select(button, self.pacing.is_some()))
                                 .tooltip("video-speed")
                                 .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
                                     this.pacing = match this.pacing {
@@ -2285,9 +2180,7 @@ impl WatchView {
                                         None => String::new(),
                                     }))
                                     .ghost()
-                                    .map(|button| ink.dress(button))
                                     .selected(self.choosing.is_some())
-                                    .map(|button| ink.select(button, self.choosing.is_some()))
                                     .tooltip("video-quality")
                                     .on_click(cx.listener(
                                         |this, event: &gpui::ClickEvent, _, cx| {
@@ -2304,9 +2197,7 @@ impl WatchView {
                             Button::new("video-pip")
                                 .icon("icons/external-link.svg")
                                 .ghost()
-                                .map(|button| ink.dress(button))
                                 .selected(floating)
-                                .map(|button| ink.select(button, floating))
                                 .tooltip(match floating {
                                     true => "video-pip-close",
                                     false => "video-pip-open",
@@ -2318,9 +2209,7 @@ impl WatchView {
                                 Button::new("video-theater")
                                     .icon("icons/rectangle-horizontal.svg")
                                     .ghost()
-                                    .map(|button| ink.dress(button))
                                     .selected(theater)
-                                    .map(|button| ink.select(button, theater))
                                     .tooltip(match theater {
                                         true => "video-theater-leave",
                                         false => "video-theater-enter",
@@ -2344,7 +2233,6 @@ impl WatchView {
                     Button::new("video-more")
                         .icon("icons/ellipsis.svg")
                         .ghost()
-                        .map(|button| ink.dress(button))
                         .tooltip("video-more"),
                 ),
             });
@@ -2360,7 +2248,6 @@ impl WatchView {
                         false => "icons/pause-filled.svg",
                     })
                     .ghost()
-                    .map(|button| ink.dress(button))
                     .tooltip(match paused {
                         true => "video-play",
                         false => "video-pause",
@@ -2388,7 +2275,6 @@ impl WatchView {
                         Button::new("video-mute")
                             .icon(volume_icon(level))
                             .ghost()
-                            .map(|button| ink.dress(button))
                             .tooltip(match muted {
                                 true => "video-unmute",
                                 false => "video-mute",
@@ -2403,7 +2289,15 @@ impl WatchView {
                                 Scrubber::new(&self.volume, level)
                                     .name(t!("video-volume"))
                                     .value(percent(level))
-                                    .colors(ink.played, ink.unplayed, ink.text)
+                                    .colors(
+                                        theme.progress_bar,
+                                        ui::motion::mix(
+                                            theme.progress_bar,
+                                            theme.background,
+                                            UNPLAYED,
+                                        ),
+                                        theme.foreground,
+                                    )
                                     .on_move(cx.listener(|this, fraction: &f32, _, cx| {
                                         let level = *fraction;
                                         this.watching.update(cx, |watching, cx| {
@@ -2415,7 +2309,7 @@ impl WatchView {
                     }),
             )
             .child(time(ends))
-            .children(self.chapter_now(position, ink, cx))
+            .children(self.chapter_now(position, cx))
             .child(div().flex_1())
             .child(tray)
             .child(
@@ -2425,7 +2319,6 @@ impl WatchView {
                         false => "icons/maximize.svg",
                     })
                     .ghost()
-                    .map(|button| ink.dress(button))
                     .tooltip(match full {
                         true => "video-full-leave",
                         false => "video-full-enter",
@@ -2463,7 +2356,11 @@ impl WatchView {
                             .cuts(cuts)
                             .name(t!("video-position"))
                             .value(elapsed)
-                            .colors(ink.played, ink.unplayed, ink.text)
+                            .colors(
+                                theme.progress_bar,
+                                ui::motion::mix(theme.progress_bar, theme.background, UNPLAYED),
+                                theme.foreground,
+                            )
                             .enabled(seekable)
                             .on_move(cx.listener(|this, fraction: &f32, _, cx| {
                                 this.pending = Some(*fraction);
@@ -3234,7 +3131,6 @@ impl WatchView {
             false => Bounds::new(Point::default(), whole),
         };
         let lit = self.strip_lit(cx);
-        let ink = self.ink(cx);
         let title = self
             .watching
             .read(cx)
@@ -3295,14 +3191,16 @@ impl WatchView {
                                 })
                                 .bg(gpui::linear_gradient(
                                     180.,
-                                    gpui::linear_color_stop(ink.fill.opacity(FLOAT_FILL), 0.),
-                                    gpui::linear_color_stop(ink.fill.opacity(0.), 1.),
+                                    gpui::linear_color_stop(
+                                        theme.background.opacity(FLOAT_FILL),
+                                        0.,
+                                    ),
+                                    gpui::linear_color_stop(theme.background.opacity(0.), 1.),
                                 ))
                                 .child(
                                     Button::new("video-full-back")
                                         .icon("icons/chevron-left.svg")
                                         .ghost()
-                                        .map(|button| ink.dress(button))
                                         .tooltip("video-full-leave")
                                         .on_click(move |_, _, cx| {
                                             left.update(cx, |watching, cx| {
@@ -3317,7 +3215,6 @@ impl WatchView {
                                             .truncate()
                                             .text_size(theme.text(Text::Body))
                                             .font_weight(FontWeight::MEDIUM)
-                                            .text_color(ink.text)
                                             .child(title),
                                     )
                                 }),
@@ -3338,13 +3235,13 @@ impl WatchView {
                                         .id("video-full-controls")
                                         .occlude()
                                         .w(FLOAT_WIDTH.min(seat.size.width - FLOAT_FOOT * 2.))
-                                        .px_4()
-                                        .py_2()
+                                        .px_3()
+                                        .py_1()
                                         .rounded(theme.radius)
                                         .corner_smoothing(theme.smoothing)
                                         .border_1()
-                                        .border_color(ink.edge.opacity(FLOAT_FILL))
-                                        .bg(ink.fill.opacity(FLOAT_FILL))
+                                        .border_color(theme.border.opacity(FLOAT_FILL))
+                                        .bg(theme.background.opacity(FLOAT_FILL))
                                         .backdrop_blur(FLOAT_BLUR)
                                         .child(self.controls(cx)),
                                 ),
@@ -4917,10 +4814,4 @@ fn halo(picture: u32, page: Hsla) -> Hsla {
         a: GLOW_STRENGTH * (colour.s / GLOW_VIVID).min(1.),
         ..colour
     }
-}
-
-/// How light the colour `0xRRGGBB` looks, from 0 for black to 1 for white.
-fn brightness(colour: u32) -> f32 {
-    let [_, red, green, blue] = colour.to_be_bytes().map(|part| f32::from(part) / 255.);
-    0.2126 * red + 0.7152 * green + 0.0722 * blue
 }

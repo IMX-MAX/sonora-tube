@@ -18,7 +18,7 @@ use tube::ai::Speaker;
 use ui::{ActiveTheme as _, Button, Notice, Spinner, Submit, Text, Theme, Vacancy, clock};
 
 use super::markdown::{self, Block, Rich};
-use super::{Ink, Panel, WatchView};
+use super::{Panel, WatchView};
 
 /// How big a chapter's number stands.
 const BADGE: Pixels = px(22.);
@@ -767,12 +767,7 @@ impl WatchView {
     }
 
     /// The chapter playing, beside the time, which opens the chapters when pressed.
-    pub(super) fn chapter_now(
-        &self,
-        position: f64,
-        ink: Ink,
-        cx: &Context<Self>,
-    ) -> Option<AnyElement> {
+    pub(super) fn chapter_now(&self, position: f64, cx: &Context<Self>) -> Option<AnyElement> {
         let theme = cx.theme();
         let watching = self.watching.read(cx);
         let chapters = watching.chapters();
@@ -794,8 +789,8 @@ impl WatchView {
                 .corner_smoothing(theme.smoothing)
                 .cursor_pointer()
                 .text_size(theme.text(Text::Small))
-                .text_color(ink.quiet)
-                .hover(|this| this.bg(ink.hover(theme)).text_color(ink.text))
+                .text_color(theme.muted_foreground)
+                .hover(|this| this.bg(theme.secondary_hover).text_color(theme.foreground))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.panel = Panel::Chapters;
                     this.watching.update(cx, |watching, cx| {
@@ -805,14 +800,20 @@ impl WatchView {
                     });
                     cx.notify();
                 }))
-                .child(div().flex_none().size(DOT).rounded_full().bg(ink.quiet))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(DOT)
+                        .rounded_full()
+                        .bg(theme.muted_foreground),
+                )
                 .child(div().min_w_0().truncate().child(title))
                 .child(
                     svg()
                         .flex_none()
                         .path(icons::path("icons/chevron-right.svg"))
                         .size(theme.text(Text::Small))
-                        .text_color(ink.quiet),
+                        .text_color(theme.muted_foreground),
                 )
                 .into_any_element(),
         )
