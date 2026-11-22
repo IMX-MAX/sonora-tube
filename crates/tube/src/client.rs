@@ -9,7 +9,9 @@ use serde_json::{Value, json};
 use sha1::{Digest as _, Sha1};
 
 use crate::parse;
-use crate::{ChannelPage, Comments, Found, Line, Page, PlaylistPage, Streams, Video, Watch};
+use crate::{
+    Caption, Captions, ChannelPage, Comments, Found, Page, PlaylistPage, Streams, Video, Watch,
+};
 
 const ORIGIN: &str = "https://www.youtube.com";
 /// The cookies that tell a signed-in session from a guest one, the first found signs requests.
@@ -233,14 +235,16 @@ impl Client {
         Ok(parse::videos(&answer))
     }
 
-    /// The lines of a video's captions, in the client's language where the video has them and
-    /// in its first language otherwise. A video without captions has no lines.
-    pub async fn transcript(&self, id: &str) -> Result<Vec<Line>> {
+    /// The lines of a video's captions and the languages they could be in. They come in the
+    /// `wanted` language when one is given, and otherwise in the client's language where the
+    /// video has them and in its first language where not. A video without captions has no lines.
+    pub async fn captions(&self, id: &str, wanted: Option<&Caption>) -> Result<Captions> {
         let answer = self
             .call_as(&APP, "player", json!({ "videoId": id }))
             .await?;
-        let Some(track) = parse::caption_track(&answer, &self.language) else {
-            return Ok(Vec::new());
+        let choices = parse::caption_choices(&answer);
+        let Some((track, shown)) = parse::caption_track(&answer, &self.language, wanted) else {
+            return Ok(Captions::default());
         };
         let address = format!("{track}&fmt=json3");
         let mut wait = RETRY;
@@ -267,7 +271,11 @@ impl Client {
             .json()
             .await
             .context("cannot read the transcript")?;
-        Ok(parse::transcript(&timed))
+        Ok(Captions {
+            lines: parse::transcript(&timed),
+            shown: Some(shown),
+            choices,
+        })
     }
 
     /// The qualities a video can be played at, best first, each a pair of addresses a player

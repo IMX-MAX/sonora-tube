@@ -45,6 +45,7 @@ mod tube;
 mod updates;
 mod usage;
 mod vault;
+mod video_downloads;
 mod wake;
 mod window_shape;
 
@@ -110,6 +111,7 @@ pub use updates::{
 };
 pub use usage::Usage;
 pub use vault::CACHE_GB_RANGE;
+pub use video_downloads::VideoDownloads;
 pub use wake::Wake;
 pub use window_shape::{apply_window_rounding, install_rounded_window_hook};
 

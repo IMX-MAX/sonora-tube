@@ -527,6 +527,26 @@ fn check(status: c_int) -> Result<()> {
     bail!("{}", message.to_string_lossy())
 }
 
+/// The yt-dlp to run for a download: the one shipped beside the executable, or else whichever
+/// the PATH holds.
+pub fn ytdl() -> String {
+    bundled_ytdl().unwrap_or_else(|| "yt-dlp".to_owned())
+}
+
+/// The folder of the executable when an ffmpeg was shipped in it, which lets yt-dlp join the
+/// separate picture and sound of the sharper qualities into one file.
+pub fn bundled_ffmpeg() -> Option<String> {
+    let name = match cfg!(windows) {
+        true => "ffmpeg.exe",
+        false => "ffmpeg",
+    };
+    let folder = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    folder
+        .join(name)
+        .is_file()
+        .then(|| folder.to_string_lossy().into_owned())
+}
+
 /// The yt-dlp shipped beside the executable, which the Windows installer puts there. Without one
 /// mpv looks for yt-dlp on the PATH.
 fn bundled_ytdl() -> Option<String> {

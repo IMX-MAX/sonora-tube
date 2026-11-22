@@ -291,6 +291,7 @@ impl Root {
 
         let tube = tube::Client::new();
         let account = state::VideoAccount::install(tube.clone(), cx);
+        state::VideoDownloads::install(tube.clone(), cx);
         let video_search = cx.new(|_| VideoSearch::new(tube.clone(), io.clone()));
         let subscriptions = cx.new(|_| Subscriptions::new(tube.clone(), io.clone()));
         let videos =

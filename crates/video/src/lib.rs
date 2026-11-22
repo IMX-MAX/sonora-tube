@@ -6,5 +6,5 @@
 mod player;
 mod view;
 
-pub use player::{Frames, Player};
+pub use player::{Frames, Player, bundled_ffmpeg, ytdl};
 pub use view::VideoView;

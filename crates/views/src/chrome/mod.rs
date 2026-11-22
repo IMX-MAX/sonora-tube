@@ -12,7 +12,6 @@ mod session;
 mod sessions_button;
 mod sidebar_left;
 mod sidebar_right;
-mod swipe_cue;
 mod theme_invite;
 mod timeline;
 mod title_bar;
@@ -29,7 +28,6 @@ pub(crate) use player_bar::PlayerBar;
 pub(crate) use session::{SessionCode, SessionJoin};
 pub(crate) use sidebar_left::SidebarLeft;
 pub(crate) use sidebar_right::SidebarRight;
-pub(crate) use swipe_cue::SwipeCue;
 pub(crate) use theme_invite::ThemeInvite;
 pub(crate) use timeline::Timeline;
 #[cfg(target_os = "macos")]

@@ -1,8 +1,11 @@
 //! The video screens: the search results, the page a video plays on and the page of a channel or
 //! a playlist. All three lay videos out as the same thumbnail tiles.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use gpui::AnimationExt as _;
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
@@ -16,8 +19,8 @@ use router::{Destination, navigate};
 use state::{Outcome, Subscriptions, Toasts, VideoList, VideoSearch, Watching};
 use tube::{Channel, Comment, Found, Playlist, Video};
 use ui::{
-    ActiveTheme as _, Artwork, Avatar, Button, Input, Menu, MenuItem, Popup, Room, Scrollbar,
-    Scroller, Scrubber, ScrubberState, Spinner, Submit, Text, clock, heading, vacant,
+    ActiveTheme as _, Artwork, Avatar, Button, Input, Menu, MenuItem, Motion, Popup, Room,
+    Scrollbar, Scroller, Scrubber, ScrubberState, Spinner, Submit, Text, clock, heading, vacant,
 };
 
 use crate::chrome::Chrome;
@@ -51,6 +54,13 @@ const FEED_MAX: Pixels = px(1500.);
 const FACE: f32 = 1.8;
 const FACE_ROOM: f32 = 1.7;
 const SCRIPT_HEIGHT: Pixels = px(420.);
+/// How thick the bar of a download under way is, and the least of it that shows.
+const FETCH_BAR: Pixels = px(3.);
+const FETCH_LEAST: f32 = 0.02;
+/// How many videos the page of new ones stops looking for more at.
+const FOUND_MOST: usize = 600;
+/// How far the folded player buttons slide in from when they unfold.
+const SLIDE: Pixels = px(16.);
 /// How much of the window's height the picture may take in theater mode.
 const THEATER_SHARE: f32 = 0.78;
 /// How large the picture-in-picture window opens, and how far from the screen's corner.
@@ -72,17 +82,25 @@ const SMOOTH: u32 = 30;
 /// from the foot it sits, how see-through it is and how much it blurs what is under it.
 const FLOAT_WIDTH: Pixels = px(860.);
 const FLOAT_FOOT: Pixels = px(20.);
+/// About how tall the full screen controls stand, which captions are lifted over.
+const FLOAT_HEIGHT: Pixels = px(84.);
+/// How near the top, and how much of the height from the bottom, the pointer has to come for
+/// the full screen controls to show.
+const WAKE_HEAD: Pixels = px(56.);
+const WAKE_FOOT: f32 = 0.18;
 const FLOAT_FILL: f32 = 0.55;
 const FLOAT_BLUR: Pixels = px(20.);
 /// How long the full screen controls stay after the pointer last moved.
+/// How long the transcript stays where it was scrolled by hand before following again.
+const BROWSE_HOLD: Duration = Duration::from_secs(4);
 const FULL_LINGER: Duration = Duration::from_secs(2);
 /// How wide the time over the seek bar stands when the video has no preview pictures.
 const PEEK_BARE: Pixels = px(64.);
 /// How tall a channel's banner stands, how much of the page shows through its top, and how far
 /// down it the channel's name starts.
-const BANNER: Pixels = px(240.);
+const BANNER: Pixels = px(440.);
 const BANNER_VEIL: f32 = 0.1;
-const BANNER_CLEAR: f32 = 0.45;
+const BANNER_CLEAR: f32 = 0.62;
 /// How strongly selected text in a description is backed.
 const SELECTED: f32 = 0.4;
 /// How long a press on the picture is held before it hurries the video along.
@@ -156,6 +174,138 @@ struct Card<'a> {
     lines: [SharedString; 2],
     /// What sits over the picture's top corner, shown while the tile is pointed at.
     corner: Option<AnyElement>,
+    /// The video a right click opens the menu of.
+    asked: Option<Video>,
+    /// How much of the video is downloaded, while it is.
+    fetched: Option<f32>,
+}
+
+/// The one menu a right click on any video opens, drawn once at the root of the workspace.
+pub(crate) struct VideoMenu {
+    kept: Entity<Subscriptions>,
+    open: Option<(Video, Point<Pixels>)>,
+}
+
+struct MenuHeld(Entity<VideoMenu>);
+
+impl gpui::Global for MenuHeld {}
+
+impl VideoMenu {
+    /// Makes the menu, which saves to watch later through `kept`.
+    pub(crate) fn install(kept: Entity<Subscriptions>, cx: &mut App) -> Entity<Self> {
+        let menu = cx.new(|_| Self { kept, open: None });
+        cx.set_global(MenuHeld(menu.clone()));
+        menu
+    }
+
+    /// The right-click handler of a video, which opens its menu where the pointer is.
+    fn opener(video: Video) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static {
+        move |event, _, cx| {
+            let Some(held) = cx.try_global::<MenuHeld>() else {
+                return;
+            };
+            let (menu, at) = (held.0.clone(), event.position);
+            cx.stop_propagation();
+            menu.update(cx, |this, cx| {
+                this.open = Some((video.clone(), at));
+                cx.notify();
+            });
+        }
+    }
+}
+
+impl Render for VideoMenu {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some((video, at)) = self.open.clone() else {
+            return div();
+        };
+        let saved = self.kept.read(cx).saved(&video.id);
+        let fetched = state::VideoDownloads::progress(&video.id, cx);
+        let watched = Destination::Watch(video.id.clone().into());
+        let address = format!("https://www.youtube.com/watch?v={}", video.id);
+        let (kept, later) = (self.kept.clone(), video.clone());
+        let fetch = video.clone();
+
+        let menu = Menu::new("video-menu")
+            .name(t!("video-menu"))
+            .item(
+                MenuItem::new("video-menu-open", t!("video-menu-open"))
+                    .icon("icons/play.svg")
+                    .on_click(move |_, _, cx| navigate(watched.clone(), cx)),
+            )
+            .item(
+                MenuItem::new(
+                    "video-menu-later",
+                    match saved {
+                        true => t!("video-later-remove"),
+                        false => t!("video-later-add"),
+                    },
+                )
+                .icon(match saved {
+                    true => "icons/check.svg",
+                    false => "icons/clock.svg",
+                })
+                .on_click(move |_, _, cx| {
+                    kept.update(cx, |kept, cx| kept.toggle_later(&later, cx));
+                }),
+            )
+            .when_some(video.channel.clone(), |menu, channel| {
+                let opened = Destination::Channel(channel.id.into());
+                menu.item(
+                    MenuItem::new("video-menu-channel", t!("video-menu-channel"))
+                        .icon("icons/user-round.svg")
+                        .on_click(move |_, _, cx| navigate(opened.clone(), cx)),
+                )
+            })
+            .item(
+                MenuItem::new("video-menu-copy", t!("video-menu-copy"))
+                    .icon("icons/link.svg")
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(address.clone()));
+                        Toasts::show(Outcome::Done, "toast-link-copied", cx);
+                    }),
+            )
+            .item(MenuItem::separator("video-menu-rule"))
+            .item(
+                MenuItem::new(
+                    "video-menu-download",
+                    match fetched {
+                        Some(fetched) => t!(
+                            "video-menu-downloading",
+                            percent = (fetched * 100.).round() as u32
+                        ),
+                        None => t!("video-menu-download"),
+                    },
+                )
+                .icon("icons/download.svg")
+                .on_click(move |_, _, cx| {
+                    let downloads = state::VideoDownloads::entity(cx);
+                    downloads.update(cx, |downloads, cx| match fetched {
+                        Some(_) => downloads.cancel(&fetch.id, cx),
+                        None => downloads.start(&fetch, cx),
+                    });
+                }),
+            )
+            .item(
+                MenuItem::new("video-menu-folder", t!("video-menu-folder"))
+                    .icon("icons/folder-open.svg")
+                    .on_click(|_, _, _| {
+                        let Some(folder) = state::VideoDownloads::folder() else {
+                            return;
+                        };
+                        if let Err(error) = std::fs::create_dir_all(&folder)
+                            .and_then(|()| open::that_detached(&folder))
+                        {
+                            log::warn!("downloads: cannot show the folder: {error:#}");
+                        }
+                    }),
+            );
+
+        div().child(Popup::new(at, menu).on_close(cx.listener(|this, _, _, cx| {
+            this.open = None;
+            cx.notify();
+        })))
+    }
 }
 
 /// A tile showing `card`, opening `destination` when pressed.
@@ -173,6 +323,8 @@ fn tile(
         title,
         lines,
         corner,
+        asked,
+        fetched,
     } = card;
     let theme = cx.theme();
     let title = SharedString::from(title.to_owned());
@@ -194,10 +346,26 @@ fn tile(
         .gap_2()
         .cursor_pointer()
         .on_click(move |_, _, cx| navigate(destination.clone(), cx))
+        .when_some(asked, |this, video| {
+            this.on_mouse_down(MouseButton::Right, VideoMenu::opener(video))
+        })
         .child(
             div()
                 .relative()
                 .child(picture)
+                .when_some(fetched, |this, fetched| {
+                    // The share downloaded, as a bar along the foot of the picture.
+                    this.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .bottom_0()
+                            .h(FETCH_BAR)
+                            .w(tiles.width * fetched.max(FETCH_LEAST))
+                            .rounded(radius)
+                            .bg(theme.primary),
+                    )
+                })
                 .when_some(badge, |this, badge| {
                     this.child(
                         div()
@@ -274,6 +442,8 @@ fn video_tile(
             title: &video.title,
             lines,
             corner: Some(later(scope, video, kept, cx)),
+            asked: Some(video.clone()),
+            fetched: state::VideoDownloads::progress(&video.id, cx),
         },
         place,
         Destination::Watch(video.id.clone().into()),
@@ -387,6 +557,7 @@ fn video_row(
         .cursor_pointer()
         .hover(|this| this.bg(theme.secondary))
         .on_click(move |_, _, cx| navigate(destination.clone(), cx))
+        .on_mouse_down(MouseButton::Right, VideoMenu::opener(video.clone()))
         .map(|row| match roomy {
             true => row.gap_4().p_2(),
             false => row.gap_2().p_1(),
@@ -483,6 +654,8 @@ fn playlist_tile(
                 SharedString::default(),
             ],
             corner: None,
+            asked: None,
+            fetched: None,
         },
         place,
         Destination::Videos(playlist.id.clone().into()),
@@ -566,6 +739,20 @@ fn channel_chip(
 }
 
 /// The spinner a page shows while its first or next stretch is on its way.
+/// The element fading in and rising a little into its place, once for each `id`, unless
+/// motion is switched off.
+fn settle(id: impl Into<gpui::ElementId>, element: impl IntoElement, cx: &App) -> AnyElement {
+    let held = div().relative().child(element);
+    match ui::motion::animates(cx) {
+        true => held
+            .with_animation(id, Motion::Base.animation(), |this, t| {
+                this.top(SLIDE * (1. - t)).opacity(t)
+            })
+            .into_any_element(),
+        false => held.into_any_element(),
+    }
+}
+
 fn waiting(id: &'static str) -> impl IntoElement {
     div()
         .flex()
@@ -853,6 +1040,20 @@ pub(crate) struct WatchView {
     choosing: Option<Point<Pixels>>,
     /// Where the menu of speeds hangs from, while it is open.
     pacing: Option<Point<Pixels>>,
+    /// Where the menu of caption languages hangs, while it is open.
+    wording: Option<Point<Pixels>>,
+    /// Whether the buttons folded behind the "more" one are laid out, which hovering does.
+    spread: bool,
+    /// Scrolls the transcript, which follows what is being said.
+    script_scroll: ScrollHandle,
+    /// The transcript line last scrolled to.
+    said: Cell<Option<usize>>,
+    /// When the transcript was last scrolled by hand, which pauses the following.
+    browsed: Rc<Cell<Option<Instant>>>,
+    /// Whether the full screen controls are asked for, and since when, which their fade runs from.
+    strip: (bool, Instant),
+    /// How many times the picture went into or out of full screen, which names the fade.
+    turns: usize,
     /// The wait that turns a press on the picture into a hold.
     hold: Option<Task<()>>,
     /// Whether the press being let go was a hold, so it is not also a click.
@@ -881,7 +1082,7 @@ pub(crate) struct WatchView {
     /// Whether going full screen put the window into the system's full screen, so leaving undoes it.
     entered: bool,
     /// When the pointer last moved over the full screen picture, which keeps its controls up.
-    stirred: Instant,
+    stirred: Option<Instant>,
     _tick: Task<()>,
 }
 
@@ -930,6 +1131,13 @@ impl WatchView {
             described: false,
             choosing: None,
             pacing: None,
+            wording: None,
+            spread: false,
+            script_scroll: ScrollHandle::new(),
+            said: Cell::new(None),
+            browsed: Rc::new(Cell::new(None)),
+            strip: (false, Instant::now()),
+            turns: 0,
             hold: None,
             swallow: false,
             peek: None,
@@ -943,7 +1151,7 @@ impl WatchView {
             answer: cx.new(|cx| Input::new("video-comment-reply-placeholder", cx)),
             theater: false,
             entered: false,
-            stirred: Instant::now(),
+            stirred: None,
             _tick: tick,
         }
     }
@@ -1162,7 +1370,12 @@ impl WatchView {
                         .absolute()
                         .left_0()
                         .right_0()
-                        .bottom(room.height * CAPTION_FOOT)
+                        .bottom(match full && self.strip.0 {
+                            true => {
+                                (room.height * CAPTION_FOOT).max(FLOAT_FOOT * 2. + FLOAT_HEIGHT)
+                            }
+                            false => room.height * CAPTION_FOOT,
+                        })
                         .flex()
                         .justify_center()
                         .child(
@@ -1392,6 +1605,71 @@ impl WatchView {
         )
     }
 
+    /// The menu of caption languages, hanging over the button that opened it: the ones the
+    /// video carries, then the ones YouTube translates into.
+    fn wordings(&self, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
+        let at = self.wording?;
+        let watching = self.watching.read(cx);
+        let (choices, shown) = (watching.caption_choices(), watching.caption_shown());
+        let pick = |place: usize, choice: &tube::Caption| {
+            let (chosen, wanted) = (self.watching.clone(), choice.clone());
+            MenuItem::new(("video-caption-language", place), choice.name.clone())
+                .checked(shown == Some(choice))
+                .on_click(move |_, _, cx| {
+                    chosen.update(cx, |watching, cx| {
+                        watching.set_caption_language(wanted.clone(), cx);
+                    });
+                })
+        };
+        let carried = choices.iter().filter(|choice| !choice.translated).count();
+        let menu = Menu::new("video-caption-languages").name(t!("video-caption-language"));
+        let menu = match choices.is_empty() {
+            true => menu.item(
+                MenuItem::new(
+                    "video-caption-language-none",
+                    match watching.transcript_loading() {
+                        true => t!("video-caption-language-loading"),
+                        false => t!("video-caption-language-none"),
+                    },
+                )
+                .disabled(),
+            ),
+            false => menu
+                .items(
+                    choices
+                        .iter()
+                        .take(carried)
+                        .enumerate()
+                        .map(|(place, choice)| pick(place, choice)),
+                )
+                .when(carried < choices.len(), |menu| {
+                    menu.item(MenuItem::separator("video-caption-divider"))
+                        .item(
+                            MenuItem::new(
+                                "video-caption-translated",
+                                t!("video-caption-translated"),
+                            )
+                            .disabled(),
+                        )
+                })
+                .items(
+                    choices
+                        .iter()
+                        .enumerate()
+                        .skip(carried)
+                        .map(|(place, choice)| pick(place, choice)),
+                ),
+        };
+        Some(
+            Popup::new(at, menu)
+                .above()
+                .on_close(cx.listener(|this, _, _, cx| {
+                    this.wording = None;
+                    cx.notify();
+                })),
+        )
+    }
+
     /// The menu of picture qualities, hanging over the button that opened it.
     fn qualities(&self, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
         let at = self.choosing?;
@@ -1468,6 +1746,164 @@ impl WatchView {
             "{elapsed} / {}",
             clock(Duration::from_secs_f64(total.max(0.)))
         ));
+        let spread = self.spread
+            || self.choosing.is_some()
+            || self.pacing.is_some()
+            || self.wording.is_some();
+        let tray = div()
+            .id("video-extras")
+            .flex()
+            .flex_none()
+            .items_center()
+            .on_hover(cx.listener(|this, over: &bool, _, cx| {
+                if this.spread != *over {
+                    this.spread = *over;
+                    cx.notify();
+                }
+            }))
+            .map(|tray| match spread {
+                true => {
+                    let extras = div()
+                        .relative()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Button::new("video-transcript")
+                                .icon("icons/text-select.svg")
+                                .ghost()
+                                .selected(scripted)
+                                .tooltip(match scripted {
+                                    true => "video-transcript-hide",
+                                    false => "video-transcript-show",
+                                })
+                                .on_click(move |_, _, cx| {
+                                    script
+                                        .update(cx, |watching, cx| watching.toggle_transcript(cx));
+                                }),
+                        )
+                        .child(
+                            Button::new("video-discussion")
+                                .icon("icons/message-square.svg")
+                                .ghost()
+                                .selected(discussed)
+                                .tooltip(match discussed {
+                                    true => "video-discussion-hide",
+                                    false => "video-discussion-show",
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.discussed = !this.discussed;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            // A right click offers the languages the captions come in.
+                            div()
+                                .on_mouse_down(
+                                    MouseButton::Right,
+                                    cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                                        this.wording = Some(event.position);
+                                        this.watching.update(cx, |watching, cx| {
+                                            watching.want_caption_choices(cx);
+                                        });
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(
+                                    Button::new("video-captions")
+                                        .label(t!("video-captions"))
+                                        .ghost()
+                                        .selected(captions)
+                                        .tooltip(match captions {
+                                            true => "video-captions-hide",
+                                            false => "video-captions-show",
+                                        })
+                                        .on_click(move |_, _, cx| {
+                                            captioned.update(cx, |watching, cx| {
+                                                watching.toggle_captions(cx)
+                                            });
+                                        }),
+                                ),
+                        )
+                        .child(
+                            Button::new("video-speed")
+                                .label(pace(watching.speed()))
+                                .ghost()
+                                .selected(self.pacing.is_some())
+                                .tooltip("video-speed")
+                                .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
+                                    this.pacing = match this.pacing {
+                                        Some(_) => None,
+                                        None => Some(event.position()),
+                                    };
+                                    cx.notify();
+                                })),
+                        )
+                        .when(!watching.qualities().is_empty(), |this| {
+                            this.child(
+                                Button::new("video-quality")
+                                    .label(SharedString::from(match watching.quality() {
+                                        Some(quality) => format!("{}p", quality.height),
+                                        None => String::new(),
+                                    }))
+                                    .ghost()
+                                    .selected(self.choosing.is_some())
+                                    .tooltip("video-quality")
+                                    .on_click(cx.listener(
+                                        |this, event: &gpui::ClickEvent, _, cx| {
+                                            this.choosing = match this.choosing {
+                                                Some(_) => None,
+                                                None => Some(event.position()),
+                                            };
+                                            cx.notify();
+                                        },
+                                    )),
+                            )
+                        })
+                        .child(
+                            Button::new("video-pip")
+                                .icon("icons/external-link.svg")
+                                .ghost()
+                                .selected(floating)
+                                .tooltip(match floating {
+                                    true => "video-pip-close",
+                                    false => "video-pip-open",
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_pip(cx))),
+                        )
+                        .when(!full, |this| {
+                            this.child(
+                                Button::new("video-theater")
+                                    .icon("icons/rectangle-horizontal.svg")
+                                    .ghost()
+                                    .selected(theater)
+                                    .tooltip(match theater {
+                                        true => "video-theater-leave",
+                                        false => "video-theater-enter",
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.theater = !this.theater;
+                                        cx.notify();
+                                    })),
+                            )
+                        });
+                    match ui::motion::animates(cx) {
+                        true => tray.child(extras.with_animation(
+                            "video-extras-slide",
+                            Motion::Quick.animation(),
+                            |this, t| this.left(SLIDE * (1. - t)).opacity(t),
+                        )),
+                        false => tray.child(extras),
+                    }
+                }
+                false => tray.child(
+                    Button::new("video-more")
+                        .icon("icons/ellipsis.svg")
+                        .ghost()
+                        .tooltip("video-more"),
+                ),
+            });
         let buttons = div()
             .flex()
             .w_full()
@@ -1515,106 +1951,7 @@ impl WatchView {
             )
             .child(time(ends))
             .child(div().flex_1())
-            .child(
-                Button::new("video-transcript")
-                    .icon("icons/text-select.svg")
-                    .ghost()
-                    .selected(scripted)
-                    .tooltip(match scripted {
-                        true => "video-transcript-hide",
-                        false => "video-transcript-show",
-                    })
-                    .on_click(move |_, _, cx| {
-                        script.update(cx, |watching, cx| watching.toggle_transcript(cx));
-                    }),
-            )
-            .child(
-                Button::new("video-discussion")
-                    .icon("icons/message-square.svg")
-                    .ghost()
-                    .selected(discussed)
-                    .tooltip(match discussed {
-                        true => "video-discussion-hide",
-                        false => "video-discussion-show",
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.discussed = !this.discussed;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("video-captions")
-                    .label(t!("video-captions"))
-                    .ghost()
-                    .selected(captions)
-                    .tooltip(match captions {
-                        true => "video-captions-hide",
-                        false => "video-captions-show",
-                    })
-                    .on_click(move |_, _, cx| {
-                        captioned.update(cx, |watching, cx| watching.toggle_captions(cx));
-                    }),
-            )
-            .child(
-                Button::new("video-speed")
-                    .label(pace(watching.speed()))
-                    .ghost()
-                    .selected(self.pacing.is_some())
-                    .tooltip("video-speed")
-                    .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
-                        this.pacing = match this.pacing {
-                            Some(_) => None,
-                            None => Some(event.position()),
-                        };
-                        cx.notify();
-                    })),
-            )
-            .when(!watching.qualities().is_empty(), |this| {
-                this.child(
-                    Button::new("video-quality")
-                        .label(SharedString::from(match watching.quality() {
-                            Some(quality) => format!("{}p", quality.height),
-                            None => String::new(),
-                        }))
-                        .ghost()
-                        .selected(self.choosing.is_some())
-                        .tooltip("video-quality")
-                        .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
-                            this.choosing = match this.choosing {
-                                Some(_) => None,
-                                None => Some(event.position()),
-                            };
-                            cx.notify();
-                        })),
-                )
-            })
-            .child(
-                Button::new("video-pip")
-                    .icon("icons/external-link.svg")
-                    .ghost()
-                    .selected(floating)
-                    .tooltip(match floating {
-                        true => "video-pip-close",
-                        false => "video-pip-open",
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_pip(cx))),
-            )
-            .when(!full, |this| {
-                this.child(
-                    Button::new("video-theater")
-                        .icon("icons/rectangle-horizontal.svg")
-                        .ghost()
-                        .selected(theater)
-                        .tooltip(match theater {
-                            true => "video-theater-leave",
-                            false => "video-theater-enter",
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.theater = !this.theater;
-                            cx.notify();
-                        })),
-                )
-            })
+            .child(tray)
             .child(
                 Button::new("video-full")
                     .icon(match full {
@@ -1726,10 +2063,16 @@ impl WatchView {
             Some(lines) => {
                 let spoken = lines.iter().rposition(|line| line.start <= now);
                 let total = lines.len();
+                self.keep_up(spoken);
                 div()
+                    .id("video-transcript-lines")
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_h_0()
                     .p_1()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.script_scroll)
                     .children(lines.iter().enumerate().map(|(place, line)| {
                         let (sought, start) = (self.watching.clone(), line.start);
                         let text = SharedString::from(line.text.clone());
@@ -1788,7 +2131,14 @@ impl WatchView {
                 .bg(theme.sidebar)
                 .overflow_hidden()
                 // Scrolling to an end of the panel stops there rather than moving the page.
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll_wheel({
+                    let browsed = self.browsed.clone();
+                    move |_, _, cx| {
+                        // Reading elsewhere in the transcript holds it there for a while.
+                        browsed.set(Some(Instant::now()));
+                        cx.stop_propagation();
+                    }
+                })
                 .child(
                     div()
                         .flex()
@@ -1841,16 +2191,34 @@ impl WatchView {
                                 }),
                         ),
                 )
-                .child(
-                    div()
-                        .id("video-transcript-lines")
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .child(body),
-                )
+                .child(div().flex().flex_col().flex_1().min_h_0().child(body))
                 .into_any_element(),
         )
+    }
+
+    /// Brings the line being said to the middle of the transcript when it changes, unless the
+    /// transcript was scrolled by hand a moment ago.
+    fn keep_up(&self, spoken: Option<usize>) {
+        if self.said.replace(spoken) == spoken {
+            return;
+        }
+        if self
+            .browsed
+            .get()
+            .is_some_and(|browsed| browsed.elapsed() < BROWSE_HOLD)
+        {
+            return;
+        }
+        let scroll = &self.script_scroll;
+        let Some(line) = spoken.and_then(|place| scroll.bounds_for_item(place)) else {
+            return;
+        };
+        let (view, at) = (scroll.bounds(), scroll.offset());
+        // The bounds are the ones laid out, before the scrolling moves them.
+        let top = line.top() - view.top();
+        let wanted = top - (view.size.height - line.size.height) / 2.;
+        let wanted = wanted.clamp(Pixels::ZERO, scroll.max_offset().y.max(Pixels::ZERO));
+        scroll.set_offset(gpui::point(at.x, -wanted));
     }
 
     /// The comments in a panel shaped like the transcript's, once they are asked for there.
@@ -1934,20 +2302,42 @@ impl WatchView {
             .collect()
     }
 
-    /// The picture over the whole window, its controls coming up while the pointer moves or the
-    /// video is paused.
-    fn screen(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
-        let theme = *cx.theme();
-        let room = window.viewport_size();
+    /// Whether the controls stand over a full screen picture: while the video is paused, a menu
+    /// of theirs is open, or the pointer was lately at an edge of the screen.
+    fn strip_shown(&self, cx: &Context<Self>) -> bool {
         let paused = self
             .watching
             .read(cx)
             .player()
             .is_none_or(|player| player.paused());
-        let shown = paused
+        paused
             || self.choosing.is_some()
             || self.pacing.is_some()
-            || self.stirred.elapsed() < FULL_LINGER;
+            || self.wording.is_some()
+            || self
+                .stirred
+                .is_some_and(|stirred| stirred.elapsed() < FULL_LINGER)
+    }
+
+    /// How far the full screen controls have come in, from 0 to 1, as they rise and sink.
+    fn strip_lit(&self, cx: &Context<Self>) -> f32 {
+        let (shown, since) = self.strip;
+        let done = match ui::motion::animates(cx) {
+            true => (since.elapsed().as_secs_f32() / Motion::Base.span().as_secs_f32()).min(1.),
+            false => 1.,
+        };
+        match shown {
+            true => ui::ease_out_cubic(done),
+            false => 1. - ui::ease_out_cubic(done),
+        }
+    }
+
+    /// The picture over the whole window, its controls coming up while the pointer moves or the
+    /// video is paused.
+    fn screen(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+        let theme = *cx.theme();
+        let room = window.viewport_size();
+        let lit = self.strip_lit(cx);
         let title = self
             .watching
             .read(cx)
@@ -1964,19 +2354,31 @@ impl WatchView {
                     .h(room.height)
                     .bg(gpui::black())
                     .occlude()
-                    .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, cx| {
-                        let hidden = this.stirred.elapsed() >= FULL_LINGER;
-                        this.stirred = Instant::now();
+                    .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                        // Only a pointer brought to the top or the bottom asks for the controls.
+                        let at = event.position.y;
+                        if at > WAKE_HEAD && at < room.height - room.height * WAKE_FOOT {
+                            return;
+                        }
+                        let hidden = !this
+                            .stirred
+                            .is_some_and(|stirred| stirred.elapsed() < FULL_LINGER);
+                        this.stirred = Some(Instant::now());
                         if hidden {
                             cx.notify();
                         }
                     }))
-                    .child(self.stage(room, cx))
-                    .when(shown, |this| {
+                    .child(settle(
+                        ("video-screen-in", self.turns),
+                        self.stage(room, cx),
+                        cx,
+                    ))
+                    .when(lit > 0., |this| {
                         this.child(
                             div()
                                 .absolute()
-                                .top_0()
+                                .opacity(lit)
+                                .top(-SLIDE * (1. - lit))
                                 .left_0()
                                 .right_0()
                                 .flex()
@@ -2017,7 +2419,8 @@ impl WatchView {
                         .child(
                             div()
                                 .absolute()
-                                .bottom(FLOAT_FOOT)
+                                .opacity(lit)
+                                .bottom(FLOAT_FOOT - SLIDE * (1. - lit))
                                 .left_0()
                                 .right_0()
                                 .flex()
@@ -2672,7 +3075,17 @@ impl Render for WatchView {
                 window.toggle_fullscreen();
             }
             self.entered = full;
-            self.stirred = Instant::now();
+            self.stirred = None;
+            self.turns += 1;
+        }
+        if full {
+            let shown = self.strip_shown(cx);
+            if shown != self.strip.0 {
+                self.strip = (shown, Instant::now());
+            }
+            if self.strip.1.elapsed() < Motion::Base.span() {
+                window.request_animation_frame();
+            }
         }
         // A panel sits beside the picture only once it is asked for and there is room.
         let side = self.discussed || self.watching.read(cx).transcript_open();
@@ -2715,7 +3128,10 @@ impl Render for WatchView {
                 .flex_none()
                 .w(stage.width)
                 .gap_2()
-                .child(self.stage(stage, cx))
+                .child(match self.turns {
+                    0 => self.stage(stage, cx).into_any_element(),
+                    turns => settle(("video-screen-out", turns), self.stage(stage, cx), cx),
+                })
                 .child(self.controls(cx))
         });
         let (above, within) = match theater {
@@ -2730,6 +3146,7 @@ impl Render for WatchView {
             .when(full, |this| this.child(self.screen(window, cx)))
             .children(self.qualities(cx))
             .children(self.speeds(cx))
+            .children(self.wordings(cx))
             .child(
                 Scroller::new("video-watch-page", &self.scrollbar)
                     .hold()
@@ -2926,6 +3343,7 @@ impl Render for VideoListView {
             .map(|banner| SharedString::from(banner.to_owned()));
         let bleed = pad + Chrome::margin(window, cx);
         let fill = cx.theme().background;
+        let title = list.title().to_owned();
 
         div()
             .flex()
@@ -2937,7 +3355,8 @@ impl Render for VideoListView {
                     .bottom_inset(Chrome::bottom(cx))
                     .py(pad)
                     .px(pad + Chrome::margin(window, cx))
-                    .child(
+                    .child(settle(
+                        SharedString::from(format!("video-list-in-{title}")),
                         div()
                             .relative()
                             .flex()
@@ -2997,7 +3416,8 @@ impl Render for VideoListView {
                                     next.update(cx, |list, cx| list.load_more(cx));
                                 }))
                             }),
-                    ),
+                        cx,
+                    )),
             )
             .into_any_element()
     }
@@ -3190,6 +3610,15 @@ impl Render for VideoFeedView {
             })
             .collect();
         let empty = cards.is_empty() && !loading;
+        if self.feed == Feed::Discover && !loading && (1..FOUND_MOST).contains(&total) {
+            // Near the foot of the page more are looked for, next to the ones found.
+            let scroll = self.scrollbar.read(cx).scroll().clone();
+            let left = scroll.max_offset().y + scroll.offset().y;
+            if left < window.viewport_size().height {
+                let further = self.subscriptions.clone();
+                cx.defer(move |cx| further.update(cx, |kept, cx| kept.find_more(cx)));
+            }
+        }
         let cleared = self.subscriptions.clone();
         let again = self.subscriptions.clone();
         let trailing = match self.feed {

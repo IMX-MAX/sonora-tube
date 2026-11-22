@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{AnyView, App, AppContext as _, Context, Entity, Global, Task};
-use tube::{Channel, Client, Comment, Found, Line, Page, Peek, Quality, Storyboard, Video, Watch};
+use tube::{
+    Caption, Channel, Client, Comment, Found, Line, Page, Peek, Quality, Storyboard, Video, Watch,
+};
 use video::{Player, VideoView};
 
 use crate::{Io, Playback, join};
@@ -163,6 +165,11 @@ struct Thread {
 struct Script {
     open: bool,
     lines: Option<Arc<Vec<Line>>>,
+    /// The languages the captions could be in, and the one they are in.
+    choices: Arc<Vec<Caption>>,
+    shown: Option<Caption>,
+    /// The language asked for by hand, which the next fetch reads the captions in.
+    wanted: Option<Caption>,
     loading: bool,
     failed: bool,
     task: Option<Task<()>>,
@@ -741,6 +748,32 @@ impl Watching {
         cx.notify();
     }
 
+    /// The languages the captions of this video come in, once its captions were fetched.
+    pub fn caption_choices(&self) -> Arc<Vec<Caption>> {
+        self.script.choices.clone()
+    }
+
+    /// The language the captions are in.
+    pub fn caption_shown(&self) -> Option<&Caption> {
+        self.script.shown.as_ref()
+    }
+
+    /// Fetches the languages of the captions when nothing was fetched yet, for a menu of them.
+    pub fn want_caption_choices(&mut self, cx: &mut Context<Self>) {
+        if self.script.lines.is_none() {
+            self.load_transcript(cx);
+        }
+    }
+
+    /// Reads the captions and the transcript in another language, and turns the captions on.
+    pub fn set_caption_language(&mut self, wanted: Caption, cx: &mut Context<Self>) {
+        self.captions = true;
+        self.script.wanted = Some(wanted);
+        self.script.task = None;
+        self.script.loading = false;
+        self.load_transcript(cx);
+    }
+
     /// Fetches the transcript of the current video, unless it is already on its way.
     pub fn load_transcript(&mut self, cx: &mut Context<Self>) {
         if self.script.loading {
@@ -754,7 +787,10 @@ impl Watching {
         cx.notify();
         let client = self.client.clone();
         let asked = Some(id.clone());
-        let request = self.io.spawn(async move { client.transcript(&id).await });
+        let wanted = self.script.wanted.clone();
+        let request = self
+            .io
+            .spawn(async move { client.captions(&id, wanted.as_ref()).await });
         self.script.task = Some(cx.spawn(async move |this, cx| {
             let loaded = join(request).await;
             this.update(cx, |this, cx| {
@@ -763,7 +799,11 @@ impl Watching {
                 }
                 this.script.loading = false;
                 match loaded {
-                    Ok(lines) => this.script.lines = Some(Arc::new(lines)),
+                    Ok(captions) => {
+                        this.script.lines = Some(Arc::new(captions.lines));
+                        this.script.shown = captions.shown;
+                        this.script.choices = Arc::new(captions.choices);
+                    }
                     Err(error) => {
                         log::warn!("video: cannot read the transcript: {error:#}");
                         this.script.failed = true;
@@ -1447,6 +1487,8 @@ pub struct Subscriptions {
     found: Vec<Video>,
     /// How many videos had been watched when `found` was picked, so more watching picks again.
     found_for: Option<usize>,
+    /// How many of `found`, from its start, further videos were already looked for beside.
+    dug: usize,
     finding: bool,
     find: Option<Task<()>>,
 }
@@ -1472,6 +1514,7 @@ impl Subscriptions {
             task: None,
             found: Vec::new(),
             found_for: None,
+            dug: 0,
             finding: false,
             find: None,
         }
@@ -1504,6 +1547,7 @@ impl Subscriptions {
             .map(|video| video.id.clone())
             .collect();
         self.found_for = Some(self.kept.watched.len());
+        self.dug = 0;
         if seeds.is_empty() {
             self.found.clear();
             cx.notify();
@@ -1528,6 +1572,55 @@ impl Subscriptions {
                 match beside {
                     Ok(beside) => this.found = rank(beside, &this.kept),
                     Err(error) => log::warn!("video: cannot find new videos: {error:#}"),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Finds further videos, next to the ones found that were not yet looked beside, and puts
+    /// them after those. Does nothing while a search runs or once every one was looked beside.
+    pub fn find_more(&mut self, cx: &mut Context<Self>) {
+        if self.finding {
+            return;
+        }
+        let seeds: Vec<String> = self
+            .found
+            .iter()
+            .skip(self.dug)
+            .take(FIND_SEEDS)
+            .map(|video| video.id.clone())
+            .collect();
+        if seeds.is_empty() {
+            return;
+        }
+        self.dug += seeds.len();
+        self.finding = true;
+        cx.notify();
+        let client = self.client.clone();
+        let request = self.io.spawn(async move {
+            let pages = seeds.iter().map(|id| client.watch(id));
+            let beside: Vec<Vec<Video>> = futures::future::join_all(pages)
+                .await
+                .into_iter()
+                .map(|page| page.map(|watch| watch.related).unwrap_or_default())
+                .collect();
+            anyhow::Ok(beside)
+        });
+        self.find = Some(cx.spawn(async move |this, cx| {
+            let beside = join(request).await;
+            this.update(cx, |this, cx| {
+                this.finding = false;
+                match beside {
+                    Ok(beside) => {
+                        let further: Vec<Video> = rank(beside, &this.kept)
+                            .into_iter()
+                            .filter(|video| this.found.iter().all(|held| held.id != video.id))
+                            .collect();
+                        this.found.extend(further);
+                    }
+                    Err(error) => log::warn!("video: cannot find more videos: {error:#}"),
                 }
                 cx.notify();
             })

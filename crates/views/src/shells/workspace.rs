@@ -11,7 +11,7 @@ use ui::{
     shown_listing, veiled,
 };
 
-use crate::chrome::{AppNotice, Chrome, SidebarLeft, SidebarRight, SwipeCue, TitleBarOptions};
+use crate::chrome::{AppNotice, Chrome, SidebarLeft, SidebarRight, TitleBarOptions};
 use crate::shared::menus::CardMenu;
 use crate::shells::Shell;
 
@@ -19,8 +19,8 @@ pub(crate) struct Workspace {
     sidebar: Entity<SidebarLeft>,
     sidebar_right: Entity<SidebarRight>,
     card_menu: Entity<CardMenu>,
+    video_menu: Entity<crate::screens::video::VideoMenu>,
     notice: Entity<AppNotice>,
-    swipe_cue: Entity<SwipeCue>,
     content: AnyView,
     /// A screen's own header, floated over the top of the page and outside its transition.
     /// The page pads itself to start beneath it.
@@ -41,6 +41,7 @@ impl Workspace {
         subscriptions: Entity<state::Subscriptions>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let video_menu = crate::screens::video::VideoMenu::install(subscriptions.clone(), cx);
         let sidebar = cx.new(|cx| SidebarLeft::new(subscriptions, cx));
         let sidebar_right = cx.new(|cx| SidebarRight::new(queue.clone(), playback.clone(), cx));
         let settings = Sonora::global(cx).settings.clone();
@@ -50,8 +51,8 @@ impl Workspace {
             sidebar,
             sidebar_right,
             card_menu: CardMenu::entity(cx),
+            video_menu,
             notice: cx.new(AppNotice::new),
-            swipe_cue: cx.new(SwipeCue::new),
             content,
             header: None,
             cached: true,
@@ -277,14 +278,6 @@ impl Render for Workspace {
                             .ml(overlay_width)
                             .when(overlay, |this| this.overflow_hidden())
                             .when(covered, |this| this.hidden())
-                            // A two-finger swipe across the page steps through its history,
-                            // as in a browser.
-                            .on_scroll_wheel({
-                                let cue = self.swipe_cue.clone();
-                                move |event, window, cx| {
-                                    cue.update(cx, |cue, cx| cue.follow(event, window, cx));
-                                }
-                            })
                             .child(
                                 div()
                                     .relative()
@@ -333,8 +326,7 @@ impl Render for Workspace {
                                                 .child(header),
                                         )
                                     }),
-                            )
-                            .child(self.swipe_cue.clone()),
+                            ),
                     )
                     .child(self.sidebar_right.clone())
                     .when(overlay, |this| this.child(self.sidebar.clone())),
@@ -343,5 +335,6 @@ impl Render for Workspace {
             // dialogs after the shell, so those still cover them.
             .child(deferred(self.notice.clone()))
             .child(self.card_menu.clone())
+            .child(self.video_menu.clone())
     }
 }

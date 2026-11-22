@@ -243,6 +243,24 @@ pub struct Line {
     pub text: String,
 }
 
+/// A language a video's captions can be read in.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Caption {
+    pub code: String,
+    pub name: String,
+    /// Whether YouTube translates into it by machine, rather than the video carrying it.
+    pub translated: bool,
+}
+
+/// The lines of a video's captions and the languages they could be in instead.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Captions {
+    pub lines: Vec<Line>,
+    /// The language the lines are in, when the video has captions.
+    pub shown: Option<Caption>,
+    pub choices: Vec<Caption>,
+}
+
 /// A comment or a reply under a video.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Comment {

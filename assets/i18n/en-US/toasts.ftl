@@ -231,3 +231,7 @@ toast-sample-save-failed-detail = The server answered 503 Service Unavailable
 toast-sample-lasting = This one stays until you close it
 toast-sample-burst = Toast number { $name }
 toast-transcript-copied = Transcript copied
+toast-video-download-started = Downloading { $name }
+toast-video-download-done = Downloaded { $name }
+toast-video-download-failed = Could not download { $name }
+toast-link-copied = Link copied

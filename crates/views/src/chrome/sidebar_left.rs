@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::time::Instant;
 
 use ui::{
     ActiveTheme as _, Avatar, Button, Card, Deck, DraggedPin, Edge, Menu, MenuItem, Panel, Picker,
@@ -75,6 +76,8 @@ pub(crate) struct SidebarLeft {
     rail: bool,
     /// Whether the listener spread the rail out into rows with their names.
     wide: bool,
+    /// The width a fold or an unfold set out from and when, which the width eases away from.
+    slide: Option<(Pixels, Instant)>,
     rail_width: Pixels,
     /// Whether the window leaves too little room for the full width, so only the rail fits.
     narrow: bool,
@@ -148,6 +151,7 @@ impl SidebarLeft {
             open,
             rail,
             wide,
+            slide: None,
             rail_width: Pixels::ZERO,
             narrow: false,
             forced: None,
@@ -210,6 +214,7 @@ impl SidebarLeft {
 
     /// Spreads the rail out into rows with their names, or folds it back to the icons.
     fn set_wide(&mut self, wide: bool, cx: &mut Context<Self>) {
+        self.slide = ui::motion::animates(cx).then(|| (self.breadth(), Instant::now()));
         self.wide = wide;
         self.settings
             .update(cx, |settings, cx| settings.set_sidebar_wide(wide, cx));
@@ -218,11 +223,23 @@ impl SidebarLeft {
     }
 
     fn breadth(&self) -> Pixels {
-        match (self.closing, self.folded()) {
+        let to = match (self.closing, self.folded()) {
             (true, _) => Pixels::ZERO,
             (false, true) => self.rail_width,
             (false, false) => self.width,
+        };
+        match self.sliding() {
+            Some((from, done)) => from + (to - from) * ui::ease_in_out_cubic(done),
+            None => to,
         }
+    }
+
+    /// The width a fold or an unfold set out from and how much of the way it has come, while
+    /// it is under way.
+    fn sliding(&self) -> Option<(Pixels, f32)> {
+        let (from, since) = self.slide?;
+        let done = since.elapsed().as_secs_f32() / ui::Motion::Base.span().as_secs_f32();
+        (done < 1.).then_some((from, done))
     }
 
     pub fn overlay_width(&self) -> Pixels {
@@ -467,7 +484,7 @@ impl SidebarLeft {
     /// A rail button sized for a row of them, which is how the spread sidebar lays them out.
     fn fit(&self, button: Button, cx: &App) -> Button {
         match self.folded() {
-            true => button,
+            true => button.flex_1().min_w_0().px_0(),
             false => button.w(cx.theme().metrics.control).flex_none(),
         }
     }
@@ -503,7 +520,10 @@ impl SidebarLeft {
         )
         .disabled(fixed)
         .on_click(cx.listener(|this, _, _, cx| this.set_wide(!this.wide, cx)));
-        let spread = self.fit(spread, cx);
+        let spread = match folded {
+            true => spread,
+            false => self.fit(spread, cx),
+        };
         let tools = div()
             .id("sidebar-history")
             .role(Role::Toolbar)
@@ -527,41 +547,58 @@ impl SidebarLeft {
                     .child(spread)
                     .when(!folded, |tools| tools.child(div().flex_1()))
                     .child(
-                        self.fit(
-                            Self::tool("history-back", "icons/chevron-left.svg", "nav-back", cx),
-                            cx,
-                        )
-                        .disabled(!can_back)
-                        .on_click(move |_, _, cx| back.update(cx, |trail, cx| trail.back(cx))),
-                    )
-                    .child(
-                        self.fit(
-                            Self::tool(
-                                "history-forward",
-                                "icons/chevron-right.svg",
-                                "nav-forward",
-                                cx,
+                        // Side by side on the rail too, under the fold button.
+                        div()
+                            .flex()
+                            .flex_row()
+                            .when(folded, |row| row.w_full())
+                            .when(!folded, |row| row.flex_none().gap_1())
+                            .child(
+                                self.fit(
+                                    Self::tool(
+                                        "history-back",
+                                        "icons/chevron-left.svg",
+                                        "nav-back",
+                                        cx,
+                                    ),
+                                    cx,
+                                )
+                                .disabled(!can_back)
+                                .on_click(move |_, _, cx| {
+                                    back.update(cx, |trail, cx| trail.back(cx))
+                                }),
+                            )
+                            .child(
+                                self.fit(
+                                    Self::tool(
+                                        "history-forward",
+                                        "icons/chevron-right.svg",
+                                        "nav-forward",
+                                        cx,
+                                    ),
+                                    cx,
+                                )
+                                .disabled(!can_forward)
+                                .on_click(move |_, _, cx| {
+                                    forward.update(cx, |trail, cx| trail.forward(cx))
+                                }),
+                            )
+                            .child(
+                                self.fit(
+                                    Self::tool(
+                                        "history-refresh",
+                                        "icons/refresh-cw.svg",
+                                        "app-refresh",
+                                        cx,
+                                    ),
+                                    cx,
+                                )
+                                .turned(turn)
+                                .disabled(!refreshes)
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(Refresh), cx)
+                                }),
                             ),
-                            cx,
-                        )
-                        .disabled(!can_forward)
-                        .on_click(move |_, _, cx| {
-                            forward.update(cx, |trail, cx| trail.forward(cx))
-                        }),
-                    )
-                    .child(
-                        self.fit(
-                            Self::tool(
-                                "history-refresh",
-                                "icons/refresh-cw.svg",
-                                "app-refresh",
-                                cx,
-                            ),
-                            cx,
-                        )
-                        .turned(turn)
-                        .disabled(!refreshes)
-                        .on_click(|_, window, cx| window.dispatch_action(Box::new(Refresh), cx)),
                     ),
             )
             .child(self.divider(cx))
@@ -1048,6 +1085,11 @@ impl Render for SidebarLeft {
         let sidebar_border = theme.sidebar_border;
 
         self.adapt(super::Chrome::reserved_right(cx), window, cx);
+        match self.sliding() {
+            // The workspace lays the page out beside this width, so the whole window follows.
+            Some(_) => window.refresh(),
+            None => self.slide = None,
+        }
 
         if !cx.has_active_drag() {
             self.dropping = false;
@@ -1057,8 +1099,8 @@ impl Render for SidebarLeft {
         }
         let closing = self.closing;
 
-        let mut rows = self.navigation(cx);
-        rows.extend(self.channels(cx));
+        let pages = self.navigation(cx);
+        let rows = self.channels(cx);
         let history = self.history(window, cx);
         let foot = self.foot(cx);
 
@@ -1105,6 +1147,21 @@ impl Render for SidebarLeft {
                 this.occlude().absolute().left_0().top_0().bottom_0()
             })
             .child(div().flex_none().pt_1().child(history))
+            // The pages stay where they are: only the channels under them scroll.
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .gap_1()
+                    .pb_1()
+                    .when(closing, |this| this.hidden())
+                    .map(|column| match rail {
+                        true => column.px_2(),
+                        false => column.px_3(),
+                    })
+                    .children(pages),
+            )
             .child(
                 div()
                     .relative()

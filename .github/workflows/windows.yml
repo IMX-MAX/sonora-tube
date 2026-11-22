@@ -87,6 +87,13 @@ jobs:
           cp mpv/libmpv-2.dll extras/
           curl -fsSL -o extras/yt-dlp.exe \
             "https://github.com/yt-dlp/yt-dlp/releases/latest/download/$YTDLP"
+          # ffmpeg lets a download join the separate picture and sound of the sharper qualities.
+          # Without it downloads still work, in the one file YouTube serves whole.
+          if gh release download --repo shinchiro/mpv-winbuild-cmake \
+            --pattern "ffmpeg-$MPV-git-*.7z" --output mpv/ffmpeg.7z; then
+            7z x mpv/ffmpeg.7z -ompv/ffmpeg -y > /dev/null
+            cp "$(find mpv/ffmpeg -name ffmpeg.exe | head -n 1)" extras/ffmpeg.exe
+          fi
 
       # Not bash: with the MSVC environment loaded, its PATH puts the coreutils `link` ahead of
       # the linker.

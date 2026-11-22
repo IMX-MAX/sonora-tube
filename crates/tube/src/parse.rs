@@ -9,8 +9,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
 
 use crate::{
-    Channel, ChannelPage, ChannelRef, Comment, Comments, Found, Line, Page, Playlist, PlaylistPage,
-    Quality, Storyboard, Video, Watch,
+    Caption, Channel, ChannelPage, ChannelRef, Comment, Comments, Found, Line, Page, Playlist,
+    PlaylistPage, Quality, Storyboard, Video, Watch,
 };
 
 /// Containers whose contents are never listed: ads, the side card of a search and the chapter
@@ -235,7 +235,8 @@ pub(crate) fn channel(id: &str, answer: &Value) -> Result<ChannelPage> {
         },
         banner: first(&answer["header"], "imageBannerViewModel")
             .and_then(|banner| banner["image"]["sources"].as_array()?.last())
-            .and_then(|source| string(&source["url"])),
+            .and_then(|source| string(&source["url"]))
+            .map(|address| whole_banner(&address)),
         description: string(&about["description"]).unwrap_or_default(),
         videos: videos(&answer["contents"]),
     })
@@ -284,9 +285,15 @@ fn walk(node: &Value, page: &mut Page<Found>) {
     }
 }
 
-/// The address of the captions a transcript is read from: written ones in `language` first, then
-/// generated ones in it, then whatever the video lists first.
-pub(crate) fn caption_track(player: &Value, language: &str) -> Option<String> {
+/// The address of the captions a transcript is read from and the language they are in. The
+/// `wanted` language is taken when the video has it, translated by YouTube when it does not.
+/// Otherwise written captions in `language` come first, then generated ones in it, then whatever
+/// the video lists first.
+pub(crate) fn caption_track(
+    player: &Value,
+    language: &str,
+    wanted: Option<&Caption>,
+) -> Option<(String, Caption)> {
     let tracks = first(player, "captionTracks")?.as_array()?;
     let spoken = |track: &&Value| {
         track["languageCode"]
@@ -294,12 +301,56 @@ pub(crate) fn caption_track(player: &Value, language: &str) -> Option<String> {
             .is_some_and(|code| code.starts_with(language))
     };
     let written = |track: &&Value| track["kind"].as_str() != Some("asr");
-    tracks
-        .iter()
-        .find(|track| spoken(track) && written(track))
-        .or_else(|| tracks.iter().find(spoken))
-        .or_else(|| tracks.first())
-        .and_then(|track| string(&track["baseUrl"]))
+    let usual = || {
+        tracks
+            .iter()
+            .find(|track| spoken(track) && written(track))
+            .or_else(|| tracks.iter().find(spoken))
+            .or_else(|| tracks.first())
+    };
+    let own = wanted
+        .filter(|wanted| !wanted.translated)
+        .and_then(|wanted| {
+            tracks
+                .iter()
+                .find(|track| track["languageCode"].as_str() == Some(&wanted.code))
+        });
+    let track = own.or_else(usual)?;
+    let address = string(&track["baseUrl"])?;
+    match wanted.filter(|wanted| wanted.translated) {
+        Some(wanted) => Some((format!("{address}&tlang={}", wanted.code), wanted.clone())),
+        None => Some((address, caption(track, false)?)),
+    }
+}
+
+/// The languages a video's captions come in: the ones it carries, then the ones YouTube
+/// translates them into.
+pub(crate) fn caption_choices(player: &Value) -> Vec<Caption> {
+    let listed = |key: &str, translated: bool| {
+        first(player, key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(move |language| caption(language, translated))
+            .collect::<Vec<_>>()
+    };
+    let mut choices = listed("captionTracks", false);
+    choices.dedup_by(|next, kept| next.code == kept.code);
+    choices.extend(listed("translationLanguages", true));
+    choices
+}
+
+/// One entry of a list of caption languages.
+fn caption(language: &Value, translated: bool) -> Option<Caption> {
+    let code = string(&language["languageCode"])?;
+    let name = text(&language["name"])
+        .or_else(|| text(&language["languageName"]))
+        .unwrap_or_else(|| code.clone());
+    Some(Caption {
+        code,
+        name,
+        translated,
+    })
 }
 
 /// The lines of a `json3` caption file, without the empty ones that only break a line.
@@ -321,6 +372,20 @@ fn attribute<'a>(line: &'a str, name: &str) -> Option<&'a str> {
         rest = next;
     }
     None
+}
+
+/// What asks YouTube's image host for a banner uncut and wide enough for a large window.
+const WHOLE_BANNER: &str = "w2120-fcrop64=1,00000000ffffffff-k-c0xffffffff-no-nd-rj";
+/// How far into a caption an HTML entity may end, counted from its `&`.
+const ENTITY_REACH: usize = 9;
+
+/// The address of a channel's whole banner, as a television shows it, from the address of the
+/// thin strip a desktop page cuts out of it. The size and the cut follow the first `=`.
+fn whole_banner(address: &str) -> String {
+    match address.split_once('=') {
+        Some((picture, _)) => format!("{picture}={WHOLE_BANNER}"),
+        None => address.to_owned(),
+    }
 }
 
 /// How well a sound track of an HLS stream list suits a listener, higher being better: the one
@@ -422,7 +487,7 @@ pub(crate) fn transcript(timed: &Value) -> Vec<Line> {
                 .iter()
                 .filter_map(|piece| piece["utf8"].as_str())
                 .collect();
-            let text = said.split_whitespace().collect::<Vec<_>>().join(" ");
+            let text = plain(&said);
             (!text.is_empty()).then(|| Line {
                 start: event["tStartMs"].as_f64().unwrap_or(0.) / 1000.,
                 length: event["dDurationMs"].as_f64().unwrap_or(0.) / 1000.,
@@ -628,5 +693,79 @@ fn first<'a>(node: &'a Value, name: &str) -> Option<&'a Value> {
             .or_else(|| fields.values().find_map(|value| first(value, name))),
         Value::Array(entries) => entries.iter().find_map(|entry| first(entry, name)),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
+    }
+}
+
+/// A caption as plain words: without the markup uploaders leave in (`<b>`, `<font …>`), with
+/// HTML entities read, and without invisible characters or runs of white space.
+fn plain(said: &str) -> String {
+    let mut bare = String::with_capacity(said.len());
+    let mut rest = said;
+    while let Some(at) = rest.find('<') {
+        let tag = rest[at..].find('>').filter(|end| {
+            rest[at + 1..at + end]
+                .starts_with(|first: char| first.is_ascii_alphabetic() || first == '/')
+        });
+        match tag {
+            Some(end) => {
+                bare.push_str(&rest[..at]);
+                rest = &rest[at + end + 1..];
+            }
+            None => {
+                bare.push_str(&rest[..=at]);
+                rest = &rest[at + 1..];
+            }
+        }
+    }
+    bare.push_str(rest);
+    let mut read = String::with_capacity(bare.len());
+    let mut rest = bare.as_str();
+    while let Some(at) = rest.find('&') {
+        read.push_str(&rest[..at]);
+        rest = &rest[at..];
+        let named = rest
+            .find(';')
+            .filter(|end| *end <= ENTITY_REACH)
+            .and_then(|end| Some((entity(&rest[1..end])?, end)));
+        match named {
+            Some((letter, end)) => {
+                read.push(letter);
+                rest = &rest[end + 1..];
+            }
+            None => {
+                read.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    read.push_str(rest);
+    read.retain(|letter| {
+        !matches!(letter, '\u{200b}'..='\u{200f}' | '\u{2060}' | '\u{feff}')
+            && (!letter.is_control() || letter.is_whitespace())
+    });
+    read.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The character an HTML entity stands for, given without its `&` and `;`.
+fn entity(name: &str) -> Option<char> {
+    let number = |digits: &str, radix| {
+        u32::from_str_radix(digits, radix)
+            .ok()
+            .and_then(char::from_u32)
+    };
+    match name {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "nbsp" => Some(' '),
+        _ => match name.strip_prefix('#') {
+            Some(code) => match code.strip_prefix(['x', 'X']) {
+                Some(hex) => number(hex, 16),
+                None => number(code, 10),
+            },
+            None => None,
+        },
     }
 }
