@@ -558,3 +558,5 @@ settings-hide-shorts = Hide Shorts
 settings-hide-shorts-detail = Leaves Shorts out of search results and channels instead of listing them as ordinary videos
 settings-captions = Show captions
 settings-captions-detail = Starts a video with its captions on when it has any
+settings-video-glow = Ambient glow
+settings-video-glow-detail = Lights the page around a video with the colours of its picture

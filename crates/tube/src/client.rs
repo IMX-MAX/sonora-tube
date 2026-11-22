@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use sha1::{Digest as _, Sha1};
 
 use crate::parse;
-use crate::{ChannelPage, Comments, Found, Line, Page, PlaylistPage, Video, Watch};
+use crate::{ChannelPage, Comments, Found, Line, Page, PlaylistPage, Streams, Video, Watch};
 
 const ORIGIN: &str = "https://www.youtube.com";
 /// The cookies that tell a signed-in session from a guest one, the first found signs requests.
@@ -26,12 +26,29 @@ const APP: Guise = Guise {
     version: "20.10.4",
     number: "5",
     agent: "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+    device: &[],
+};
+/// The headset app, the client YouTube hands a playable stream list to without a token, as
+/// long as the request names a visitor.
+const HEADSET: Guise = Guise {
+    name: "VISIONOS",
+    version: "1.02",
+    number: "101",
+    agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 \
+         (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+    device: &[
+        ("deviceMake", "Apple"),
+        ("deviceModel", "RealityDevice17,1"),
+        ("osName", "visionOS"),
+        ("osVersion", "26.5.23O471"),
+    ],
 };
 const WEB: Guise = Guise {
     name: CLIENT_NAME,
     version: CLIENT_VERSION,
     number: "1",
     agent: USER_AGENT,
+    device: &[],
 };
 /// How many times a caption file is asked for before giving up on it.
 const TRIES: u32 = 5;
@@ -47,6 +64,8 @@ struct Guise {
     /// The number YouTube knows the client by, sent as a header.
     number: &'static str,
     agent: &'static str,
+    /// What the client says about the device it runs on.
+    device: &'static [(&'static str, &'static str)],
 }
 
 /// Reads YouTube, as a guest until [`Client::sign_in`] hands it an account's cookies. Cheap to clone, and every method is one round trip.
@@ -59,6 +78,8 @@ pub struct Client {
     no_shorts: Arc<AtomicBool>,
     /// The `Cookie` header of the signed-in account, shared by the clones of a client.
     cookies: Arc<RwLock<Option<String>>>,
+    /// The name YouTube gave this guest, which it wants back before it hands out streams.
+    visitor: Arc<RwLock<Option<String>>>,
 }
 
 impl Client {
@@ -69,6 +90,7 @@ impl Client {
             region: "US".to_owned(),
             no_shorts: Arc::default(),
             cookies: Arc::default(),
+            visitor: Arc::default(),
         }
     }
 
@@ -122,6 +144,34 @@ impl Client {
         ensure!(
             status.is_none_or(|status| status == "STATUS_SUCCEEDED"),
             "youtube refused the comment"
+        );
+        Ok(())
+    }
+
+    /// Likes a comment or takes the like back, with the `like` or `unlike` it carried.
+    pub async fn comment_action(&self, action: &str) -> Result<()> {
+        ensure!(self.signed_in(), "liking a comment needs an account");
+        self.call(
+            "comment/perform_comment_action",
+            json!({ "actions": [action] }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Replies to a comment, with the `reply` it carried.
+    pub async fn reply(&self, reply: &str, words: &str) -> Result<()> {
+        ensure!(self.signed_in(), "replying needs an account");
+        let answer = self
+            .call(
+                "comment/create_comment_reply",
+                json!({ "createReplyParams": reply, "commentText": words }),
+            )
+            .await?;
+        let status = answer["actionResult"]["status"].as_str();
+        ensure!(
+            status.is_none_or(|status| status == "STATUS_SUCCEEDED"),
+            "youtube refused the reply"
         );
         Ok(())
     }
@@ -220,19 +270,71 @@ impl Client {
         Ok(parse::transcript(&timed))
     }
 
+    /// The qualities a video can be played at, best first, each a pair of addresses a player
+    /// opens directly. That skips the page scraping a player would otherwise do before the
+    /// first frame.
+    pub async fn streams(&self, id: &str) -> Result<Streams> {
+        if self.visitor().is_none() {
+            self.call("visitor_id", json!({})).await?;
+        }
+        let answer = self
+            .call_as(&HEADSET, "player", json!({ "videoId": id }))
+            .await?;
+        let list = answer["streamingData"]["hlsManifestUrl"]
+            .as_str()
+            .with_context(|| {
+                let reason = answer["playabilityStatus"]["reason"]
+                    .as_str()
+                    .unwrap_or("no stream list");
+                format!("youtube holds the streams back: {reason}")
+            })?;
+        let response = self
+            .http
+            .get(list)
+            .header("User-Agent", HEADSET.agent)
+            .send()
+            .await
+            .context("cannot reach youtube")?;
+        let status = response.status();
+        ensure!(status.is_success(), "youtube answered {status}");
+        let listed = response
+            .text()
+            .await
+            .context("cannot read the stream list")?;
+        let qualities = parse::qualities(&listed);
+        ensure!(!qualities.is_empty(), "the stream list names no stream");
+        Ok(Streams {
+            qualities,
+            board: parse::storyboard(&answer),
+        })
+    }
+
+    fn visitor(&self) -> Option<String> {
+        self.visitor
+            .read()
+            .unwrap_or_else(|held| held.into_inner())
+            .clone()
+    }
+
     async fn call(&self, endpoint: &str, body: Value) -> Result<Value> {
         self.call_as(&WEB, endpoint, body).await
     }
 
     async fn call_as(&self, guise: &Guise, endpoint: &str, mut body: Value) -> Result<Value> {
-        body["context"] = json!({
-            "client": {
-                "clientName": guise.name,
-                "clientVersion": guise.version,
-                "hl": self.language,
-                "gl": self.region,
-            }
+        let visitor = self.visitor();
+        let mut client = json!({
+            "clientName": guise.name,
+            "clientVersion": guise.version,
+            "hl": self.language,
+            "gl": self.region,
         });
+        for (name, value) in guise.device {
+            client[*name] = json!(value);
+        }
+        if let Some(visitor) = &visitor {
+            client["visitorData"] = json!(visitor);
+        }
+        body["context"] = json!({ "client": client });
         let mut request = self
             .http
             .post(format!("{HOST}/{endpoint}?prettyPrint=false"))
@@ -240,6 +342,9 @@ impl Client {
             .header("Origin", ORIGIN)
             .header("X-Youtube-Client-Name", guise.number)
             .header("X-Youtube-Client-Version", guise.version);
+        if let Some(visitor) = &visitor {
+            request = request.header("X-Goog-Visitor-Id", visitor);
+        }
         // Only the web client is the one the account signed in to.
         let account = self.account().filter(|_| guise.name == CLIENT_NAME);
         if let Some((cookies, key)) = account
@@ -262,10 +367,18 @@ impl Client {
             .context("cannot reach youtube")?;
         let status = response.status();
         ensure!(status.is_success(), "youtube answered {status}");
-        let mut answer = response
+        let mut answer: Value = response
             .json()
             .await
             .context("cannot read youtube's answer")?;
+        if visitor.is_none()
+            && let Some(named) = answer["responseContext"]["visitorData"].as_str()
+        {
+            *self
+                .visitor
+                .write()
+                .unwrap_or_else(|held| held.into_inner()) = Some(named.to_owned());
+        }
         if self.no_shorts.load(Ordering::Relaxed) {
             parse::drop_shorts(&mut answer);
         }

@@ -9,7 +9,7 @@ use input::{
 use router::{Destination, NavigationEvent, back, forward, navigate};
 use state::{
     ArtistDetail, Detail, GenreDetails, Genres, Io, Library, LibraryState, Network, Playback,
-    Profile, Queue, Reconnected, SYSTEM_FONT, Scan, Search, Session, SessionState, Shelf, SideTab,
+    Profile, Queue, Reconnected, SYSTEM_FONT, Scan, Session, SessionState, Shelf, SideTab,
     SongDetail, Sonora, Stations, Subscriptions, VideoList, VideoSearch, VideoShelf, Watching,
 };
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -79,6 +79,7 @@ struct Screens {
     video_home: Entity<VideoFeedView>,
     video_history: Entity<VideoFeedView>,
     video_later: Entity<VideoFeedView>,
+    video_discover: Entity<VideoFeedView>,
     genres: Entity<Genres>,
     genre: Option<Entity<GenreView>>,
     genre_detail: Option<Entity<GenreDetails>>,
@@ -286,12 +287,6 @@ impl Root {
         let radio = cx.new(|cx| RadioView::new(stations, playback.clone(), cx));
 
         // The quick search asks on its own, so typing in it leaves the search screen as it was.
-        let quick = cx.new(|cx| Search::new(session.clone(), library.clone(), io.clone(), cx));
-        let powerbar = Powerbar::entity(quick, playback.clone(), cx);
-        cx.subscribe(&powerbar, |this, _, event, cx| match event {
-            PowerbarEvent::Search(query) => this.search_for(query, cx),
-        })
-        .detach();
         let genres = cx.new(|cx| Genres::new(session.clone(), io.clone(), cx));
 
         let tube = tube::Client::new();
@@ -309,6 +304,13 @@ impl Root {
             )
         });
         let watch = cx.new(|cx| WatchView::new(watching.clone(), subscriptions.clone(), cx));
+        // The quick search asks on its own, so typing in it leaves the search screen as it was.
+        let quick = cx.new(|_| VideoSearch::new(tube.clone(), io.clone()));
+        let powerbar = Powerbar::entity(quick, watching.clone(), subscriptions.clone(), cx);
+        cx.subscribe(&powerbar, |this, _, event, cx| match event {
+            PowerbarEvent::Search(query) => this.search_for(query, cx),
+        })
+        .detach();
         // The page of the video on screen is read again as the account, or as a guest again.
         cx.observe(&account, {
             let watching = watching.clone();
@@ -325,11 +327,18 @@ impl Root {
             let (tube, watching) = (tube.clone(), watching.clone());
             let last = std::cell::Cell::new(None);
             move |settings: Entity<state::AppSettings>, cx: &mut App| {
-                let (hidden, captions) = {
+                let (hidden, captions, ambient) = {
                     let settings = settings.read(cx);
-                    (settings.hide_shorts(), settings.captions())
+                    (
+                        settings.hide_shorts(),
+                        settings.captions(),
+                        settings.video_glow(),
+                    )
                 };
                 tube.hide_shorts(hidden);
+                if watching.read(cx).ambient() != ambient {
+                    watching.update(cx, |watching, cx| watching.set_ambient(ambient, cx));
+                }
                 // Only a change of the setting moves the captions, so that another setting saved
                 // does not undo what the button under the video chose.
                 if last.replace(Some(captions)) != Some(captions) {
@@ -344,6 +353,8 @@ impl Root {
         let video_home =
             cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::Subscriptions, cx));
         let video_later = cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::Later, cx));
+        let video_discover =
+            cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::Discover, cx));
         let video_history =
             cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::History, cx));
         let video_list =
@@ -488,6 +499,7 @@ impl Root {
                 video_home,
                 video_history,
                 video_later,
+                video_discover,
                 genres,
                 genre: None,
                 genre_detail: None,
@@ -802,6 +814,10 @@ impl Root {
                 let kept = self.screens.subscriptions.clone();
                 Box::new(move |cx| kept.read(cx).is_loading())
             }
+            Destination::Discover => {
+                let kept = self.screens.subscriptions.clone();
+                Box::new(move |cx| kept.read(cx).is_finding())
+            }
             Destination::History | Destination::Later => return None,
             Destination::Library(_) => {
                 let session = Sonora::global(cx).session.clone();
@@ -860,6 +876,10 @@ impl Root {
                 .screens
                 .subscriptions
                 .update(cx, |kept, cx| kept.refresh(cx)),
+            Destination::Discover => self
+                .screens
+                .subscriptions
+                .update(cx, |kept, cx| kept.find_again(cx)),
             Destination::History | Destination::Later => {}
             Destination::Library(_) => library.update(cx, |library, cx| {
                 library.reload(Shelf::Streaming, cx);
@@ -1150,6 +1170,12 @@ impl Root {
             }
             Destination::History => self.screens.video_history.clone().into(),
             Destination::Later => self.screens.video_later.clone().into(),
+            Destination::Discover => {
+                self.screens
+                    .subscriptions
+                    .update(cx, |kept, cx| kept.find(cx));
+                self.screens.video_discover.clone().into()
+            }
             Destination::Library(tab) => {
                 self.screens
                     .library

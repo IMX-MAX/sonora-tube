@@ -496,6 +496,7 @@ struct Values {
     adaptive_menu: bool,
     hide_shorts: bool,
     captions: bool,
+    video_glow: bool,
     check_updates: bool,
     /// Whether a release found is downloaded in the background and installed the next time
     /// Sonora starts, rather than only offered.
@@ -788,6 +789,7 @@ impl Default for Values {
             adaptive_menu: false,
             hide_shorts: false,
             captions: false,
+            video_glow: true,
             check_updates: cfg!(target_os = "windows") || updates_itself(),
             auto_update: true,
             update_channel: String::new(),
@@ -837,6 +839,8 @@ struct StateValues {
     sidebar_width: f32,
     sidebar_open: bool,
     sidebar_rail: bool,
+    /// Whether the icon rail is spread out into rows with their names.
+    sidebar_wide: bool,
     sidebar_right_width: f32,
     sidebar_right_open: bool,
     sidebar_right_tab: SideTab,
@@ -870,6 +874,7 @@ impl Default for StateValues {
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             sidebar_open: true,
             sidebar_rail: false,
+            sidebar_wide: false,
             sidebar_right_width: DEFAULT_SIDEBAR_RIGHT_WIDTH,
             sidebar_right_open: false,
             sidebar_right_tab: SideTab::Queue,
@@ -1415,6 +1420,15 @@ impl AppSettings {
 
     pub fn sidebar_open(&self) -> bool {
         self.state.sidebar_open
+    }
+
+    pub fn sidebar_wide(&self) -> bool {
+        self.state.sidebar_wide
+    }
+
+    pub fn set_sidebar_wide(&mut self, wide: bool, cx: &mut Context<Self>) {
+        self.state.sidebar_wide = wide;
+        self.schedule_state_save(cx);
     }
 
     pub fn sidebar_rail(&self) -> bool {
@@ -2010,6 +2024,16 @@ impl AppSettings {
 
     pub fn set_hide_shorts(&mut self, hidden: bool, cx: &mut Context<Self>) {
         self.values.hide_shorts = hidden;
+        self.schedule_save(cx);
+    }
+
+    /// Whether a video's colours glow around its picture.
+    pub fn video_glow(&self) -> bool {
+        self.values.video_glow
+    }
+
+    pub fn set_video_glow(&mut self, glow: bool, cx: &mut Context<Self>) {
+        self.values.video_glow = glow;
         self.schedule_save(cx);
     }
 

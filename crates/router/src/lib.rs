@@ -42,14 +42,17 @@ pub enum NavEntry {
     History,
     /// The videos saved to watch later.
     Later,
+    /// Videos from channels not followed yet, picked from what was watched.
+    Discover,
     Settings,
     Pins,
 }
 
 impl NavEntry {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Home,
         Self::Search,
+        Self::Discover,
         Self::Later,
         Self::History,
         Self::Settings,
@@ -72,6 +75,7 @@ impl NavEntry {
             Self::Radio => "radio",
             Self::History => "history",
             Self::Later => "later",
+            Self::Discover => "discover",
             Self::Settings => "settings",
             Self::Pins => "sidebar-pins",
         }
@@ -88,6 +92,7 @@ impl NavEntry {
             Self::Radio => "nav-radio",
             Self::History => "nav-history",
             Self::Later => "nav-later",
+            Self::Discover => "nav-discover",
             Self::Settings => "nav-settings",
             Self::Pins => "nav-pinned",
         }
@@ -107,10 +112,17 @@ pub enum Screen {
     Search,
     Later,
     History,
+    Discover,
 }
 
 impl Screen {
-    pub const ALL: [Self; 4] = [Self::Home, Self::Search, Self::Later, Self::History];
+    pub const ALL: [Self; 5] = [
+        Self::Home,
+        Self::Search,
+        Self::Discover,
+        Self::Later,
+        Self::History,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -118,6 +130,7 @@ impl Screen {
             Self::Search => "search",
             Self::Later => "later",
             Self::History => "history",
+            Self::Discover => "discover",
         }
     }
 
@@ -127,6 +140,7 @@ impl Screen {
             Self::Search => "nav-search",
             Self::Later => "nav-later",
             Self::History => "nav-history",
+            Self::Discover => "nav-discover",
         }
     }
 
@@ -141,6 +155,7 @@ impl Screen {
             Self::Search => Destination::Search,
             Self::Later => Destination::Later,
             Self::History => Destination::History,
+            Self::Discover => Destination::Discover,
         }
     }
 }
@@ -336,6 +351,8 @@ pub enum Destination {
     History,
     /// The videos saved to watch later.
     Later,
+    /// Videos from channels not followed yet, picked from what was watched.
+    Discover,
     Library(LibraryTab),
     Album(SharedString),
     Song(SharedString),

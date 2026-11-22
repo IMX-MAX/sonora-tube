@@ -172,13 +172,9 @@ enum Slot {
     AdaptiveMenu,
     HideShorts,
     Captions,
+    VideoGlow,
     Version,
-    Updates,
-    AutoUpdate,
-    Channel,
     Log,
-    License,
-    Source,
 }
 
 /// What a tab scrolls to once it is laid out.
@@ -656,25 +652,6 @@ impl SettingsView {
         }
     }
 
-    /// What a page shows under its groups.
-    fn footer(&self, page: SettingsPage, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        match page {
-            SettingsPage::About => vec![
-                self.lazy((page.id(), 2_usize), cx, |this, _, cx| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(GROUPS)
-                        .child(this.team(cx))
-                        .child(this.notice(cx))
-                        .into_any_element()
-                })
-                .into_any_element(),
-            ],
-            _ => Vec::new(),
-        }
-    }
-
     /// The live preview above a page's first group, built and animated only while visible.
     fn preview(&self, page: SettingsPage, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !matches!(
@@ -890,6 +867,7 @@ impl SettingsView {
                 t!("settings-hide-shorts-detail"),
             ),
             Slot::Captions => (t!("settings-captions"), t!("settings-captions-detail")),
+            Slot::VideoGlow => (t!("settings-video-glow"), t!("settings-video-glow-detail")),
             Slot::AdaptiveMenu => (
                 t!("settings-adaptive-menu"),
                 t!("settings-adaptive-menu-detail"),
@@ -1041,21 +1019,7 @@ impl SettingsView {
             Slot::Keybind(index) => self.keybind_meta(index, cx)?,
             Slot::KeybindsReset => (t!("keybinds-reset-all"), SharedString::default()),
             Slot::Version => (t!("settings-version"), t!("settings-version-detail")),
-            Slot::Updates => (
-                t!("settings-check-updates"),
-                t!("settings-check-updates-detail"),
-            ),
-            Slot::AutoUpdate => (
-                t!("settings-auto-update"),
-                t!("settings-auto-update-detail"),
-            ),
-            Slot::Channel => (
-                t!("settings-update-channel"),
-                t!("settings-update-channel-detail"),
-            ),
             Slot::Log => (t!("settings-log"), t!("settings-log-detail")),
-            Slot::License => (t!("settings-license"), t!("settings-license-detail")),
-            Slot::Source => (t!("settings-source"), t!("settings-source-detail")),
         };
         Some(meta)
     }
@@ -1117,6 +1081,7 @@ impl SettingsView {
             Slot::AdaptiveMenu => self.adaptive_menu_row(cx),
             Slot::HideShorts => self.hide_shorts_row(cx),
             Slot::Captions => self.captions_row(cx),
+            Slot::VideoGlow => self.video_glow_row(cx),
             Slot::Normalisation => self.playback_row(cx),
             Slot::Gapless => self.gapless_row(cx),
             Slot::SponsorBlock => self.sponsorblock_row(cx),
@@ -1169,12 +1134,7 @@ impl SettingsView {
             Slot::Keybind(index) => self.keybind_row(index, cx),
             Slot::KeybindsReset => self.keybinds_reset_row(cx),
             Slot::Version => self.version_row(),
-            Slot::Updates => self.updates_row(cx),
-            Slot::AutoUpdate => self.auto_update_row(cx),
-            Slot::Channel => self.channel_row(cx),
             Slot::Log => self.log_row(cx),
-            Slot::License => self.license_row(cx),
-            Slot::Source => self.source_row(cx),
         }
     }
 
@@ -1325,8 +1285,7 @@ impl SettingsView {
                         .gap(GROUPS)
                         .children(self.header(page, cx))
                         .children(self.preview(page, cx))
-                        .children(groups)
-                        .children(self.footer(page, cx)),
+                        .children(groups),
                 )
             })
             .collect::<Vec<_>>();

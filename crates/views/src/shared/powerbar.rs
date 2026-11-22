@@ -1,22 +1,23 @@
+use std::time::Duration;
+
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Global, MouseButton,
-    Pixels, Render, ScrollHandle, SharedString, SpringConfig, Window, anchored, deferred, div,
-    point, px,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Global, MouseButton, Pixels,
+    Render, ScrollHandle, SharedString, SpringConfig, Task, Window, anchored, deferred, div, point,
+    px,
 };
 use i18n::t;
-use input::{POWERBAR_CONTEXT, PowerbarDetails};
-use router::{Destination, navigate};
-use state::{Hit, Origin, Playback, Search};
+use input::POWERBAR_CONTEXT;
+use router::{Destination, navigate, open_settings};
+use state::{Subscriptions, VideoSearch, Watching};
+use tube::Found;
 use ui::{
-    ActiveTheme as _, Button, Card, Cascade, Dismiss, Input, Kbd, SelectNext, SelectPrevious,
-    Spinner, Sprung, Submit, Text, Unfold, blurring, corners, effects, eyebrow, popover_fill,
-    snapped, spoken_vacant,
+    ActiveTheme as _, Card, Cascade, Dismiss, Input, Kbd, SelectNext, SelectPrevious, Spinner,
+    Sprung, Submit, Text, Unfold, blurring, corners, effects, eyebrow, popover_fill, snapped,
+    spoken_vacant,
 };
 
-use crate::screens::search::hit_card;
-use crate::shared::tracks::{PlaybackStatus, playback_status};
 use crate::shared::trouble;
 
 /// How many results the powerbar lists, taken from the top of the ranked search.
@@ -48,15 +49,121 @@ const BLUR_LEAST: Pixels = px(0.05);
 /// How close the panel's spring has to come to count as landed.
 const REST: f32 = 0.001;
 
-/// A floating quick search over the whole window. It drops in from above with the window
-/// blurring away behind it, and its results surface one after another as they arrive.
+/// How many of the videos watched last are offered before anything is typed.
+const RECENT: usize = 4;
+/// How long typing rests before YouTube is asked, so that not every letter is a request.
+const SETTLE: Duration = Duration::from_millis(250);
+
+/// Something done to the video that is playing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Deed {
+    Toggle,
+    Mute,
+    Captions,
+    Full,
+}
+
+impl Deed {
+    const ALL: [Self; 4] = [Self::Toggle, Self::Mute, Self::Captions, Self::Full];
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::Toggle => "toggle",
+            Self::Mute => "mute",
+            Self::Captions => "captions",
+            Self::Full => "full",
+        }
+    }
+
+    fn icon(self, watching: &Watching) -> &'static str {
+        let paused = watching.player().is_none_or(|player| player.paused());
+        match self {
+            Self::Toggle if paused => "icons/play-filled.svg",
+            Self::Toggle => "icons/pause-filled.svg",
+            Self::Mute => "icons/volume-x.svg",
+            Self::Captions => "icons/text-select.svg",
+            Self::Full => "icons/maximize.svg",
+        }
+    }
+
+    /// The Fluent key of what it does as things stand.
+    fn key(self, watching: &Watching) -> &'static str {
+        let paused = watching.player().is_none_or(|player| player.paused());
+        match self {
+            Self::Toggle if paused => "video-play",
+            Self::Toggle => "video-pause",
+            Self::Mute if watching.muted() => "video-unmute",
+            Self::Mute => "video-mute",
+            Self::Captions if watching.captions() => "video-captions-hide",
+            Self::Captions => "video-captions-show",
+            Self::Full if watching.full() => "video-full-leave",
+            Self::Full => "video-full-enter",
+        }
+    }
+
+    fn run(self, watching: &mut Watching, cx: &mut Context<Watching>) {
+        match self {
+            Self::Toggle => watching.toggle(cx),
+            Self::Mute => watching.toggle_muted(cx),
+            Self::Captions => watching.toggle_captions(cx),
+            Self::Full => watching.set_full(!watching.full(), cx),
+        }
+    }
+}
+
+/// A page the quick search goes to: its name's Fluent key, its icon and where it is. Settings
+/// have no destination of their own.
+const PAGES: [(&str, &str, Option<Destination>); 6] = [
+    ("nav-home", "icons/house.svg", Some(Destination::Home)),
+    (
+        "nav-discover",
+        "icons/compass.svg",
+        Some(Destination::Discover),
+    ),
+    ("nav-search", "icons/search.svg", Some(Destination::Search)),
+    ("nav-later", "icons/clock.svg", Some(Destination::Later)),
+    (
+        "nav-history",
+        "icons/rotate-ccw-clock.svg",
+        Some(Destination::History),
+    ),
+    ("nav-settings", "icons/settings.svg", None),
+];
+
+/// One line of the quick search.
+#[derive(Clone)]
+enum Row {
+    /// Something YouTube found, or a video watched lately.
+    Found(Found),
+    /// A page of the app, by its place in [`PAGES`].
+    Page(usize),
+    /// Something done to the playing video.
+    Deed(Deed),
+}
+
+impl Row {
+    /// What tells the row from every other, which its entrance and the cursor follow.
+    fn key(&self) -> SharedString {
+        match self {
+            Self::Found(Found::Video(video)) => format!("video-{}", video.id).into(),
+            Self::Found(Found::Channel(channel)) => format!("channel-{}", channel.id).into(),
+            Self::Found(Found::Playlist(list)) => format!("playlist-{}", list.id).into(),
+            Self::Page(place) => format!("page-{place}").into(),
+            Self::Deed(deed) => format!("deed-{}", deed.id()).into(),
+        }
+    }
+}
+
+/// A floating quick search over the whole window: the videos, channels and playlists YouTube
+/// finds for what is typed, the pages of the app and what can be done to the playing video. It
+/// drops in from above with the window blurring away behind it.
 pub(crate) struct Powerbar {
     open: bool,
     input: Entity<Input>,
-    search: Entity<Search>,
-    playback: Entity<Playback>,
-    playback_status: PlaybackStatus,
-    hits: Vec<Hit>,
+    search: Entity<VideoSearch>,
+    watching: Entity<Watching>,
+    subscriptions: Entity<Subscriptions>,
+    rows: Vec<Row>,
     cursor: Cursor,
     restore: Option<FocusHandle>,
     scroll: ScrollHandle,
@@ -67,6 +174,8 @@ pub(crate) struct Powerbar {
     unfold: Unfold,
     /// The results surfacing one after another as they arrive.
     cascade: Cascade,
+    /// The wait before YouTube is asked for what was typed.
+    settle: Option<Task<()>>,
 }
 
 /// Where the keyboard cursor rests, which is what Enter acts on.
@@ -94,55 +203,52 @@ impl EventEmitter<PowerbarEvent> for Powerbar {}
 
 impl Powerbar {
     pub fn entity(
-        search: Entity<Search>,
-        playback: Entity<Playback>,
+        search: Entity<VideoSearch>,
+        watching: Entity<Watching>,
+        subscriptions: Entity<Subscriptions>,
         cx: &mut App,
     ) -> Entity<Self> {
         if cx.try_global::<Installed>().is_none() {
             let bar = cx.new(|cx| {
-                let current_status = playback_status(&playback, cx);
-
                 let input = cx.new(|cx| {
-                    Input::new("search-placeholder", cx)
+                    Input::new("powerbar-placeholder", cx)
                         .name("powerbar-title")
                         .icon("icons/search.svg")
                         .bare()
                         .clearable()
                 });
                 cx.observe(&input, |this: &mut Powerbar, input, cx| {
-                    let query = input.read(cx).text().to_owned();
-                    // A new query starts the keyboard cursor over, while a caret move or a
-                    // selection in the field leaves it where it was.
-                    if this.search.read(cx).query() == query.trim() {
+                    let query = input.read(cx).text().trim().to_owned();
+                    // A caret move or a selection in the field asks nothing new.
+                    if this.search.read(cx).query() == query {
                         return;
                     }
                     this.cursor = Cursor::First;
                     this.scroll.set_offset(point(Pixels::ZERO, Pixels::ZERO));
-                    this.search.update(cx, |search, cx| search.ask(&query, cx));
-                    // An emptied field goes back to the search history, which no answer brings.
-                    if query.trim().is_empty() {
-                        this.rebuild_items(cx);
-                    }
-                    cx.notify();
+                    this.rebuild(cx);
+                    this.settle = Some(cx.spawn(async move |this, cx| {
+                        if !query.is_empty() {
+                            cx.background_executor().timer(SETTLE).await;
+                        }
+                        this.update(cx, |this, cx| {
+                            this.search
+                                .update(cx, |search, cx| search.search(&query, cx));
+                        })
+                        .ok();
+                    }));
                 })
                 .detach();
 
-                cx.observe(&search, |this: &mut Powerbar, _, cx| {
-                    this.rebuild_items(cx);
-                })
-                .detach();
-
-                cx.observe(&playback, |this: &mut Powerbar, playback, cx| {
-                    let current = playback_status(&playback, cx);
-                    if this.playback_status != current {
-                        this.playback_status = current;
+                cx.observe(&search, |this: &mut Powerbar, _, cx| this.rebuild(cx))
+                    .detach();
+                cx.observe(&watching, |this: &mut Powerbar, _, cx| {
+                    if this.open {
                         cx.notify();
                     }
                 })
                 .detach();
 
-                // An artist or album link in a result navigates on its own, so the panel goes
-                // away with any move to another page. Focus stays with the new page.
+                // A move to another page takes the panel away. Focus stays with the new page.
                 cx.observe(&router::trail(cx), |this: &mut Powerbar, _, cx| {
                     if this.open {
                         this.open = false;
@@ -156,15 +262,16 @@ impl Powerbar {
                     open: false,
                     input,
                     search,
-                    playback,
-                    playback_status: current_status,
-                    hits: Vec::new(),
+                    watching,
+                    subscriptions,
+                    rows: Vec::new(),
                     cursor: Cursor::First,
                     restore: None,
                     scroll: ScrollHandle::new(),
                     shown: Sprung::at(0.),
                     unfold: Unfold::default(),
                     cascade: Cascade::default(),
+                    settle: None,
                 }
             });
             cx.set_global(Installed(bar));
@@ -185,15 +292,12 @@ impl Powerbar {
         });
     }
 
-    /// Opens the panel on an empty query, listing the search history. The previous query is
-    /// cleared here rather than on close, so the results stay put while the panel lifts away.
+    /// Opens the panel on an empty query, offering the pages, the playing video's controls and
+    /// the videos watched last.
     fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.restore = window.focused(cx);
         self.open = true;
         self.cursor = Cursor::First;
-        // Results from the last time stay only for the lift away. Search may have been reset
-        // since, sign-outs included, and an empty query does not notify.
-        self.hits = recent(cx);
         self.cascade.clear();
         self.unfold.reset();
         self.scroll.set_offset(point(Pixels::ZERO, Pixels::ZERO));
@@ -201,8 +305,9 @@ impl Powerbar {
             input.set_text("", cx);
             input.focus(window, cx);
         });
-        self.search.update(cx, |search, cx| search.ask("", cx));
-        cx.notify();
+        self.settle = None;
+        self.search.update(cx, |search, cx| search.search("", cx));
+        self.rebuild(cx);
     }
 
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -216,37 +321,78 @@ impl Powerbar {
         cx.notify();
     }
 
-    fn rebuild_items(&mut self, cx: &mut Context<Self>) {
-        // A closing panel keeps showing what it had, so an answer that lands as it lifts away
-        // does not reshuffle it.
+    /// What is typed, trimmed.
+    fn query(&self, cx: &App) -> String {
+        self.input.read(cx).text().trim().to_owned()
+    }
+
+    /// Lists the rows for what is typed: the controls and pages whose names hold it, then what
+    /// YouTube found. Nothing typed lists them all, with the videos watched last.
+    fn rebuild(&mut self, cx: &mut Context<Self>) {
+        // A closing panel keeps showing what it had.
         if !self.open {
             return;
         }
-        let search = self.search.read(cx);
-        let hits: Vec<Hit> = match search.query().trim().is_empty() {
-            true => recent(cx),
-            false => search.hits().iter().take(MAX_HITS).cloned().collect(),
-        };
+        let query = self.query(cx).to_lowercase();
+        let named =
+            |key: &str| query.is_empty() || i18n::translate(key).to_lowercase().contains(&query);
+        let watching = self.watching.read(cx);
+        let mut rows: Vec<Row> = Vec::new();
+        if watching.id().is_some() {
+            rows.extend(
+                Deed::ALL
+                    .into_iter()
+                    .filter(|deed| named(deed.key(watching)))
+                    .map(Row::Deed),
+            );
+        }
+        rows.extend(
+            PAGES
+                .iter()
+                .enumerate()
+                .filter(|(_, page)| named(page.0))
+                .map(|(place, _)| Row::Page(place)),
+        );
+        match query.is_empty() {
+            true => rows.extend(
+                self.subscriptions
+                    .read(cx)
+                    .watched()
+                    .iter()
+                    .take(RECENT)
+                    .map(|video| Row::Found(Found::Video(video.clone()))),
+            ),
+            false => {
+                // Typing narrows the app's own rows to a few, so what YouTube found comes first.
+                let found = self.search.read(cx).found();
+                let mut all: Vec<Row> = found
+                    .iter()
+                    .take(MAX_HITS)
+                    .cloned()
+                    .map(Row::Found)
+                    .collect();
+                rows.append(&mut all);
+            }
+        }
 
-        // A result the arrow keys moved to keeps the cursor as a new answer reorders the list,
-        // and its place does when that result is gone.
+        // A row the arrow keys moved to keeps the cursor as a new answer reorders the list.
         if let Cursor::On(idx) = self.cursor {
-            let picked = self.hits.get(idx).map(Hit::key);
-            let found = picked.and_then(|key| hits.iter().position(|hit| hit.key() == key));
-            let kept = found.or_else(|| hits.len().checked_sub(1).map(|last| idx.min(last)));
+            let picked = self.rows.get(idx).map(Row::key);
+            let found = picked.and_then(|key| rows.iter().position(|row| row.key() == key));
+            let kept = found.or_else(|| rows.len().checked_sub(1).map(|last| idx.min(last)));
             self.cursor = kept.map_or(Cursor::First, Cursor::On);
             if let Some(idx) = kept {
                 self.scroll.scroll_to_item(idx);
             }
         }
-        self.hits = hits;
+        self.rows = rows;
         cx.notify();
     }
 
     /// The row under the keyboard cursor, if there is one.
     fn selected(&self) -> Option<usize> {
         match self.cursor {
-            Cursor::First => (!self.hits.is_empty()).then_some(0),
+            Cursor::First => (!self.rows.is_empty()).then_some(0),
             Cursor::On(idx) => Some(idx),
             Cursor::Field => None,
         }
@@ -261,7 +407,7 @@ impl Powerbar {
     }
 
     fn select_next(&mut self, _: &SelectNext, _window: &mut Window, cx: &mut Context<Self>) {
-        let total = self.hits.len();
+        let total = self.rows.len();
         if total == 0 {
             return;
         }
@@ -291,146 +437,160 @@ impl Powerbar {
         }
     }
 
-    /// Enter: plays the chosen song at once and opens anything else. With no result chosen it
-    /// opens the search page for what is typed.
+    /// Enter: does what the chosen row is for. With no row chosen it opens the search page
+    /// for what is typed.
     fn activate(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
-        match self.target() {
-            Some(hit) => enter_hit(&hit, &self.playback, cx),
-            None => {
-                let query = self.input.read(cx).text().trim().to_owned();
-                cx.emit(PowerbarEvent::Search(query));
-            }
+        match self.selected().and_then(|idx| self.rows.get(idx)).cloned() {
+            Some(row) => self.enter(&row, cx),
+            None => cx.emit(PowerbarEvent::Search(self.query(cx))),
         }
         self.close(window, cx);
     }
 
-    /// Ctrl+Enter: opens the page of the chosen result, a song's included.
-    fn details(&mut self, _: &PowerbarDetails, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(hit) = self.target() {
-            hit.remember(cx);
-            navigate_hit(&hit, cx);
-        }
-        self.close(window, cx);
-    }
-
-    /// Whether the panel lists the search history rather than answers to a query.
-    fn recalling(&self, cx: &App) -> bool {
-        self.input.read(cx).text().trim().is_empty()
-    }
-
-    /// Drops `hit` from the search history and the list, the keyboard cursor staying put.
-    fn forget(&mut self, hit: &Hit, cx: &mut Context<Self>) {
-        hit.forget(cx);
-        self.rebuild_items(cx);
-    }
-
-    /// The result the keys act on, the one under the keyboard cursor.
-    fn target(&self) -> Option<Hit> {
-        self.selected().and_then(|idx| self.hits.get(idx)).cloned()
-    }
-
-    /// Whether `hit` is what plays right now, which turns its play button into pause.
-    fn playing(&self, hit: &Hit, cx: &App) -> bool {
-        match hit {
-            Hit::Song(track) => {
-                track.id.is_some()
-                    && track.id == self.playback_status.0
-                    && self.playback_status.1 == Some(true)
+    /// Opens what a row stands for, or does it.
+    fn enter(&self, row: &Row, cx: &mut App) {
+        match row {
+            Row::Found(Found::Video(video)) => {
+                navigate(Destination::Watch(video.id.clone().into()), cx)
             }
-            _ => origin_of(hit).is_some_and(|origin| self.playback.read(cx).engaged(&origin, cx)),
+            Row::Found(Found::Channel(channel)) => {
+                navigate(Destination::Channel(channel.id.clone().into()), cx)
+            }
+            Row::Found(Found::Playlist(list)) => {
+                navigate(Destination::Videos(list.id.clone().into()), cx)
+            }
+            Row::Page(place) => match PAGES[*place].2.clone() {
+                Some(destination) => navigate(destination, cx),
+                None => open_settings(cx),
+            },
+            Row::Deed(deed) => {
+                let deed = *deed;
+                self.watching
+                    .update(cx, |watching, cx| deed.run(watching, cx));
+            }
         }
     }
 
-    /// The card for one result, marked when the keyboard cursor rests on it and tinted when it
-    /// is the song playing now.
-    fn hit_row(
-        &self,
-        hit: &Hit,
-        item_idx: usize,
-        total: usize,
-        on_open: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-        on_play: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-        cx: &App,
-    ) -> Card {
-        let chosen = self.selected() == Some(item_idx);
-        let current = match hit {
-            Hit::Song(track) => track.id.is_some() && track.id == self.playback_status.0,
-            _ => false,
+    /// The card of one row, marked when the keyboard cursor rests on it.
+    fn card(&self, row: &Row, place: usize, cx: &App) -> Card {
+        let line = |parts: [Option<String>; 2]| {
+            SharedString::from(parts.into_iter().flatten().collect::<Vec<_>>().join(" · "))
         };
-
-        hit_card(hit, item_idx, true, current, cx.theme())
-            .chosen(chosen)
-            .aria_position_in_set(item_idx + 1)
-            .aria_size_of_set(total)
-            .when(chosen, |card| {
-                card.aria_selected(true).aria_active_descendant()
-            })
-            .press(on_open)
-            .play(self.playing(hit, cx), on_play)
-    }
-
-    /// One row per result in the order the search ranked them, each wrapped in its entrance.
-    /// A row of the search history has a button that drops it.
-    fn results(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let total = self.hits.len();
-        let recalling = self.recalling(cx);
-        let muted = cx.theme().muted_foreground;
-        self.hits
-            .iter()
-            .enumerate()
-            .map(|(item_idx, hit)| {
-                let shown = self.cascade.level(&hit.key(), window, cx);
-                let opened = hit.clone();
-                let played = hit.clone();
-                let entered = self.playback.clone();
-                let playback = self.playback.clone();
-                let open_entity = cx.entity();
-                let play_entity = cx.entity();
-                let card = self.hit_row(
-                    hit,
-                    item_idx,
-                    total,
-                    move |_, window, cx| {
-                        enter_hit(&opened, &entered, cx);
-                        open_entity.update(cx, |this, cx| this.close(window, cx));
-                    },
-                    move |_, window, cx| {
-                        toggle_hit(&played, &playback, cx);
-                        play_entity.update(cx, |this, cx| this.close(window, cx));
+        match row {
+            Row::Found(Found::Video(video)) => {
+                Card::new(("powerbar-video", place), video.title.clone())
+                    .cover(Some(video.thumbnail()))
+                    .fallback("icons/play-filled.svg")
+                    .meta(Self::under(
+                        line([
+                            video.channel.as_ref().map(|channel| channel.name.clone()),
+                            video.length.clone(),
+                        ]),
+                        cx,
+                    ))
+            }
+            Row::Found(Found::Channel(channel)) => {
+                Card::new(("powerbar-channel", place), channel.name.clone())
+                    .cover(channel.avatar.clone())
+                    .fallback("icons/user.svg")
+                    .circle()
+                    .meta(Self::under(
+                        line([
+                            Some(t!("video-channel").to_string()),
+                            channel.subscribers.clone(),
+                        ]),
+                        cx,
+                    ))
+            }
+            Row::Found(Found::Playlist(list)) => {
+                Card::new(("powerbar-playlist", place), list.title.clone())
+                    .cover(list.thumbnail.clone())
+                    .fallback("icons/list.svg")
+                    .meta(Self::under(
+                        line([Some(t!("video-playlist").to_string()), list.detail.clone()]),
+                        cx,
+                    ))
+            }
+            Row::Page(page) => {
+                let (key, icon, _) = &PAGES[*page];
+                Card::new(("powerbar-page", place), i18n::translate(key))
+                    .cover(None)
+                    .fallback(*icon)
+            }
+            Row::Deed(deed) => {
+                let watching = self.watching.read(cx);
+                Card::new(
+                    ("powerbar-deed", place),
+                    i18n::translate(deed.key(watching)),
+                )
+                .cover(None)
+                .fallback(deed.icon(watching))
+                .meta(Self::under(
+                    match watching.watch() {
+                        Some(watch) => SharedString::from(watch.title.clone()),
+                        None => SharedString::default(),
                     },
                     cx,
-                );
-                let forgotten = hit.clone();
-                let forget = cx.entity();
-                let card = card.when(recalling, |card| {
-                    card.collapsed_action(
-                        Button::new(("powerbar-forget", item_idx))
-                            .ghost()
-                            .small()
-                            .mr_1()
-                            .icon("icons/x.svg")
-                            .tooltip("search-forget")
-                            .tint(muted)
-                            .on_click(move |_, _, cx| {
-                                cx.stop_propagation();
-                                forget.update(cx, |this, cx| this.forget(&forgotten, cx));
-                            }),
-                    )
-                });
+                ))
+            }
+        }
+        .tucked()
+    }
+
+    /// The line under a row's name.
+    fn under(line: SharedString, cx: &App) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        div()
+            .truncate()
+            .text_size(theme.text(Text::Small))
+            .text_color(theme.muted_foreground)
+            .child(line)
+    }
+
+    /// One card per row, each wrapped in its entrance.
+    fn results(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let total = self.rows.len();
+        self.rows
+            .iter()
+            .enumerate()
+            .map(|(place, row)| {
+                let shown = self.cascade.level(&row.key(), window, cx);
+                let chosen = self.selected() == Some(place);
+                let (pressed, me) = (row.clone(), cx.entity());
+                let card = self
+                    .card(row, place, cx)
+                    .chosen(chosen)
+                    .aria_position_in_set(place + 1)
+                    .aria_size_of_set(total)
+                    .when(chosen, |card| {
+                        card.aria_selected(true).aria_active_descendant()
+                    })
+                    .press(move |_, window, cx| {
+                        me.update(cx, |this, cx| {
+                            this.enter(&pressed, cx);
+                            this.close(window, cx);
+                        });
+                    });
                 Cascade::surface(card, shown).into_any_element()
             })
             .collect()
+    }
+
+    /// Whether nothing is typed, so the panel offers rather than answers.
+    fn recalling(&self, cx: &App) -> bool {
+        self.query(cx).is_empty()
     }
 
     /// What shows under the field while there is a query and nothing to list for it: a spinner
     /// while the answer is on its way, the reason with a retry when the search failed, and "no
     /// matches" once it came back empty.
     fn quiet(&self, cx: &App) -> Option<AnyElement> {
-        let search = self.search.read(cx);
-        if search.query().is_empty() || !self.hits.is_empty() {
+        let query = self.query(cx);
+        if query.is_empty() || !self.rows.is_empty() {
             return None;
         }
-        if search.is_loading() {
+        let search = self.search.read(cx);
+        if search.is_loading() || search.query() != query {
             return Some(
                 div()
                     .flex()
@@ -442,13 +602,12 @@ impl Powerbar {
         }
         if let Some(reason) = search.error() {
             let again = self.search.clone();
-            let query = search.query().to_owned();
             return Some(
                 trouble::lost(
                     "powerbar-lost",
                     t!("trouble-not-loaded"),
                     Some(reason),
-                    move |_, _, cx| again.update(cx, |search, cx| search.ask(&query, cx)),
+                    move |_, _, cx| again.update(cx, |search, cx| search.search(&query, cx)),
                     cx,
                 )
                 .into_any_element(),
@@ -457,16 +616,11 @@ impl Powerbar {
         Some(spoken_vacant("powerbar-empty", t!("search-no-matches"), cx).into_any_element())
     }
 
-    /// The row of key hints along the foot of the panel.
-    /// The Enter hint names what Enter does to the result it would act on, or says it searches
-    /// when the cursor is in the field. The Ctrl+Enter hint shows only for a song, since for
-    /// anything else Enter already opens it.
+    /// The row of key hints along the foot of the panel. The Enter hint says it searches when
+    /// the cursor is in the field.
     fn hints(&self, cx: &App) -> impl IntoElement {
         let theme = cx.theme();
-        let target = self.target();
-        let song = matches!(target, Some(Hit::Song(_)));
-        let enter = match target {
-            Some(Hit::Song(_)) => t!("common-play"),
+        let enter = match self.selected() {
             Some(_) => t!("powerbar-open"),
             None => t!("search-submit"),
         };
@@ -493,13 +647,6 @@ impl Powerbar {
             .text_size(theme.text(Text::Small))
             .text_color(theme.muted_foreground)
             .child(hint("powerbar-hint-enter", "enter", enter))
-            .when(song, |this| {
-                this.child(hint(
-                    "powerbar-hint-details",
-                    "secondary-enter",
-                    t!("powerbar-song"),
-                ))
-            })
             .child(hint("powerbar-hint-close", "escape", t!("common-dismiss")))
     }
 }
@@ -527,8 +674,7 @@ impl Render for Powerbar {
         let radius = corners(theme.radius);
         let reach = room * REACH;
 
-        self.cascade
-            .show(self.hits.iter().map(|hit| SharedString::from(hit.key())));
+        self.cascade.show(self.rows.iter().map(Row::key));
         let results = self.results(window, cx);
         let quiet = self.quiet(cx);
         let empty = results.is_empty() && quiet.is_none();
@@ -538,8 +684,8 @@ impl Render for Powerbar {
             .flex()
             .flex_col()
             .w_full()
-            .when(self.recalling(cx) && !self.hits.is_empty(), |this| {
-                let label = t!("search-recent");
+            .when(self.recalling(cx) && !self.rows.is_empty(), |this| {
+                let label = t!("powerbar-suggested");
                 this.child(
                     eyebrow(label.clone(), cx)
                         .id("powerbar-recent-heading")
@@ -557,7 +703,7 @@ impl Render for Powerbar {
                         .id("powerbar-results")
                         .role(Role::ListBox)
                         .aria_label(match self.recalling(cx) {
-                            true => t!("search-recent"),
+                            true => t!("powerbar-suggested"),
                             false => t!("search-results"),
                         })
                         .flex()
@@ -572,7 +718,7 @@ impl Render for Powerbar {
             })
             // The key hints only make sense with something to act on, so they arrive with the
             // first results and ride the same growing height.
-            .when(!self.hits.is_empty(), |this| this.child(self.hints(cx)));
+            .when(!self.rows.is_empty(), |this| this.child(self.hints(cx)));
         let body = self.unfold.wrap(body, empty, window, cx);
         let height = self.unfold.height();
 
@@ -660,7 +806,6 @@ impl Render for Powerbar {
                     .on_action(cx.listener(Self::select_next))
                     .on_action(cx.listener(Self::select_previous))
                     .on_action(cx.listener(Self::activate))
-                    .on_action(cx.listener(Self::details))
                     .on_action(cx.listener(|this, _: &Dismiss, window, cx| {
                         cx.stop_propagation();
                         this.close(window, cx);
@@ -676,72 +821,4 @@ impl Render for Powerbar {
         )
         .into_any_element()
     }
-}
-
-/// The latest of the search history, as many as the panel lists.
-fn recent(cx: &App) -> Vec<Hit> {
-    Hit::recent(cx).into_iter().take(MAX_HITS).collect()
-}
-
-fn navigate_hit(hit: &Hit, cx: &mut App) {
-    match hit {
-        Hit::Song(track) => {
-            if let Some(id) = &track.id {
-                navigate(Destination::Song(SharedString::from(id.clone())), cx);
-            }
-        }
-        Hit::Artist(artist) => {
-            if let Some(id) = &artist.id {
-                navigate(Destination::Artist(SharedString::from(id.clone())), cx);
-            }
-        }
-        Hit::Album(album) => {
-            navigate(Destination::Album(SharedString::from(album.id.clone())), cx);
-        }
-        Hit::Playlist(list) => {
-            navigate(
-                Destination::Playlist(SharedString::from(list.id.clone())),
-                cx,
-            );
-        }
-    }
-}
-
-/// The origin that playing `hit` starts, for every kind but a song, which starts a radio.
-fn origin_of(hit: &Hit) -> Option<Origin> {
-    match hit {
-        Hit::Song(_) => None,
-        Hit::Artist(artist) => Some(Origin::artist(artist.id.clone()?).named(artist.name.clone())),
-        Hit::Album(album) => Some(Origin::album(album.id.clone()).named(album.name.clone())),
-        Hit::Playlist(list) => Some(Origin::playlist(list.id.clone()).named(list.name.clone())),
-    }
-}
-
-/// What Enter or a click on a row does: a song starts playing with its radio after it, and
-/// any other result opens its page. Either way the result moves to the top of the search
-/// history.
-fn enter_hit(hit: &Hit, playback: &Entity<Playback>, cx: &mut App) {
-    hit.remember(cx);
-    match hit {
-        Hit::Song(track) => playback.update(cx, |playback, cx| playback.play_radio(track, cx)),
-        _ => navigate_hit(hit, cx),
-    }
-}
-
-/// The play button on a result: pauses or resumes what already plays from it, and starts it
-/// otherwise. The result moves to the top of the search history.
-fn toggle_hit(hit: &Hit, playback: &Entity<Playback>, cx: &mut App) {
-    hit.remember(cx);
-    playback.update(cx, |playback, cx| match (hit, origin_of(hit)) {
-        (Hit::Song(track), _) => {
-            let current = track.id.is_some()
-                && playback.track().and_then(|playing| playing.id.as_ref()) == track.id.as_ref();
-            match current {
-                true => playback.toggle_play(cx),
-                false => playback.play_radio(track, cx),
-            }
-        }
-        (_, Some(origin)) => playback.toggle_origin(&origin, cx),
-        (_, None) => {}
-    });
 }

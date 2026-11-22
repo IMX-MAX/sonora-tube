@@ -115,10 +115,131 @@ pub struct Watch {
     pub liked: Option<bool>,
 }
 
+/// One picture quality of a video: the address of its picture and of the sound that goes
+/// with it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Quality {
+    /// The height of the picture in pixels, which is what a quality is named by.
+    pub height: u32,
+    /// Frames a second, rounded.
+    pub rate: u32,
+    pub picture: String,
+    pub sound: String,
+}
+
+/// What a video can be played from: its qualities, best first, and the small pictures a seek
+/// bar previews it with.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Streams {
+    pub qualities: Vec<Quality>,
+    pub board: Option<Storyboard>,
+}
+
+/// Sheets of small pictures taken through a video at even steps, which a seek bar shows the
+/// moment under the pointer from.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Storyboard {
+    /// The address of a sheet, split around where its number goes.
+    pub(crate) address: (String, String),
+    /// The size of one picture in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// How many pictures there are in all, and how many across and down a full sheet.
+    pub count: u32,
+    pub columns: u32,
+    pub rows: u32,
+    /// The seconds between two pictures, zero when they are spread evenly over the video.
+    pub interval: f64,
+}
+
+/// Where the picture of one moment sits: the sheet's address, the column and row on it, and how
+/// many columns and rows that sheet has.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Peek {
+    pub sheet: String,
+    pub column: u32,
+    pub row: u32,
+    pub columns: u32,
+    pub rows: u32,
+}
+
+impl Storyboard {
+    /// The picture nearest `seconds` into a video `length` seconds long.
+    pub fn at(&self, seconds: f64, length: f64) -> Option<Peek> {
+        let per = self.columns * self.rows;
+        if per == 0 || self.count == 0 {
+            return None;
+        }
+        let step = match self.interval > 0. {
+            true => self.interval,
+            false => length / f64::from(self.count),
+        };
+        if step <= 0. {
+            return None;
+        }
+        let frame = ((seconds.max(0.) / step) as u32).min(self.count - 1);
+        let (sheet, place) = (frame / per, frame % per);
+        // The last sheet holds what is left over, so it may be shorter or narrower.
+        let held = (self.count - sheet * per).min(per);
+        Some(Peek {
+            sheet: format!("{}{sheet}{}", self.address.0, self.address.1),
+            column: place % self.columns,
+            row: place / self.columns,
+            columns: held.min(self.columns),
+            rows: held.div_ceil(self.columns),
+        })
+    }
+}
+
+/// Something in a description that can be pressed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Mark {
+    /// A web address.
+    Link(String),
+    /// A moment of the video, in seconds.
+    Moment(f64),
+}
+
+/// The web addresses and the moments such as `1:23` written in `text`, each with the bytes it
+/// covers, in order.
+pub fn marks(text: &str) -> Vec<(std::ops::Range<usize>, Mark)> {
+    let mut found = Vec::new();
+    let mut start = 0;
+    for word in text.split_inclusive(char::is_whitespace) {
+        let at = start;
+        start += word.len();
+        let word = word.trim_end();
+        if word.starts_with("https://") || word.starts_with("http://") {
+            // A full stop or a bracket closing the sentence is not part of the address.
+            let address = word.trim_end_matches(['.', ',', ')', ']', '!', '?', ';', ':']);
+            found.push((at..at + address.len(), Mark::Link(address.to_owned())));
+            continue;
+        }
+        let opened = word.trim_start_matches(['(', '[']);
+        let moment = opened.trim_end_matches(['.', ',', ')', ']', ':', ';', '-']);
+        let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+        let pieces: Vec<&str> = moment.split(':').collect();
+        if !(2..=3).contains(&pieces.len())
+            || !pieces.iter().all(|piece| digits(piece) && piece.len() <= 2)
+            || pieces[1..].iter().any(|piece| piece.len() != 2)
+        {
+            continue;
+        }
+        let seconds = pieces.iter().fold(0., |total, piece| {
+            total * 60. + piece.parse::<f64>().unwrap_or(0.)
+        });
+        let lead = word.len() - opened.len();
+        found.push((at + lead..at + lead + moment.len(), Mark::Moment(seconds)));
+    }
+    found
+}
+
 /// One line of a video's transcript and the second it is spoken at.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Line {
     pub start: f64,
+    /// How many seconds it stays on screen as a caption.
+    pub length: f64,
     pub text: String,
 }
 
@@ -136,6 +257,13 @@ pub struct Comment {
     pub reply_count: Option<String>,
     /// The token of its replies, when it has any.
     pub replies: Option<String>,
+    /// Whether the signed-in account liked it.
+    pub liked: bool,
+    /// What liking it, taking the like back and replying to it each send to YouTube. Present
+    /// only for a signed-in account.
+    pub like: Option<String>,
+    pub unlike: Option<String>,
+    pub reply: Option<String>,
 }
 
 /// A page of comments, with the total the first page announces.
@@ -152,6 +280,8 @@ pub struct Comments {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChannelPage {
     pub channel: Channel,
+    /// The wide picture across the top of the channel.
+    pub banner: Option<String>,
     pub description: String,
     pub videos: Page<Video>,
 }

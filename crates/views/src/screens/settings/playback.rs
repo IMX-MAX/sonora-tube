@@ -32,10 +32,11 @@ const SLEEP_LAST: usize = (SLEEP_MAX_MINUTES - SLEEP_MIN_MINUTES + 1) as usize
 
 impl SettingsView {
     pub(super) fn playback_groups(&self, _: &App) -> Vec<Group> {
-        vec![
-            Group::new("settings-group-videos", "icons/play.svg")
-                .rows([Slot::HideShorts, Slot::Captions]),
-        ]
+        vec![Group::new("settings-group-videos", "icons/play.svg").rows([
+            Slot::HideShorts,
+            Slot::Captions,
+            Slot::Ambient,
+        ])]
     }
 
     /// The detail of the Widevine row for its state, which a search reads.

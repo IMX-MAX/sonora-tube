@@ -423,6 +423,21 @@ impl SettingsView {
         )
     }
 
+    pub(super) fn video_glow_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.settings.read(cx).video_glow();
+
+        self.row(
+            t!("settings-video-glow"),
+            Switch::new("video-glow", on)
+                .name(t!("settings-video-glow"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings
+                        .update(cx, |settings, cx| settings.set_video_glow(!on, cx));
+                }))
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn captions_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let on = self.settings.read(cx).captions();
 

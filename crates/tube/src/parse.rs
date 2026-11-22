@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::{
     Channel, ChannelPage, ChannelRef, Comment, Comments, Found, Line, Page, Playlist, PlaylistPage,
-    Video, Watch,
+    Quality, Storyboard, Video, Watch,
 };
 
 /// Containers whose contents are never listed: ads, the side card of a search and the chapter
@@ -26,6 +26,8 @@ const CLUTTER: [&str; 9] = [
     "topbar",
 ];
 /// The renderer of one Short.
+/// Which of a video's storyboard sizes the seek bar previews with, counted from the smallest.
+const BOARD_LEVEL: usize = 2;
 const SHORT: &str = "shortsLockupViewModel";
 const COMMENTS_SECTION: &str = "comment-item-section";
 
@@ -105,6 +107,7 @@ pub(crate) fn watch(id: &str, answer: &Value) -> Result<Watch> {
         channel,
         related: videos(&columns["secondaryResults"]).items,
         liked: first(primary, "likeStatus")
+            .or_else(|| first(answer, "likeStatus"))
             .and_then(Value::as_str)
             .map(|status| status == "LIKE"),
         comments,
@@ -164,6 +167,27 @@ pub(crate) fn comments(answer: &Value) -> Comments {
                 .find(|entity| entity["properties"]["commentId"] == id.as_str())?;
             let (properties, author, toolbar) =
                 (&entity["properties"], &entity["author"], &entity["toolbar"]);
+            // What the buttons under a comment do, and whether it is liked, are kept in
+            // entities of their own that the comment names by key.
+            let keyed = |payload: &str, key: &Value| {
+                mutations
+                    .iter()
+                    .map(|mutation| &mutation["payload"][payload])
+                    .find(|held| key.is_string() && held["key"] == *key)
+            };
+            let surface = keyed(
+                "engagementToolbarSurfaceEntityPayload",
+                &properties["toolbarSurfaceKey"],
+            );
+            let state = keyed(
+                "engagementToolbarStateEntityPayload",
+                &properties["toolbarStateKey"],
+            );
+            let command = |name: &str, field: &str| {
+                surface
+                    .and_then(|surface| first(&surface[name], field))
+                    .and_then(string)
+            };
             Some(Comment {
                 id,
                 author: ChannelRef {
@@ -177,6 +201,10 @@ pub(crate) fn comments(answer: &Value) -> Comments {
                 creator: author["isCreator"].as_bool().unwrap_or(false),
                 reply_count: string(&toolbar["replyCount"]).filter(|count| !count.is_empty()),
                 replies,
+                liked: state.is_some_and(|state| state["likeState"] == "TOOLBAR_LIKE_STATE_LIKED"),
+                like: command("likeCommand", "action"),
+                unlike: command("unlikeCommand", "action"),
+                reply: command("replyCommand", "createReplyParams"),
             })
         })
         .collect();
@@ -204,6 +232,9 @@ pub(crate) fn channel(id: &str, answer: &Value) -> Result<ChannelPage> {
             avatar: thumbnail(&about["avatar"]),
             subscribers,
         },
+        banner: first(&answer["header"], "imageBannerViewModel")
+            .and_then(|banner| banner["image"]["sources"].as_array()?.last())
+            .and_then(|source| string(&source["url"])),
         description: string(&about["description"]).unwrap_or_default(),
         videos: videos(&answer["contents"]),
     })
@@ -271,6 +302,94 @@ pub(crate) fn caption_track(player: &Value, language: &str) -> Option<String> {
 }
 
 /// The lines of a `json3` caption file, without the empty ones that only break a line.
+/// The value of `name` in the attribute list of a stream list's line, without its quotes.
+fn attribute<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+    let mut rest = line.split_once(':')?.1;
+    while !rest.is_empty() {
+        let (held, after) = rest.split_once('=')?;
+        let (value, next) = match after.strip_prefix('"') {
+            Some(quoted) => {
+                let (value, next) = quoted.split_once('"')?;
+                (value, next.trim_start_matches(','))
+            }
+            None => after.split_once(',').unwrap_or((after, "")),
+        };
+        if held == name {
+            return Some(value);
+        }
+        rest = next;
+    }
+    None
+}
+
+/// The qualities an HLS stream list offers, best first and one per height: the H.264 picture
+/// where there is one, since every machine decodes it in hardware, and no HDR ones, which
+/// would need tone mapping.
+pub(crate) fn qualities(listed: &str) -> Vec<Quality> {
+    let mut sounds: Vec<(&str, &str, bool)> = Vec::new();
+    let mut found: Vec<(Quality, bool)> = Vec::new();
+    let mut lines = listed.lines();
+    while let Some(line) = lines.next() {
+        if line.starts_with("#EXT-X-MEDIA:") {
+            if let (Some(group), Some(address)) =
+                (attribute(line, "GROUP-ID"), attribute(line, "URI"))
+            {
+                let chosen = attribute(line, "DEFAULT") == Some("YES");
+                sounds.push((group, address, chosen));
+            }
+            continue;
+        }
+        if !line.starts_with("#EXT-X-STREAM-INF:") {
+            continue;
+        }
+        let Some(picture) = lines.next() else { break };
+        if attribute(line, "VIDEO-RANGE").is_some_and(|range| range != "SDR") {
+            continue;
+        }
+        let Some(height) = attribute(line, "RESOLUTION")
+            .and_then(|size| size.split_once('x'))
+            .and_then(|(_, height)| height.parse().ok())
+        else {
+            continue;
+        };
+        let group = attribute(line, "AUDIO");
+        let in_group = |sound: &&(&str, &str, bool)| Some(sound.0) == group;
+        let Some(sound) = sounds
+            .iter()
+            .find(|sound| in_group(sound) && sound.2)
+            .or_else(|| sounds.iter().find(in_group))
+        else {
+            continue;
+        };
+        let rate = attribute(line, "FRAME-RATE")
+            .and_then(|rate| rate.parse::<f32>().ok())
+            .map_or(0, |rate| rate.round() as u32);
+        let plain = attribute(line, "CODECS").is_some_and(|codecs| codecs.starts_with("avc1"));
+        found.push((
+            Quality {
+                height,
+                rate,
+                picture: picture.trim().to_owned(),
+                sound: sound.1.to_owned(),
+            },
+            plain,
+        ));
+    }
+    // Within a height the smoother picture wins, then the plainer codec, then the last listed,
+    // which carries the better sound.
+    found.sort_by_key(|(quality, plain)| (quality.height, quality.rate, *plain));
+    let mut qualities: Vec<Quality> = Vec::new();
+    for (quality, _) in found.into_iter().rev() {
+        if qualities
+            .last()
+            .is_none_or(|last| last.height != quality.height)
+        {
+            qualities.push(quality);
+        }
+    }
+    qualities
+}
+
 pub(crate) fn transcript(timed: &Value) -> Vec<Line> {
     let Some(events) = timed["events"].as_array() else {
         return Vec::new();
@@ -286,6 +405,7 @@ pub(crate) fn transcript(timed: &Value) -> Vec<Line> {
             let text = said.split_whitespace().collect::<Vec<_>>().join(" ");
             (!text.is_empty()).then(|| Line {
                 start: event["tStartMs"].as_f64().unwrap_or(0.) / 1000.,
+                length: event["dDurationMs"].as_f64().unwrap_or(0.) / 1000.,
                 text,
             })
         })
@@ -314,7 +434,10 @@ fn video(node: &Value) -> Option<Video> {
         .map(|name| &node[name])
         .find(|byline| byline.is_object());
     Some(Video {
-        id: node["videoId"].as_str()?.to_owned(),
+        id: node["videoId"]
+            .as_str()
+            .filter(|id| is_video(id))?
+            .to_owned(),
         title: text(&node["title"])?,
         channel: byline.and_then(channel_ref),
         length: text(&node["lengthText"]),
@@ -336,6 +459,8 @@ fn lockup(node: &Value) -> Option<Found> {
     let title = string(&about["title"]["content"])?;
     let rows = parts(&about["metadata"]["contentMetadataViewModel"]);
     match node["contentType"].as_str()? {
+        // An advert dressed as a video carries something else where the id goes.
+        "LOCKUP_CONTENT_TYPE_VIDEO" if !is_video(&id) => None,
         "LOCKUP_CONTENT_TYPE_VIDEO" => {
             // A channel's own page leaves its name out, so the views lead. Everywhere else the
             // name comes first.
@@ -373,6 +498,42 @@ fn lockup(node: &Value) -> Option<Found> {
         }
         _ => None,
     }
+}
+
+/// Whether `id` has the shape of a video's id: eleven letters, digits, dashes or underscores.
+fn is_video(id: &str) -> bool {
+    id.len() == 11
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// The sheets of preview pictures a player answer names, at the size a seek bar shows.
+pub(crate) fn storyboard(player: &Value) -> Option<Storyboard> {
+    let spec = player["storyboards"]["playerStoryboardSpecRenderer"]["spec"].as_str()?;
+    let mut levels = spec.split('|');
+    let base = levels.next()?;
+    // The levels grow in size. The third is large enough to read and small enough to be quick.
+    let (level, fields) = levels
+        .map(|level| level.split('#').collect::<Vec<_>>())
+        .enumerate()
+        .filter(|(_, fields)| fields.len() >= 8)
+        .take(BOARD_LEVEL + 1)
+        .last()?;
+    let number = |place: usize| fields[place].parse::<u32>().ok();
+    let named = base
+        .replace("$L", &level.to_string())
+        .replace("$N", fields[6]);
+    let (before, after) = named.split_once("$M").unwrap_or((&named, ""));
+    Some(Storyboard {
+        address: (before.to_owned(), format!("{after}&sigh={}", fields[7])),
+        width: number(0)?,
+        height: number(1)?,
+        count: number(2)?,
+        columns: number(3)?,
+        rows: number(4)?,
+        interval: f64::from(number(5)?) / 1000.,
+    })
 }
 
 fn channel_card(node: &Value) -> Option<Channel> {

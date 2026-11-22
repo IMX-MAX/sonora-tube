@@ -6,6 +6,7 @@
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::ptr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -17,6 +18,11 @@ use gpui::RenderImage;
 use image::{Frame, RgbaImage};
 use libmpv2_sys as sys;
 use smallvec::smallvec;
+
+/// How far the glow moves toward each new frame's colour, so a cut fades rather than flashes.
+const GLOW_EASE: f32 = 0.04;
+/// How many pixels apart the ones sampled for the glow are, across and down.
+const GLOW_STEP: usize = 24;
 
 /// The widest frame the renderer produces. A larger video is scaled down by mpv, since every
 /// frame is copied to the GPU and a 4K copy sixty times a second is more than the copy is worth.
@@ -32,6 +38,9 @@ pub type Frames = UnboundedReceiver<()>;
 /// What the render thread and the view share: the newest frame, replaced as each one lands.
 type Latest = Arc<Mutex<Option<Arc<RenderImage>>>>;
 
+/// The eased colour of each half of the picture, written by the render thread.
+type Glow = Arc<[AtomicU32; 2]>;
+
 /// The mpv core. Send and Sync because the mpv client API is safe to call from any thread.
 struct Core(*mut sys::mpv_handle);
 
@@ -44,6 +53,7 @@ unsafe impl Sync for Core {}
 pub struct Player {
     core: Arc<Core>,
     latest: Latest,
+    glow: Glow,
     stop: Option<Sender<Wake>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -70,13 +80,15 @@ impl Player {
             ("vo", "libmpv"),
             ("hwdec", "auto-copy"),
             ("ytdl", "yes"),
-            // Fetch the captions with the video, written ones before generated ones, and keep
-            // them hidden until asked for.
-            (
-                "ytdl-raw-options",
-                "write-subs=,write-auto-subs=,sub-langs=\"en.*\"",
-            ),
+            // Captions are drawn by the app over the picture, never by mpv.
             ("sub-visibility", "no"),
+            // Start showing the picture as soon as there is some, rather than after a long probe.
+            ("demuxer-lavf-probe-info", "nostreams"),
+            ("cache", "yes"),
+            // Read a little ahead of what plays rather than the whole video.
+            ("cache-secs", "30"),
+            ("demuxer-max-bytes", "64MiB"),
+            ("demuxer-max-back-bytes", "32MiB"),
             ("ytdl-format", "bestvideo[height<=?1080]+bestaudio/best"),
             ("terminal", "no"),
             ("keep-open", "yes"),
@@ -91,14 +103,15 @@ impl Player {
         check(unsafe { sys::mpv_initialize(core.0) }).context("cannot initialise mpv")?;
 
         let latest = Latest::default();
+        let glow = Glow::default();
         let (wake, woken) = mpsc::channel();
         let (frames, receiver) = unbounded();
         let renderer = Renderer::new(&core, wake.clone())?;
         let thread = std::thread::Builder::new()
             .name("video-render".into())
             .spawn({
-                let latest = latest.clone();
-                move || renderer.run(&woken, &latest, &frames)
+                let (latest, glow) = (latest.clone(), glow.clone());
+                move || renderer.run(&woken, &latest, &glow, &frames)
             })
             .context("cannot start the video render thread")?;
 
@@ -106,6 +119,7 @@ impl Player {
             Self {
                 core,
                 latest,
+                glow,
                 stop: Some(wake),
                 thread: Some(thread),
             },
@@ -113,9 +127,59 @@ impl Player {
         ))
     }
 
-    /// Plays a file path or a url, replacing whatever was playing.
-    pub fn load(&self, source: &str) -> Result<()> {
+    /// Plays a picture and the sound that goes with it from their own addresses, from `start`
+    /// seconds in, replacing whatever was playing.
+    pub fn play(&self, picture: &str, sound: &str, start: f64) -> Result<()> {
+        // mpv's own notation for streams that play together, each address led by its length.
+        let part = |address: &str| {
+            format!(
+                "!new_stream;!no_clip;!no_chapters;%{}%{address}",
+                address.len()
+            )
+        };
+        self.begin(start);
+        self.core.command(&[
+            "loadfile",
+            &format!("edl://{};{}", part(picture), part(sound)),
+        ])
+    }
+
+    /// Plays the page of a video through yt-dlp, which is slow to start and knows every site.
+    pub fn load_from(&self, source: &str, start: f64) -> Result<()> {
+        self.begin(start);
         self.core.command(&["loadfile", source])
+    }
+
+    /// Sets where the next file starts, in seconds.
+    fn begin(&self, start: f64) {
+        let value = match start > 0. {
+            true => start.to_string(),
+            false => "none".to_owned(),
+        };
+        if let Err(error) = self.core.set("start", &value) {
+            log::warn!("video: cannot set where to start: {error:#}");
+        }
+    }
+
+    /// Drops what is playing, leaving the last picture up.
+    pub fn stop(&self) {
+        if let Err(error) = self.core.command(&["stop"]) {
+            log::warn!("video: cannot stop: {error:#}");
+        }
+    }
+
+    /// Whether nothing is loaded, which after a load means the file could not be opened.
+    pub fn idle(&self) -> bool {
+        self.core.flag("idle-active").unwrap_or(false)
+    }
+
+    /// The colours of the left and right halves of the picture, averaged and eased over time,
+    /// as `0xRRGGBB`. Black before the first frame.
+    pub fn glow(&self) -> (u32, u32) {
+        (
+            self.glow[0].load(Ordering::Relaxed),
+            self.glow[1].load(Ordering::Relaxed),
+        )
     }
 
     /// The newest frame, if one has been rendered yet.
@@ -164,17 +228,6 @@ impl Player {
             .command(&["seek", &seconds.to_string(), "absolute"])
         {
             log::warn!("video: cannot seek: {error:#}");
-        }
-    }
-
-    /// Shows or hides the captions, for a video that has any.
-    pub fn set_captions(&self, shown: bool) {
-        let value = match shown {
-            true => "yes",
-            false => "no",
-        };
-        if let Err(error) = self.core.set("sub-visibility", value) {
-            log::warn!("video: cannot switch the captions: {error:#}");
         }
     }
 
@@ -321,7 +374,14 @@ impl Renderer {
     }
 
     /// Renders every frame mpv announces until the player is dropped.
-    fn run(self, woken: &mpsc::Receiver<Wake>, latest: &Latest, frames: &UnboundedSender<()>) {
+    fn run(
+        self,
+        woken: &mpsc::Receiver<Wake>,
+        latest: &Latest,
+        glow: &Glow,
+        frames: &UnboundedSender<()>,
+    ) {
+        let mut eased = [[0f32; 3]; 2];
         loop {
             match woken.recv_timeout(IDLE) {
                 Ok(Wake::Stop) | Err(RecvTimeoutError::Disconnected) => return,
@@ -333,7 +393,18 @@ impl Renderer {
             if flags & UPDATE_FRAME == 0 {
                 continue;
             }
-            let Some(image) = self.render() else { continue };
+            let Some((image, halves)) = self.render() else {
+                continue;
+            };
+            for (side, now) in halves.into_iter().enumerate() {
+                let mut packed = 0u32;
+                for (channel, now) in now.into_iter().enumerate() {
+                    let held = &mut eased[side][channel];
+                    *held += (now - *held) * GLOW_EASE;
+                    packed = packed << 8 | (*held as u32).min(255);
+                }
+                glow[side].store(packed, Ordering::Relaxed);
+            }
             if let Ok(mut slot) = latest.lock() {
                 *slot = Some(Arc::new(image));
             }
@@ -344,7 +415,7 @@ impl Renderer {
     }
 
     /// Renders the current frame at the video's own size, capped at [`WIDEST`].
-    fn render(&self) -> Option<RenderImage> {
+    fn render(&self) -> Option<(RenderImage, [[f32; 3]; 2])> {
         let (native_width, native_height) = (self.core.int("dwidth")?, self.core.int("dheight")?);
         if native_width <= 0 || native_height <= 0 {
             return None;
@@ -390,8 +461,9 @@ impl Renderer {
         for pixel in pixels.as_chunks_mut::<4>().0 {
             pixel[3] = u8::MAX;
         }
+        let halves = halves(&pixels, usize::try_from(width).ok()?);
         let buffer = RgbaImage::from_raw(width.cast_unsigned(), height.cast_unsigned(), pixels)?;
-        Some(RenderImage::new(smallvec![Frame::new(buffer)]))
+        Some((RenderImage::new(smallvec![Frame::new(buffer)]), halves))
     }
 }
 
@@ -404,6 +476,29 @@ impl Drop for Renderer {
             drop(Box::from_raw(self.wake));
         }
     }
+}
+
+/// The average red, green and blue of the left and right halves of a BGRA frame `width` wide,
+/// from a sparse sample of its pixels.
+fn halves(pixels: &[u8], width: usize) -> [[f32; 3]; 2] {
+    let mut sums = [[0u64; 3]; 2];
+    let mut counts = [0u64; 2];
+    for row in pixels.chunks_exact(width * 4).step_by(GLOW_STEP) {
+        for (column, pixel) in row.as_chunks::<4>().0.iter().enumerate().step_by(GLOW_STEP) {
+            let side = usize::from(column * 2 >= width);
+            for (channel, sum) in sums[side].iter_mut().enumerate() {
+                *sum += u64::from(pixel[2 - channel]);
+            }
+            counts[side] += 1;
+        }
+    }
+    let mut average = [[0f32; 3]; 2];
+    for side in 0..2 {
+        for channel in 0..3 {
+            average[side][channel] = sums[side][channel] as f32 / counts[side].max(1) as f32;
+        }
+    }
+    average
 }
 
 /// mpv's update callback. It runs on an mpv thread and may not call back into mpv, so it only

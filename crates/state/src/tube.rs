@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{AnyView, App, AppContext as _, Context, Entity, Global, Task};
-use tube::{Channel, Client, Comment, Found, Line, Page, Video, Watch};
+use tube::{Channel, Client, Comment, Found, Line, Page, Peek, Quality, Storyboard, Video, Watch};
 use video::{Player, VideoView};
 
 use crate::{Io, Playback, join};
@@ -127,6 +127,14 @@ impl VideoSearch {
     }
 }
 
+/// The tallest picture played when the user has not chosen one.
+const AUTO_HEIGHT: u32 = 1080;
+/// How long a caption without a length of its own stays up, in seconds.
+const CAPTION_STAYS: f64 = 5.;
+/// How often and how many times a freshly opened stream is checked for having failed.
+const OPENING_CHECK: Duration = Duration::from_millis(250);
+const OPENING_CHECKS: usize = 80;
+
 /// The comments under the video being watched, and the replies opened so far.
 #[derive(Default)]
 struct Thread {
@@ -135,6 +143,11 @@ struct Thread {
     more: Option<String>,
     loading: bool,
     replies: HashMap<String, Vec<Comment>>,
+    /// The comments whose fetched replies are folded away again.
+    folded: std::collections::HashSet<String>,
+    /// The comments whose like was turned here, and which way.
+    liked: HashMap<String, bool>,
+    actions: Vec<Task<()>>,
     /// What posting a comment sends back, held once the first page came for an account.
     write: Option<String>,
     posting: bool,
@@ -176,8 +189,17 @@ pub struct Watching {
     /// Whether the picture fills the whole screen.
     full: bool,
     /// Whether the account liked the video, `None` as a guest.
-    liked: Option<bool>,
+    liked: bool,
     like: Option<Task<()>>,
+    /// The qualities the video can be played at, best first, once YouTube has named them.
+    qualities: Vec<Quality>,
+    /// The small pictures the seek bar previews the video with.
+    board: Option<Storyboard>,
+    /// The tallest picture the user wants, `None` to let the app choose.
+    ceiling: Option<u32>,
+    /// Whether the picture's colours glow around it.
+    ambient: bool,
+    stream: Option<Task<()>>,
     task: Option<Task<()>>,
 }
 
@@ -205,8 +227,13 @@ impl Watching {
             captions: false,
             floating: false,
             full: false,
-            liked: None,
+            liked: false,
             like: None,
+            qualities: Vec::new(),
+            board: None,
+            ceiling: None,
+            ambient: true,
+            stream: None,
             task: None,
         }
     }
@@ -272,6 +299,100 @@ impl Watching {
         self.thread.replies.get(comment).map(Vec::as_slice)
     }
 
+    /// Whether the replies of `comment` were fetched and then folded away.
+    pub fn replies_folded(&self, comment: &str) -> bool {
+        self.thread.folded.contains(comment)
+    }
+
+    /// Shows the replies of a comment, fetching them the first time, or folds them away.
+    pub fn toggle_replies(&mut self, comment: &str, cx: &mut Context<Self>) {
+        match self.thread.replies.contains_key(comment) {
+            true => {
+                if !self.thread.folded.remove(comment) {
+                    self.thread.folded.insert(comment.to_owned());
+                }
+                cx.notify();
+            }
+            false => self.load_replies(comment, cx),
+        }
+    }
+
+    /// Whether `comment` is liked, by what YouTube said unless it was turned here since.
+    pub fn comment_liked(&self, comment: &Comment) -> bool {
+        self.thread
+            .liked
+            .get(&comment.id)
+            .copied()
+            .unwrap_or(comment.liked)
+    }
+
+    /// Likes a comment or takes the like back. The heart turns at once. With an account YouTube
+    /// is told, and the heart turns back when it refuses.
+    pub fn toggle_comment_like(&mut self, comment: &Comment, cx: &mut Context<Self>) {
+        let before = self.comment_liked(comment);
+        self.thread.liked.insert(comment.id.clone(), !before);
+        cx.notify();
+        let action = match before {
+            true => comment.unlike.clone(),
+            false => comment.like.clone(),
+        };
+        let Some(action) = action else { return };
+        let client = self.client.clone();
+        let request = self
+            .io
+            .spawn(async move { client.comment_action(&action).await });
+        let (asked, id) = (self.id.clone(), comment.id.clone());
+        let task = cx.spawn(async move |this, cx| {
+            let Err(error) = join(request).await else {
+                return;
+            };
+            log::warn!("video: cannot like the comment: {error:#}");
+            this.update(cx, |this, cx| {
+                if this.id == asked {
+                    this.thread.liked.insert(id, before);
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
+        self.thread.actions.push(task);
+    }
+
+    /// Posts `words` as a reply to a top-level comment and fetches its replies again.
+    pub fn reply(&mut self, comment: &Comment, words: &str, cx: &mut Context<Self>) {
+        let words = words.trim().to_owned();
+        let Some(reply) = comment.reply.clone() else {
+            return;
+        };
+        if words.is_empty() {
+            return;
+        }
+        let client = self.client.clone();
+        let request = self
+            .io
+            .spawn(async move { client.reply(&reply, &words).await });
+        let (asked, id) = (self.id.clone(), comment.id.clone());
+        let task = cx.spawn(async move |this, cx| {
+            let posted = join(request).await;
+            this.update(cx, |this, cx| {
+                if this.id != asked {
+                    return;
+                }
+                match posted {
+                    Ok(()) => {
+                        this.thread.replies.remove(&id);
+                        this.thread.folded.remove(&id);
+                        this.load_replies(&id, cx);
+                    }
+                    Err(error) => log::warn!("video: cannot post the reply: {error:#}"),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        self.thread.actions.push(task);
+    }
+
     /// Starts `id` playing and fetches its page. The music stops, since both would sound at once.
     pub fn open(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.id.as_deref() == Some(id) {
@@ -291,6 +412,7 @@ impl Watching {
             self.load_transcript(cx);
         }
         self.loading = true;
+        self.liked = self.subscriptions.read(cx).liked(id);
         cx.notify();
 
         if let Err(error) = self.play(id, cx) {
@@ -313,7 +435,9 @@ impl Watching {
                 match crate::settled(loaded, cx) {
                     Ok(watch) => {
                         this.thread.more = watch.comments.clone();
-                        this.liked = watch.liked;
+                        if let Some(liked) = watch.liked {
+                            this.liked = liked;
+                        }
                         this.watch = Some(Arc::new(watch));
                         if let Some(seen) = this.video() {
                             this.subscriptions
@@ -424,10 +548,102 @@ impl Watching {
             return;
         }
         self.captions = shown;
-        if let Some(player) = self.player() {
-            player.set_captions(self.captions);
+        if shown && self.script.lines.is_none() {
+            self.load_transcript(cx);
         }
         cx.notify();
+    }
+
+    /// The words being spoken now, when captions are on and the video has any.
+    pub fn caption(&self) -> Option<String> {
+        if !self.captions {
+            return None;
+        }
+        let lines = self.script.lines.as_ref()?;
+        let now = self.player()?.position()?;
+        let next = lines.partition_point(|line| line.start <= now);
+        let line = lines.get(next.checked_sub(1)?)?;
+        // A line without a length stays until the next one, though never for long.
+        let length = match line.length > 0. {
+            true => line.length,
+            false => CAPTION_STAYS,
+        };
+        (now < line.start + length).then(|| line.text.clone())
+    }
+
+    /// The preview picture of the moment `seconds` in, once the video has named its previews.
+    pub fn peek(&self, seconds: f64) -> Option<(Peek, (u32, u32))> {
+        let board = self.board.as_ref()?;
+        let length = self.player()?.duration()?;
+        Some((board.at(seconds, length)?, (board.width, board.height)))
+    }
+
+    /// The qualities the video can be played at, best first. Empty until YouTube names them.
+    pub fn qualities(&self) -> &[Quality] {
+        &self.qualities
+    }
+
+    /// The tallest picture asked for, `None` when the app chooses.
+    pub fn ceiling(&self) -> Option<u32> {
+        self.ceiling
+    }
+
+    /// The quality being played, the best one under the ceiling.
+    pub fn quality(&self) -> Option<&Quality> {
+        let ceiling = self.ceiling.unwrap_or(AUTO_HEIGHT);
+        self.qualities
+            .iter()
+            .find(|quality| quality.height <= ceiling)
+            .or(self.qualities.last())
+    }
+
+    /// Plays this video and the ones after it no taller than `ceiling`, carrying on from where
+    /// the picture is.
+    pub fn set_ceiling(&mut self, ceiling: Option<u32>, cx: &mut Context<Self>) {
+        if self.ceiling == ceiling {
+            return;
+        }
+        let before = self.quality().map(|quality| quality.height);
+        self.ceiling = ceiling;
+        cx.notify();
+        if before == self.quality().map(|quality| quality.height) {
+            return;
+        }
+        let (Some(player), Some(quality)) = (self.player(), self.quality()) else {
+            return;
+        };
+        let (at, paused) = (player.position().unwrap_or(0.), player.paused());
+        if let Err(error) = player.play(&quality.picture, &quality.sound, at) {
+            log::warn!("video: cannot switch the quality: {error:#}");
+        }
+        player.set_paused(paused);
+    }
+
+    pub fn ambient(&self) -> bool {
+        self.ambient
+    }
+
+    /// Lets the picture's colours glow around it, or not.
+    pub fn set_ambient(&mut self, ambient: bool, cx: &mut Context<Self>) {
+        self.ambient = ambient;
+        cx.notify();
+    }
+
+    /// The colours of the left and right halves of the picture as `0xRRGGBB`, when they are to
+    /// glow around it.
+    pub fn glow(&self) -> Option<(u32, u32)> {
+        self.ambient
+            .then(|| self.player().map(|player| player.glow()))
+            .flatten()
+    }
+
+    /// Whether the picture is still on its way, so there is nothing to show yet.
+    pub fn buffering(&self) -> bool {
+        self.id.is_some()
+            && self.error.is_none()
+            && self
+                .player()
+                .is_none_or(|player| player.duration().is_none())
     }
 
     /// Hands the volume to the player.
@@ -513,19 +729,26 @@ impl Watching {
         }));
     }
 
-    /// Whether the account liked the video, `None` as a guest or before the page came.
-    pub fn liked(&self) -> Option<bool> {
+    /// Whether the video is liked: by the account when there is one, on this machine otherwise.
+    pub fn liked(&self) -> bool {
         self.liked
     }
 
-    /// Likes the video as the account, or takes the like back. The button turns at once and
-    /// turns back when YouTube refuses.
+    /// Likes the video or takes the like back. The button turns at once and the like is kept
+    /// on this machine. With an account YouTube is told too, and the button turns back when it
+    /// refuses.
     pub fn toggle_like(&mut self, cx: &mut Context<Self>) {
-        let (Some(id), Some(before)) = (self.id.clone(), self.liked) else {
+        let Some(id) = self.id.clone() else {
             return;
         };
-        self.liked = Some(!before);
+        let before = self.liked;
+        self.liked = !before;
+        self.subscriptions
+            .update(cx, |kept, cx| kept.set_liked(&id, !before, cx));
         cx.notify();
+        if !self.client.signed_in() {
+            return;
+        }
         let client = self.client.clone();
         let asked = id.clone();
         let request = self
@@ -537,8 +760,10 @@ impl Watching {
             };
             log::warn!("video: cannot like: {error:#}");
             this.update(cx, |this, cx| {
+                this.subscriptions
+                    .update(cx, |kept, cx| kept.set_liked(&asked, before, cx));
                 if this.id.as_deref() == Some(asked.as_str()) {
-                    this.liked = Some(before);
+                    this.liked = before;
                     cx.notify();
                 }
             })
@@ -685,11 +910,79 @@ impl Watching {
         let Some((player, _)) = &self.screen else {
             return Ok(());
         };
-        player.load(&tube::watch_url(id))?;
+        player.stop();
         player.set_volume(f64::from(self.volume()) * 100.);
-        player.set_captions(self.captions);
         player.set_paused(false);
+        self.qualities.clear();
+        self.board = None;
+        if self.captions {
+            self.load_transcript(cx);
+        }
+
+        // Asking YouTube for the streams directly is seconds faster than letting the player
+        // scrape the page, which stays as the way out when YouTube holds them back.
+        let (client, asked) = (self.client.clone(), id.to_owned());
+        let request = self.io.spawn({
+            let asked = asked.clone();
+            async move { client.streams(&asked).await }
+        });
+        self.stream = Some(cx.spawn(async move |this, cx| {
+            let named = join(request).await;
+            let started = this.update(cx, |this, cx| {
+                if this.id.as_deref() != Some(asked.as_str()) {
+                    return None;
+                }
+                let player = this.player()?.clone();
+                let direct = match named {
+                    Ok(streams) => {
+                        this.qualities = streams.qualities;
+                        this.board = streams.board;
+                        this.quality()
+                            .map(|quality| player.play(&quality.picture, &quality.sound, 0.))
+                    }
+                    Err(error) => {
+                        log::warn!("video: no direct streams for {asked}: {error:#}");
+                        None
+                    }
+                };
+                cx.notify();
+                match direct {
+                    Some(Ok(())) => Some(player),
+                    _ => {
+                        this.scrape(&asked, cx);
+                        None
+                    }
+                }
+            });
+            let Ok(Some(player)) = started else { return };
+            for _ in 0..OPENING_CHECKS {
+                cx.background_executor().timer(OPENING_CHECK).await;
+                if player.duration().is_some() {
+                    return;
+                }
+                if player.idle() {
+                    this.update(cx, |this, cx| {
+                        if this.id.as_deref() == Some(asked.as_str()) {
+                            this.qualities.clear();
+                            this.scrape(&asked, cx);
+                        }
+                    })
+                    .ok();
+                    return;
+                }
+            }
+        }));
         Ok(())
+    }
+
+    /// Plays the video through the player's own page scraper, the slow way that always works.
+    fn scrape(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(player) = self.player() else { return };
+        if let Err(error) = player.load_from(&tube::watch_url(id), 0.) {
+            log::error!("video: cannot play {id}: {error:#}");
+            self.error = Some(format!("{error:#}"));
+        }
+        cx.notify();
     }
 }
 
@@ -707,6 +1000,7 @@ pub struct VideoList {
     shelf: Option<Shelf>,
     title: String,
     channel: Option<Channel>,
+    banner: Option<String>,
     description: String,
     videos: Vec<Video>,
     more: Option<String>,
@@ -719,6 +1013,7 @@ pub struct VideoList {
 struct Listed {
     title: String,
     channel: Option<Channel>,
+    banner: Option<String>,
     description: String,
     videos: Page<Video>,
 }
@@ -731,6 +1026,7 @@ impl VideoList {
             shelf: None,
             title: String::new(),
             channel: None,
+            banner: None,
             description: String::new(),
             videos: Vec::new(),
             more: None,
@@ -751,6 +1047,11 @@ impl VideoList {
     /// The channel, when the page is one.
     pub fn channel(&self) -> Option<&Channel> {
         self.channel.as_ref()
+    }
+
+    /// The wide picture across the top of a channel.
+    pub fn banner(&self) -> Option<&str> {
+        self.banner.as_deref()
     }
 
     pub fn description(&self) -> &str {
@@ -788,6 +1089,7 @@ impl VideoList {
         };
         self.title.clear();
         self.channel = None;
+        self.banner = None;
         self.description.clear();
         self.videos.clear();
         self.more = None;
@@ -804,6 +1106,7 @@ impl VideoList {
                     Listed {
                         title: page.channel.name.clone(),
                         channel: Some(page.channel),
+                        banner: page.banner,
                         description: page.description,
                         videos: page.videos,
                     }
@@ -813,6 +1116,7 @@ impl VideoList {
                     Listed {
                         title: page.title,
                         channel: None,
+                        banner: None,
                         description: String::new(),
                         videos: page.videos,
                     }
@@ -830,6 +1134,7 @@ impl VideoList {
                     Ok(listed) => {
                         this.title = listed.title;
                         this.channel = listed.channel;
+                        this.banner = listed.banner;
                         this.description = listed.description;
                         this.videos = listed.videos.items;
                         this.more = listed.videos.more;
@@ -1056,6 +1361,16 @@ const HISTORY_CAP: usize = 500;
 /// How many of a channel's newest uploads go into the feed.
 const FEED_PER_CHANNEL: usize = 12;
 
+/// How many of the latest videos watched new ones are looked for next to.
+const FIND_SEEDS: usize = 8;
+/// How many videos are found, and how many of them one channel may have.
+const FIND_CAP: usize = 60;
+const FIND_PER_CHANNEL: usize = 2;
+/// How much less a video counts for each step its seed lies back in the history.
+const FIND_FADE: f32 = 0.85;
+/// How much less a video counts when its channel was watched before, since it is not new.
+const FIND_KNOWN: f32 = 0.4;
+
 /// What is kept on disk between runs: the channels followed and the videos watched, newest first.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Kept {
@@ -1065,6 +1380,8 @@ struct Kept {
     watched: Vec<Video>,
     #[serde(default)]
     later: Vec<Video>,
+    #[serde(default)]
+    liked: Vec<String>,
 }
 
 /// The channels the user follows, the feed of their newest uploads and the videos watched. All
@@ -1078,6 +1395,12 @@ pub struct Subscriptions {
     loaded: bool,
     loading: bool,
     task: Option<Task<()>>,
+    /// Videos from channels not followed, picked from what was watched.
+    found: Vec<Video>,
+    /// How many videos had been watched when `found` was picked, so more watching picks again.
+    found_for: Option<usize>,
+    finding: bool,
+    find: Option<Task<()>>,
 }
 
 impl Subscriptions {
@@ -1099,7 +1422,69 @@ impl Subscriptions {
             loaded: false,
             loading: false,
             task: None,
+            found: Vec::new(),
+            found_for: None,
+            finding: false,
+            find: None,
         }
+    }
+
+    /// Videos to find new channels by, the likeliest first.
+    pub fn found(&self) -> &[Video] {
+        &self.found
+    }
+
+    pub fn is_finding(&self) -> bool {
+        self.finding
+    }
+
+    /// Picks the videos to find unless they are picked for the history as it stands.
+    pub fn find(&mut self, cx: &mut Context<Self>) {
+        if !self.finding && self.found_for != Some(self.kept.watched.len()) {
+            self.find_again(cx);
+        }
+    }
+
+    /// Picks the videos to find afresh: what YouTube puts next to the latest videos watched,
+    /// ranked by how many of them it sits next to and how lately they were watched.
+    pub fn find_again(&mut self, cx: &mut Context<Self>) {
+        let seeds: Vec<String> = self
+            .kept
+            .watched
+            .iter()
+            .take(FIND_SEEDS)
+            .map(|video| video.id.clone())
+            .collect();
+        self.found_for = Some(self.kept.watched.len());
+        if seeds.is_empty() {
+            self.found.clear();
+            cx.notify();
+            return;
+        }
+        self.finding = true;
+        cx.notify();
+        let client = self.client.clone();
+        let request = self.io.spawn(async move {
+            let pages = seeds.iter().map(|id| client.watch(id));
+            let beside: Vec<Vec<Video>> = futures::future::join_all(pages)
+                .await
+                .into_iter()
+                .map(|page| page.map(|watch| watch.related).unwrap_or_default())
+                .collect();
+            anyhow::Ok(beside)
+        });
+        self.find = Some(cx.spawn(async move |this, cx| {
+            let beside = join(request).await;
+            this.update(cx, |this, cx| {
+                this.finding = false;
+                match beside {
+                    Ok(beside) => this.found = rank(beside, &this.kept),
+                    Err(error) => log::warn!("video: cannot find new videos: {error:#}"),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     pub fn channels(&self) -> &[Channel] {
@@ -1164,6 +1549,21 @@ impl Subscriptions {
         match self.saved(&video.id) {
             true => self.kept.later.retain(|kept| kept.id != video.id),
             false => self.kept.later.insert(0, video.clone()),
+        }
+        self.save();
+        cx.notify();
+    }
+
+    /// Whether the video was liked on this machine.
+    pub fn liked(&self, video: &str) -> bool {
+        self.kept.liked.iter().any(|kept| kept == video)
+    }
+
+    /// Remembers that the video is liked, or forgets it.
+    pub fn set_liked(&mut self, video: &str, liked: bool, cx: &mut Context<Self>) {
+        self.kept.liked.retain(|kept| kept != video);
+        if liked {
+            self.kept.liked.insert(0, video.to_owned());
         }
         self.save();
         cx.notify();
@@ -1245,4 +1645,54 @@ impl Subscriptions {
             log::warn!("video: cannot save the followed channels: {error:#}");
         }
     }
+}
+
+/// The videos to find new channels by. `beside` holds, for each of the latest videos watched
+/// and the latest first, what YouTube puts next to it. A video counts for more the more of
+/// them it sits next to and the later they were watched, and for less when its channel was
+/// watched before. Videos watched and channels followed are left out, and one channel gets
+/// few places so that many are met.
+fn rank(beside: Vec<Vec<Video>>, kept: &Kept) -> Vec<Video> {
+    let channel = |video: &Video| video.channel.as_ref().map(|channel| channel.id.clone());
+    let known: std::collections::HashSet<String> =
+        kept.watched.iter().filter_map(channel).collect();
+    let mut scores: HashMap<String, (f32, Video)> = HashMap::new();
+    let mut weight = 1.;
+    for videos in beside {
+        for (place, video) in videos.into_iter().enumerate() {
+            let followed =
+                channel(&video).is_some_and(|id| kept.channels.iter().any(|kept| kept.id == id));
+            if followed || kept.watched.iter().any(|kept| kept.id == video.id) {
+                continue;
+            }
+            // What YouTube lists first it thinks closest.
+            let near = 1. / (1. + place as f32 * 0.1);
+            let familiar = match channel(&video).is_some_and(|id| known.contains(&id)) {
+                true => FIND_KNOWN,
+                false => 1.,
+            };
+            let score = weight * near * familiar;
+            scores
+                .entry(video.id.clone())
+                .and_modify(|held| held.0 += score)
+                .or_insert((score, video));
+        }
+        weight *= FIND_FADE;
+    }
+    let mut ranked: Vec<(f32, Video)> = scores.into_values().collect();
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
+    let mut places: HashMap<String, usize> = HashMap::new();
+    ranked
+        .into_iter()
+        .map(|(_, video)| video)
+        .filter(|video| {
+            let Some(id) = channel(video) else {
+                return true;
+            };
+            let taken = places.entry(id).or_default();
+            *taken += 1;
+            *taken <= FIND_PER_CHANNEL
+        })
+        .take(FIND_CAP)
+        .collect()
 }

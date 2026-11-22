@@ -35,9 +35,14 @@ const PINS: &str = "sidebar-pins";
 /// The sidebar's navigation rows in order: the entry that can hide each, its icon and where it goes.
 /// Settings also lives in the account menu of the title bar and shows here only when added. It
 /// opens on the settings page last visited rather than on the one named here.
-pub(crate) const NAV: [(NavEntry, &str, Destination); 4] = [
+pub(crate) const NAV: [(NavEntry, &str, Destination); 5] = [
     (NavEntry::Home, "icons/house.svg", Destination::Home),
     (NavEntry::Search, "icons/search.svg", Destination::Search),
+    (
+        NavEntry::Discover,
+        "icons/compass.svg",
+        Destination::Discover,
+    ),
     (NavEntry::Later, "icons/clock.svg", Destination::Later),
     (
         NavEntry::History,
@@ -68,6 +73,8 @@ pub(crate) struct SidebarLeft {
     open: bool,
     /// Whether the listener folded the sidebar down to the rail.
     rail: bool,
+    /// Whether the listener spread the rail out into rows with their names.
+    wide: bool,
     rail_width: Pixels,
     /// Whether the window leaves too little room for the full width, so only the rail fits.
     narrow: bool,
@@ -122,6 +129,7 @@ impl SidebarLeft {
         let width = sidebar_width(settings.read(cx));
         let open = settings.read(cx).sidebar_open();
         let rail = settings.read(cx).sidebar_rail();
+        let wide = settings.read(cx).sidebar_wide();
         let pinned_open = settings.read(cx).sidebar_pinned_open();
         let trail = router::trail(cx);
 
@@ -139,6 +147,7 @@ impl SidebarLeft {
             width,
             open,
             rail,
+            wide,
             rail_width: Pixels::ZERO,
             narrow: false,
             forced: None,
@@ -196,7 +205,16 @@ impl SidebarLeft {
 
     /// Whether the sidebar is drawn as the rail, by choice or because the window is narrow.
     fn folded(&self) -> bool {
-        true
+        !self.wide || self.squeezed()
+    }
+
+    /// Spreads the rail out into rows with their names, or folds it back to the icons.
+    fn set_wide(&mut self, wide: bool, cx: &mut Context<Self>) {
+        self.wide = wide;
+        self.settings
+            .update(cx, |settings, cx| settings.set_sidebar_wide(wide, cx));
+        cx.notify();
+        cx.refresh_windows();
     }
 
     fn breadth(&self) -> Pixels {
@@ -282,17 +300,16 @@ impl SidebarLeft {
         if self.folded() {
             return;
         }
-        self.grabbed.get_or_insert((self.width, self.rail));
-        self.closing = width < self.rail_width / 2.;
-        if !self.closing && !self.squeezed() {
-            let rail = width < (self.rail_width + MIN_WIDTH) / 2.;
-            if !rail {
+        // Dragged most of the way to the rail it folds onto it. It never closes, since it holds
+        // the only way around the app.
+        match width < (self.rail_width + MIN_WIDTH) / 2. {
+            true => self.set_wide(false, cx),
+            false => {
                 self.width = width.max(MIN_WIDTH);
+                self.persist(cx);
+                cx.notify();
             }
-            self.rail = rail;
-            self.persist(cx);
         }
-        cx.notify();
     }
 
     /// Ends an edge drag. One let go of below half the rail closes the sidebar with the width
@@ -324,8 +341,8 @@ impl SidebarLeft {
                 .filter(|index| stations || NAV[*index].0 != NavEntry::Radio)
                 .collect()
         };
-        let top = shown(0..4, cx);
-        let library = shown(4..NAV.len(), cx);
+        let top = shown(0..NAV.len(), cx);
+        let library = shown(NAV.len()..NAV.len(), cx);
         let mut rows = Vec::new();
         if self.folded() {
             for (group, indices) in [top, library]
@@ -447,6 +464,14 @@ impl SidebarLeft {
         nav_icon(id, key, icon, theme.muted_foreground, theme.sidebar_accent)
     }
 
+    /// A rail button sized for a row of them, which is how the spread sidebar lays them out.
+    fn fit(&self, button: Button, cx: &App) -> Button {
+        match self.folded() {
+            true => button,
+            false => button.w(cx.theme().metrics.control).flex_none(),
+        }
+    }
+
     /// Back, forward and refresh, at the head of the rail.
     fn history(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         if self.busy.as_ref().is_some_and(|busy| !busy(cx)) {
@@ -461,36 +486,83 @@ impl SidebarLeft {
         let (can_back, can_forward) = (trail.can_go_back(), trail.can_go_forward());
         let refreshes = trail.current().refreshes();
         let (back, forward) = (self.trail.clone(), self.trail.clone());
-
-        div()
+        let folded = self.folded();
+        // A window too narrow for the rows keeps the rail whatever was chosen.
+        let fixed = self.squeezed();
+        let spread = Self::tool(
+            "sidebar-spread",
+            match folded {
+                true => "icons/panel-left-open.svg",
+                false => "icons/panel-left-close.svg",
+            },
+            match folded {
+                true => "sidebar-expand",
+                false => "sidebar-collapse",
+            },
+            cx,
+        )
+        .disabled(fixed)
+        .on_click(cx.listener(|this, _, _, cx| this.set_wide(!this.wide, cx)));
+        let spread = self.fit(spread, cx);
+        let tools = div()
             .id("sidebar-history")
             .role(Role::Toolbar)
             .aria_label(i18n::lookup("nav-trail", None))
+            .flex()
+            .flex_none()
+            .gap_1()
+            .map(|tools| match folded {
+                true => tools.flex_col(),
+                false => tools.flex_row(),
+            });
+
+        div()
             .flex()
             .flex_col()
             .flex_none()
             .gap_1()
             .px_2()
             .child(
-                Self::tool("history-back", "icons/chevron-left.svg", "nav-back", cx)
-                    .disabled(!can_back)
-                    .on_click(move |_, _, cx| back.update(cx, |trail, cx| trail.back(cx))),
-            )
-            .child(
-                Self::tool(
-                    "history-forward",
-                    "icons/chevron-right.svg",
-                    "nav-forward",
-                    cx,
-                )
-                .disabled(!can_forward)
-                .on_click(move |_, _, cx| forward.update(cx, |trail, cx| trail.forward(cx))),
-            )
-            .child(
-                Self::tool("history-refresh", "icons/refresh-cw.svg", "app-refresh", cx)
-                    .turned(turn)
-                    .disabled(!refreshes)
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(Refresh), cx)),
+                tools
+                    .child(spread)
+                    .when(!folded, |tools| tools.child(div().flex_1()))
+                    .child(
+                        self.fit(
+                            Self::tool("history-back", "icons/chevron-left.svg", "nav-back", cx),
+                            cx,
+                        )
+                        .disabled(!can_back)
+                        .on_click(move |_, _, cx| back.update(cx, |trail, cx| trail.back(cx))),
+                    )
+                    .child(
+                        self.fit(
+                            Self::tool(
+                                "history-forward",
+                                "icons/chevron-right.svg",
+                                "nav-forward",
+                                cx,
+                            ),
+                            cx,
+                        )
+                        .disabled(!can_forward)
+                        .on_click(move |_, _, cx| {
+                            forward.update(cx, |trail, cx| trail.forward(cx))
+                        }),
+                    )
+                    .child(
+                        self.fit(
+                            Self::tool(
+                                "history-refresh",
+                                "icons/refresh-cw.svg",
+                                "app-refresh",
+                                cx,
+                            ),
+                            cx,
+                        )
+                        .turned(turn)
+                        .disabled(!refreshes)
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(Refresh), cx)),
+                    ),
             )
             .child(self.divider(cx))
             .into_any_element()
@@ -525,27 +597,49 @@ impl SidebarLeft {
         let settings = self.trail.read(cx).current().in_settings();
         let accent = cx.theme().sidebar_accent;
 
+        let folded = self.folded();
+        let buttons = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .map(|buttons| match folded {
+                true => buttons.flex_col(),
+                false => buttons.flex_row(),
+            });
+
         div()
             .flex()
             .flex_col()
             .flex_none()
-            .items_center()
             .gap_1()
             .px_2()
             .pb_3()
             .child(self.divider(cx))
             .child(
-                Picker::icon("account", &self.popovers, "icons/circle-user-round.svg")
-                    .tooltip("tool-account")
-                    .width(Picker::REGULAR)
-                    .left()
-                    .menu(Menu::new("account-menu").w(Picker::REGULAR).beside(ROW_GAP))
-                    .items(items),
-            )
-            .child(
-                Self::tool("sidebar-settings", "icons/settings.svg", "nav-settings", cx)
-                    .lit(settings, accent)
-                    .on_click(|_, _, cx| open_settings(cx)),
+                buttons
+                    .child(
+                        Picker::icon("account", &self.popovers, "icons/circle-user-round.svg")
+                            .tooltip("tool-account")
+                            .width(Picker::REGULAR)
+                            .left()
+                            .menu(Menu::new("account-menu").w(Picker::REGULAR).beside(ROW_GAP))
+                            .items(items),
+                    )
+                    .when(!folded, |buttons| buttons.child(div().flex_1()))
+                    .child(
+                        self.fit(
+                            Self::tool(
+                                "sidebar-settings",
+                                "icons/settings.svg",
+                                "nav-settings",
+                                cx,
+                            ),
+                            cx,
+                        )
+                        .lit(settings, accent)
+                        .on_click(|_, _, cx| open_settings(cx)),
+                    ),
             )
             .into_any_element()
     }

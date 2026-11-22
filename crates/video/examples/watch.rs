@@ -22,7 +22,7 @@ fn main() {
     let source = std::env::args().nth(1).expect("usage: watch <file or url>");
     application().run(move |cx: &mut App| {
         let (player, frames) = Player::new().expect("mpv starts");
-        player.load(&source).expect("source loads");
+        player.load_from(&source, 0.).expect("source loads");
         let player = Arc::new(player);
         let bounds = Bounds::centered(None, size(px(1280.), px(720.)), cx);
         cx.open_window(
