@@ -224,6 +224,8 @@ pub struct Watching {
     /// The Shorts the upright player steps through, in the order of the list one was opened
     /// from, and whether the video on the page is played as one.
     reel: Vec<Video>,
+    /// Whether `reel` is the gathered Shorts, which grow as their end comes near.
+    endless: bool,
     short: bool,
     /// Whether the video has gone into the history since it was opened, so that reading its
     /// page again, perhaps under another profile, adds nothing.
@@ -271,7 +273,10 @@ impl Watching {
         io: Io,
         playback: Entity<Playback>,
         subscriptions: Entity<Subscriptions>,
+        cx: &mut Context<Self>,
     ) -> Self {
+        cx.observe(&subscriptions, |this, _, cx| this.extend_reel(cx))
+            .detach();
         Self {
             client,
             io,
@@ -292,6 +297,7 @@ impl Watching {
             liked: false,
             seen: false,
             reel: Vec::new(),
+            endless: false,
             short: false,
             like: None,
             qualities: Vec::new(),
@@ -933,7 +939,9 @@ impl Watching {
         self.show(id, true, cx);
         if !self.reel.iter().any(|short| short.id == id) {
             self.reel.clear();
+            self.endless = false;
         }
+        self.extend_reel(cx);
     }
 
     /// Whether the video is played as a Short: over and over, with none of a long video's tools.
@@ -952,6 +960,29 @@ impl Watching {
     /// The Shorts a press of next or previous steps through.
     pub fn set_reel(&mut self, reel: Vec<Video>) {
         self.reel = reel;
+        self.endless = false;
+    }
+
+    /// Steps through the gathered Shorts, fetching more whenever their end comes near.
+    pub fn set_endless_reel(&mut self, cx: &mut Context<Self>) {
+        self.reel = self.subscriptions.read(cx).shorts().to_vec();
+        self.endless = true;
+    }
+
+    /// Takes in the Shorts gathered since, and asks for more when few are left ahead.
+    fn extend_reel(&mut self, cx: &mut Context<Self>) {
+        if !self.endless || !self.short {
+            return;
+        }
+        let gathered = self.subscriptions.read(cx).shorts();
+        if gathered.len() > self.reel.len() {
+            self.reel = gathered.to_vec();
+            cx.notify();
+        }
+        if self.beside(0).is_some() && self.beside(SHORTS_AHEAD).is_none() {
+            self.subscriptions
+                .update(cx, |kept, cx| kept.gather_more(cx));
+        }
     }
 
     /// Where the Short `id` stands in the list one was opened from.
@@ -2545,6 +2576,8 @@ const SHORTS_CHANNELS: usize = 12;
 const SHORTS_EACH: usize = 10;
 /// What is searched for to fill the Shorts page past the followed channels.
 const SHORTS_QUERY: &str = "#shorts";
+/// How near the end of the endless Shorts the one playing gets before more are fetched.
+const SHORTS_AHEAD: isize = 4;
 /// How many of a channel's newest uploads go into the feed.
 const FEED_PER_CHANNEL: usize = 12;
 
@@ -2661,6 +2694,10 @@ pub struct Subscriptions {
     /// The Shorts gathered for the Shorts page, and whether they were asked for yet.
     shorts: Vec<Video>,
     shorts_read: bool,
+    /// Where the search that fills the Shorts goes on from.
+    shorts_more: Option<String>,
+    /// Whether the search has no more Shorts to give, so it is not asked over and over.
+    shorts_dry: bool,
     gathering: Option<Task<()>>,
 }
 
@@ -2719,6 +2756,8 @@ impl Subscriptions {
             found: Vec::new(),
             shorts: Vec::new(),
             shorts_read: false,
+            shorts_more: None,
+            shorts_dry: false,
             gathering: None,
             found_for: None,
             dug: 0,
@@ -2817,6 +2856,7 @@ impl Subscriptions {
         self.found.clear();
         self.shorts.clear();
         self.shorts_read = false;
+        self.shorts_more = None;
         self.gathering = None;
         self.found_for = None;
         self.dug = 0;
@@ -2883,6 +2923,7 @@ impl Subscriptions {
                                 this.kept.channels.push(channel);
                             }
                         }
+                        this.shorts_read = false;
                         this.save();
                         this.refresh(cx);
                     }
@@ -2911,16 +2952,64 @@ impl Subscriptions {
         }
     }
 
+    /// Gathers more Shorts after the ones here, so stepping through them never runs out. Once
+    /// a search has given all it has, a new one starts.
+    pub fn gather_more(&mut self, cx: &mut Context<Self>) {
+        if self.gathering.is_some() || self.shorts_dry {
+            return;
+        }
+        let token = self.shorts_more.take();
+        let client = self.client.clone();
+        let request = self.io.spawn(async move {
+            match token {
+                Some(token) => client.search_more(&token).await,
+                None => client.search(SHORTS_QUERY).await,
+            }
+        });
+        self.gathering = Some(cx.spawn(async move |this, cx| {
+            let page = join(request).await;
+            this.update(cx, |this, cx| {
+                this.gathering = None;
+                match page {
+                    Ok(page) => {
+                        this.shorts_more = page.more;
+                        let held = this.shorts.len();
+                        let mut seen: std::collections::HashSet<String> =
+                            this.shorts.iter().map(|short| short.id.clone()).collect();
+                        this.shorts.extend(page.items.into_iter().filter_map(
+                            |found| match found {
+                                Found::Video(video)
+                                    if video.short && seen.insert(video.id.clone()) =>
+                                {
+                                    Some(video)
+                                }
+                                _ => None,
+                            },
+                        ));
+                        this.shorts_dry = this.shorts_more.is_none() && this.shorts.len() == held;
+                    }
+                    Err(error) => log::warn!("video: cannot gather more shorts: {error:#}"),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
     /// Gathers the Shorts afresh.
     pub fn gather_again(&mut self, cx: &mut Context<Self>) {
         self.shorts_read = true;
-        let channels: Vec<String> = self
+        // A different handful each time, so every followed channel gets its turn.
+        let mut channels: Vec<String> = self
             .kept
             .channels
             .iter()
-            .take(SHORTS_CHANNELS)
             .map(|channel| channel.id.clone())
             .collect();
+        fastrand::shuffle(&mut channels);
+        channels.truncate(SHORTS_CHANNELS);
+        self.shorts_dry = false;
         let client = self.client.clone();
         let request = self.io.spawn(async move {
             let parts = channels
@@ -2941,21 +3030,26 @@ impl Subscriptions {
             for _ in 0..SHORTS_EACH {
                 gathered.extend(lists.iter_mut().filter_map(Iterator::next));
             }
-            let searched = searched.map(|page| page.items).unwrap_or_default();
+            let (searched, more) = searched
+                .map(|page| (page.items, page.more))
+                .unwrap_or_default();
             gathered.extend(searched.into_iter().filter_map(|found| match found {
                 Found::Video(video) => Some(video),
                 _ => None,
             }));
             let mut seen = std::collections::HashSet::new();
             gathered.retain(|video| video.short && seen.insert(video.id.clone()));
-            anyhow::Ok(gathered)
+            anyhow::Ok((gathered, more))
         });
         self.gathering = Some(cx.spawn(async move |this, cx| {
             let gathered = join(request).await;
             this.update(cx, |this, cx| {
                 this.gathering = None;
                 match gathered {
-                    Ok(gathered) => this.shorts = gathered,
+                    Ok((gathered, more)) => {
+                        this.shorts = gathered;
+                        this.shorts_more = more;
+                    }
                     Err(error) => log::warn!("video: cannot gather shorts: {error:#}"),
                 }
                 cx.notify();
@@ -3099,12 +3193,14 @@ impl Subscriptions {
     pub fn toggle(&mut self, channel: &Channel, cx: &mut Context<Self>) {
         match self.follows(&channel.id) {
             true => {
+                self.shorts_read = false;
                 self.kept.channels.retain(|kept| kept.id != channel.id);
                 self.feed
                     .retain(|video| video.channel.as_ref().is_none_or(|by| by.id != channel.id));
             }
             false => {
                 self.kept.channels.push(channel.clone());
+                self.shorts_read = false;
                 self.loaded = false;
             }
         }

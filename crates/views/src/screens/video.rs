@@ -4994,6 +4994,21 @@ impl Render for VideoFeedView {
             Feed::Shorts => kept.is_gathering(),
             _ => home && kept.is_loading(),
         };
+        let mut opened = None;
+        if self.feed == Feed::Shorts
+            && matches!(router::trail(cx).read(cx).current(), Destination::Shorts)
+            && let Some(stepped) = cx.try_global::<Stepped>()
+        {
+            // The row in the sidebar opens a Short itself: the one left off at, or the first.
+            let watching = stepped.0.clone();
+            let playing = stepped.0.read(cx);
+            let first = playing
+                .id()
+                .filter(|id| playing.short() && videos.iter().any(|short| short.id == *id))
+                .or_else(|| videos.first().map(|short| short.id.as_str()))
+                .map(|id| SharedString::from(id.to_owned()));
+            opened = first.map(|first| (watching, first));
+        }
         let (videos, reel) = sorted(videos);
         let shorts = shorts_shelf(kind, &reel, self.width, self.feed == Feed::Shorts, cx);
         let total = videos.len() + reel.len();
@@ -5006,6 +5021,15 @@ impl Render for VideoFeedView {
             })
             .collect();
         let empty = total == 0 && !loading && (!home || kept.recommended().is_empty());
+        if let Some((watching, first)) = opened {
+            cx.defer(move |cx| {
+                if !matches!(router::trail(cx).read(cx).current(), Destination::Shorts) {
+                    return;
+                }
+                watching.update(cx, |watching, cx| watching.set_endless_reel(cx));
+                router::replace(Destination::Short(first), cx);
+            });
+        }
         if self.feed == Feed::Discover && !loading && (1..FOUND_MOST).contains(&total) {
             // Near the foot of the page more are looked for, next to the ones found.
             let scroll = self.scrollbar.read(cx).scroll().clone();

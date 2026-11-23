@@ -312,12 +312,13 @@ impl Root {
         let subscriptions = Subscriptions::shared(tube.clone(), io.clone(), cx);
         let videos =
             cx.new(|cx| VideoSearchView::new(video_search.clone(), subscriptions.clone(), cx));
-        let watching = cx.new(|_| {
+        let watching = cx.new(|cx| {
             Watching::new(
                 tube.clone(),
                 io.clone(),
                 playback.clone(),
                 subscriptions.clone(),
+                cx,
             )
         });
         let assistant = state::Assistant::shared(io.clone(), cx);

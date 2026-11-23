@@ -8,7 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- A Shorts row in the sidebar opens the Shorts of the channels you follow, and a switch in Settings, Video takes it away.
+- A Shorts row in the sidebar opens straight into a Short and keeps bringing more as you step down, and a switch in Settings, Video takes it away.
 - Up and Down move between Shorts, which slide into place.
 - `,` and `.` (the `<` and `>` keys) step a paused video one frame back or on.
 - Comments, search results and channel lists load more as you scroll.
