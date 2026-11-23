@@ -994,7 +994,16 @@ impl Watching {
     }
 
     /// Keeps the screen on for as long as the video plays, and lets it sleep once it does not.
-    fn keep_awake(&self, cx: &mut Context<Self>) {
+    fn keep_awake(&mut self, cx: &mut Context<Self>) {
+        // A stretch that has played is forgotten, so playing the video again does not mark it.
+        if let Some((_, end)) = self.pointed
+            && self
+                .player()
+                .and_then(|player| player.position())
+                .is_some_and(|at| at >= end)
+        {
+            self.pointed = None;
+        }
         let playing = self
             .player()
             .is_some_and(|player| !player.paused() && !player.ended() && !player.idle());
