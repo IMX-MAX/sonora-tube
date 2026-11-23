@@ -288,8 +288,10 @@ impl Pen {
                     .trim()
                     .trim_start_matches([']', ')'])
                     .trim_end_matches(['[', '(']);
+                // A dash opening the next line is a list bullet, not a join.
                 last.until.is_none()
                     && seconds > last.from
+                    && !between.contains('\n')
                     && matches!(between.trim(), "-" | "–" | "—")
             });
             match joined {
