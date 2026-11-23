@@ -1286,6 +1286,8 @@ pub(crate) struct WatchView {
     letters: std::rc::Rc<std::cell::RefCell<gpui::TextLayout>>,
     /// Holds the keyboard while the description has a selection to copy.
     reading: gpui::FocusHandle,
+    /// Focused by a press on the picture, so the playback keys reach the page after typing.
+    picture: gpui::FocusHandle,
     /// Whether the comments show in a panel beside the picture rather than under the page.
     discussed: bool,
     /// The field a comment is written in.
@@ -1383,6 +1385,7 @@ impl WatchView {
             picking: false,
             letters: Default::default(),
             reading: cx.focus_handle(),
+            picture: cx.focus_handle(),
             discussed: false,
             words: cx.new(|cx| Input::new("video-comment-placeholder", cx)),
             replying: None,
@@ -1469,7 +1472,7 @@ impl WatchView {
             },
             |window, cx| {
                 window.set_rem_size(cx.theme().font_size);
-                cx.new(|cx| PipView::new(watching, picture, cx))
+                cx.new(|cx| PipView::new(watching, picture, window, cx))
             },
         );
         match opened {
@@ -1525,12 +1528,13 @@ impl WatchView {
             })
             .overflow_hidden()
             .bg(gpui::black())
+            .track_focus(&self.picture)
             // A press held hurries the video along until it is let go, and is no click then.
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
                     // A field typed in before no longer takes the keys, so Space plays and pauses.
-                    window.blur(cx);
+                    window.focus(&this.picture, cx);
                     this.swallow = false;
                     this.hold = Some(cx.spawn(async move |this, cx| {
                         cx.background_executor().timer(HOLD).await;
@@ -3839,10 +3843,19 @@ impl WatchView {
 pub(crate) struct PipView {
     watching: Entity<Watching>,
     picture: AnyView,
+    /// Holds the keys of the small window, so Space reaches it.
+    focus: gpui::FocusHandle,
 }
 
 impl PipView {
-    fn new(watching: Entity<Watching>, picture: AnyView, cx: &mut Context<Self>) -> Self {
+    fn new(
+        watching: Entity<Watching>,
+        picture: AnyView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
         cx.observe(&watching, |_, _, cx| cx.notify()).detach();
         // However the window goes, the watch page gets its picture back.
         let back = watching.downgrade();
@@ -3851,7 +3864,11 @@ impl PipView {
                 .ok();
         })
         .detach();
-        Self { watching, picture }
+        Self {
+            watching,
+            picture,
+            focus,
+        }
     }
 }
 
@@ -3876,6 +3893,7 @@ impl Render for PipView {
             .bg(gpui::black())
             // The small window answers the same play and pause key as the main one.
             .key_context(::input::WORKSPACE_CONTEXT)
+            .track_focus(&self.focus)
             .on_action({
                 let toggled = self.watching.clone();
                 move |_: &::input::TogglePlayback, _, cx| {
@@ -3883,8 +3901,12 @@ impl Render for PipView {
                 }
             })
             .window_control_area(WindowControlArea::Drag)
-            .on_mouse_down(MouseButton::Left, |_, window, _| {
-                window.start_window_move();
+            .on_mouse_down(MouseButton::Left, {
+                let focus = self.focus.clone();
+                move |_, window, cx| {
+                    window.focus(&focus, cx);
+                    window.start_window_move();
+                }
             })
             .child(self.picture.clone())
             .child(

@@ -117,8 +117,9 @@ fn main() -> ExitCode {
         }
 
         let database = storage::Database::standard();
-        // No music service is offered, so none is built into the app.
-        let providers: Vec<Arc<dyn music::MusicProvider>> = Vec::new();
+        // Only YouTube is offered. Its guest session is what takes the app past the sign-in page.
+        let providers: Vec<Arc<dyn music::MusicProvider>> =
+            vec![Arc::new(music::youtube::YouTubeProvider::new())];
         let local_provider: Arc<dyn music::MusicProvider> =
             Arc::new(music::local::LocalProvider::new(
                 dirs::cache_dir()
