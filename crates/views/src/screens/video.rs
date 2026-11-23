@@ -1723,9 +1723,15 @@ impl WatchView {
                     })
                     .when_some(card.image.clone(), |this, image| {
                         this.child(
+                            // A frame does not cut its picture's corners, so the picture is
+                            // rounded as the frame is.
                             gpui::img(SharedString::from(image))
                                 .size_full()
-                                .object_fit(gpui::ObjectFit::Cover),
+                                .object_fit(gpui::ObjectFit::Cover)
+                                .map(|this| match round {
+                                    true => this.rounded_full(),
+                                    false => this.rounded(theme.radius),
+                                }),
                         )
                     })
                     .when(!round && !card.title.is_empty(), |this| {
@@ -1737,6 +1743,7 @@ impl WatchView {
                                 .bottom_0()
                                 .px_2()
                                 .py_1()
+                                .rounded_b(theme.radius)
                                 .bg(theme.overlay)
                                 .text_size(theme.text(Text::Small))
                                 .text_color(theme.overlay_foreground)
