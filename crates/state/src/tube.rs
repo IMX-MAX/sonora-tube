@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{AnyView, App, AppContext as _, ClipboardItem, Context, Entity, Global, Image, Task};
 use tube::ai::{Said, Speaker};
@@ -2578,6 +2578,8 @@ const SHORTS_EACH: usize = 10;
 const SHORTS_QUERY: &str = "#shorts";
 /// How near the end of the endless Shorts the one playing gets before more are fetched.
 const SHORTS_AHEAD: isize = 4;
+/// How long after a failure more Shorts are not asked for.
+const SHORTS_RETRY: Duration = Duration::from_secs(30);
 /// How many of a channel's newest uploads go into the feed.
 const FEED_PER_CHANNEL: usize = 12;
 
@@ -2698,6 +2700,8 @@ pub struct Subscriptions {
     shorts_more: Option<String>,
     /// Whether the search has no more Shorts to give, so it is not asked over and over.
     shorts_dry: bool,
+    /// When asking for more Shorts last failed, so it is not asked again straight away.
+    shorts_failed: Option<Instant>,
     gathering: Option<Task<()>>,
 }
 
@@ -2758,6 +2762,7 @@ impl Subscriptions {
             shorts_read: false,
             shorts_more: None,
             shorts_dry: false,
+            shorts_failed: None,
             gathering: None,
             found_for: None,
             dug: 0,
@@ -2955,7 +2960,10 @@ impl Subscriptions {
     /// Gathers more Shorts after the ones here, so stepping through them never runs out. Once
     /// a search has given all it has, a new one starts.
     pub fn gather_more(&mut self, cx: &mut Context<Self>) {
-        if self.gathering.is_some() || self.shorts_dry {
+        let failed = self
+            .shorts_failed
+            .is_some_and(|failed| failed.elapsed() < SHORTS_RETRY);
+        if self.gathering.is_some() || self.shorts_dry || failed {
             return;
         }
         let token = self.shorts_more.take();
@@ -2989,8 +2997,7 @@ impl Subscriptions {
                         this.shorts_dry = this.shorts_more.is_none() && this.shorts.len() == held;
                     }
                     Err(error) => {
-                        // Asked again only once the Shorts are gathered afresh.
-                        this.shorts_dry = true;
+                        this.shorts_failed = Some(Instant::now());
                         log::warn!("video: cannot gather more shorts: {error:#}");
                     }
                 }
