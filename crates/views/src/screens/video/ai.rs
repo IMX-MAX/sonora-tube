@@ -284,14 +284,15 @@ impl Pen {
             // Only a dash between two moments makes them the ends of one stretch, whether or
             // not each moment sits in brackets of its own.
             let joined = badges.last_mut().filter(|last| {
-                let between = line.text[last.range.end..range.start]
+                let gap = &line.text[last.range.end..range.start];
+                let between = gap
                     .trim()
                     .trim_start_matches([']', ')'])
                     .trim_end_matches(['[', '(']);
                 // A dash opening the next line is a list bullet, not a join.
                 last.until.is_none()
                     && seconds > last.from
-                    && !between.contains('\n')
+                    && !gap.contains('\n')
                     && matches!(between.trim(), "-" | "–" | "—")
             });
             match joined {
