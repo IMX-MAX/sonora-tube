@@ -277,7 +277,8 @@ pub fn marks(text: &str) -> Vec<(std::ops::Range<usize>, Mark)> {
             let here = from;
             from += part.len();
             let opened = part.trim_start_matches(['(', '[']);
-            let moment = opened.trim_end_matches(['.', ',', ')', ']', ':', ';', '-', '–', '—']);
+            let moment =
+                opened.trim_end_matches(['.', ',', ')', ']', ':', ';', '!', '?', '-', '–', '—']);
             let digits =
                 |piece: &str| !piece.is_empty() && piece.bytes().all(|b| b.is_ascii_digit());
             let pieces: Vec<&str> = moment.split(':').collect();
