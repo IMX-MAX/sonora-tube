@@ -359,7 +359,7 @@ impl SettingsView {
     pub(super) fn sponsorblock_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let on = self.settings.read(cx).sponsorblock();
 
-        self.row(
+        super::Row::new(
             t!("settings-sponsorblock"),
             Switch::new("sponsorblock", on)
                 .name(t!("settings-sponsorblock"))
@@ -369,13 +369,15 @@ impl SettingsView {
                 }))
                 .into_any_element(),
         )
+        .detail(t!("settings-sponsorblock-detail"))
+        .into_any_element()
     }
 
     /// The switch that has the AI find sponsored stretches in a video's transcript.
     pub(super) fn sponsor_ai_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let on = self.settings.read(cx).sponsor_ai();
 
-        self.row(
+        super::Row::new(
             t!("settings-sponsor-ai"),
             Switch::new("sponsor-ai", on)
                 .name(t!("settings-sponsor-ai"))
@@ -385,6 +387,8 @@ impl SettingsView {
                 }))
                 .into_any_element(),
         )
+        .detail(t!("settings-sponsor-ai-detail"))
+        .into_any_element()
     }
 
     pub(super) fn captions_row(&self, cx: &mut Context<Self>) -> AnyElement {

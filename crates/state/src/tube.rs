@@ -309,6 +309,15 @@ impl Watching {
     ) -> Self {
         cx.observe(&subscriptions, |this, _, cx| this.extend_reel(cx))
             .detach();
+        // A sponsor source switched on looks the video on the page up straight away.
+        let settings = crate::Sonora::global(cx).settings.clone();
+        cx.observe(&settings, |this, _, cx| {
+            if this.watch.is_some() {
+                this.find_sponsors(cx);
+                this.find_sponsors_ai(cx);
+            }
+        })
+        .detach();
         Self {
             client,
             io,
@@ -1066,8 +1075,8 @@ impl Watching {
     }
 
     fn extend_reel(&mut self, cx: &mut Context<Self>) {
-        self.preload(cx);
         if !self.endless || !self.short {
+            self.preload(cx);
             return;
         }
         let gathered = self.subscriptions.read(cx).shorts();
@@ -1075,6 +1084,7 @@ impl Watching {
             self.reel = gathered.to_vec();
             cx.notify();
         }
+        self.preload(cx);
         if self.beside(0).is_some() && self.beside(SHORTS_AHEAD).is_none() {
             self.subscriptions
                 .update(cx, |kept, cx| kept.gather_more(cx));
@@ -1134,11 +1144,16 @@ impl Watching {
 
     /// Jumps to the newest moment of a live broadcast and plays on from there.
     pub fn go_live(&mut self, cx: &mut Context<Self>) {
-        if let Some(player) = self.player().filter(|_| self.live) {
-            player.seek_live();
-            player.set_paused(false);
+        if !self.live {
+            return;
         }
-        self.keep_awake(cx);
+        // The player's idea of where a broadcast ends is the one it opened with, so the
+        // broadcast is opened again, which always starts at its newest moment.
+        if let Some(id) = self.id.clone()
+            && let Err(error) = self.play(&id, cx)
+        {
+            log::error!("video: cannot go back to live on {id}: {error:#}");
+        }
         cx.notify();
     }
 
@@ -1231,17 +1246,10 @@ impl Watching {
         }));
     }
 
-    /// Takes in stretches just found, leaving out any that overlap one already here.
+    /// Takes in stretches just found. Both sources' are held, and the ones that overlap are
+    /// joined once it is known which sources are on.
     fn add_sponsors(&mut self, found: Vec<Sponsor>, cx: &mut Context<Self>) {
-        for sponsor in found {
-            let overlaps = self
-                .sponsors
-                .iter()
-                .any(|held| sponsor.start < held.end && held.start < sponsor.end);
-            if !overlaps {
-                self.sponsors.push(sponsor);
-            }
-        }
+        self.sponsors.extend(found);
         self.sponsors
             .sort_by(|one, other| one.start.total_cmp(&other.start));
         cx.notify();
@@ -1251,14 +1259,18 @@ impl Watching {
     fn skipped_sponsors(&self, cx: &App) -> Vec<Sponsor> {
         let settings = crate::Sonora::global(cx).settings.read(cx);
         let (marked, ai) = (settings.sponsorblock(), settings.sponsor_ai());
-        self.sponsors
+        let on = self
+            .sponsors
             .iter()
             .filter(|sponsor| match sponsor.ai {
                 true => ai,
                 false => marked,
             })
-            .filter(|sponsor| !self.sponsors_kept.contains(sponsor))
             .copied()
+            .collect();
+        tube::sponsor::settle(on)
+            .into_iter()
+            .filter(|sponsor| !self.sponsors_kept.contains(sponsor))
             .collect()
     }
 
@@ -3623,7 +3635,14 @@ impl Subscriptions {
     pub fn toggle_later(&mut self, video: &Video, cx: &mut Context<Self>) {
         match self.saved(&video.id) {
             true => self.kept.later.retain(|kept| kept.id != video.id),
-            false => self.kept.later.insert(0, video.clone()),
+            // A broadcast is over by the time it is watched later, so it is not kept as live.
+            false => self.kept.later.insert(
+                0,
+                Video {
+                    live: false,
+                    ..video.clone()
+                },
+            ),
         }
         self.save();
         cx.notify();

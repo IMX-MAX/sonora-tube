@@ -256,13 +256,6 @@ impl Player {
         self.core.double("duration")
     }
 
-    /// Moves to the newest moment a live broadcast has reached.
-    pub fn seek_live(&self) {
-        if let Err(error) = self.core.command(&["seek", "100", "absolute-percent"]) {
-            log::warn!("video: cannot seek to live: {error:#}");
-        }
-    }
-
     /// Moves by a number of seconds, negative for backwards.
     pub fn seek_by(&self, seconds: f64) {
         if let Err(error) = self
