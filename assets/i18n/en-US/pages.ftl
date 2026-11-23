@@ -214,6 +214,7 @@ video-channel-videos = Videos
 video-channel-shorts = Shorts
 video-channel-playlists = Playlists
 video-shorts = Shorts
+video-shorts-empty = No Shorts found yet. Follow channels that post them
 video-short-next = Next Short
 video-short-previous = Previous Short
 video-short-actions = Short

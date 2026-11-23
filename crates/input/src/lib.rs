@@ -28,6 +28,8 @@ actions!(
         VolumeDown,
         SeekBack,
         SeekForward,
+        FrameBack,
+        FrameForward,
         ToggleShuffle,
         ToggleRepeat,
         NavigateBack,

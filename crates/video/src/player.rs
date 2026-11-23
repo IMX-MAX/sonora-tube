@@ -254,6 +254,17 @@ impl Player {
         }
     }
 
+    /// Shows the next frame, or the one before, and pauses on it.
+    pub fn step_frame(&self, forward: bool) {
+        let command = match forward {
+            true => "frame-step",
+            false => "frame-back-step",
+        };
+        if let Err(error) = self.core.command(&[command]) {
+            log::warn!("video: cannot step a frame: {error:#}");
+        }
+    }
+
     /// Moves to a position in seconds.
     pub fn seek_to(&self, seconds: f64) {
         if let Err(error) = self

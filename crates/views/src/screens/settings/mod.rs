@@ -150,6 +150,7 @@ enum Slot {
     Pace,
     Saver,
     HideShorts,
+    ShortsRow,
     Captions,
     AiKey,
     AiChatModel,
@@ -829,6 +830,7 @@ impl SettingsView {
                 t!("settings-window-rounding-detail"),
             ),
             Slot::HideShorts => (t!("settings-shorts"), t!("settings-shorts-detail")),
+            Slot::ShortsRow => (t!("settings-shorts-nav"), t!("settings-shorts-nav-detail")),
             Slot::Captions => (t!("settings-captions"), t!("settings-captions-detail")),
             Slot::GuestProfiles => (t!("settings-group-guests"), t!("settings-guests-detail")),
             Slot::GoogleProfiles => (t!("settings-group-google"), t!("settings-google-detail")),
@@ -1001,6 +1003,7 @@ impl SettingsView {
             ))]
             Slot::WindowRounding => self.window_rounding_row(window, cx),
             Slot::HideShorts => self.hide_shorts_row(cx),
+            Slot::ShortsRow => self.shorts_nav_row(cx),
             Slot::Captions => self.captions_row(cx),
             Slot::GuestProfiles => self.guest_profiles(cx),
             Slot::GoogleProfiles => self.google_profiles(cx),

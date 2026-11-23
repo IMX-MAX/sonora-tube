@@ -854,7 +854,7 @@ impl Watching {
         if self.id.as_deref() == Some(id) {
             self.set_short(short);
             // Opened again, perhaps under another profile, whose history has yet to see it.
-            if let Some(seen) = self.video() {
+            if let Some(seen) = self.video().filter(|_| !short) {
                 self.subscriptions
                     .update(cx, |kept, cx| kept.watched_now(seen, cx));
             }
@@ -912,7 +912,7 @@ impl Watching {
                         this.chapters = Arc::new(tube::chapters(&watch.description));
                         this.watch = Some(Arc::new(watch));
                         let again = std::mem::replace(&mut this.seen, true);
-                        if let Some(seen) = this.video().filter(|_| !again) {
+                        if let Some(seen) = this.video().filter(|_| !again && !this.short) {
                             this.subscriptions
                                 .update(cx, |kept, cx| kept.watched_now(seen, cx));
                         }
@@ -952,6 +952,11 @@ impl Watching {
     /// The Shorts a press of next or previous steps through.
     pub fn set_reel(&mut self, reel: Vec<Video>) {
         self.reel = reel;
+    }
+
+    /// Where the Short `id` stands in the list one was opened from.
+    pub fn reel_place(&self, id: &str) -> Option<usize> {
+        self.reel.iter().position(|short| short.id == id)
     }
 
     /// The Short `by` places from the one playing in the list it was opened from.
@@ -1291,6 +1296,15 @@ impl Watching {
         if let Some(player) = self.player() {
             player.seek_by(seconds);
         }
+        cx.notify();
+    }
+
+    /// Shows the frame after the one on screen, or the one before it, and holds there.
+    pub fn step_frame(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if let Some(player) = self.player() {
+            player.step_frame(forward);
+        }
+        self.keep_awake(cx);
         cx.notify();
     }
 
@@ -2526,6 +2540,11 @@ pub(crate) fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io:
 }
 
 const HISTORY_CAP: usize = 500;
+/// How many followed channels the Shorts page reads, and how many Shorts of each it takes.
+const SHORTS_CHANNELS: usize = 12;
+const SHORTS_EACH: usize = 10;
+/// What is searched for to fill the Shorts page past the followed channels.
+const SHORTS_QUERY: &str = "#shorts";
 /// How many of a channel's newest uploads go into the feed.
 const FEED_PER_CHANNEL: usize = 12;
 
@@ -2639,6 +2658,10 @@ pub struct Subscriptions {
     /// What YouTube's home page recommends to the signed-in account.
     recommended: Vec<Video>,
     syncing: Option<Task<()>>,
+    /// The Shorts gathered for the Shorts page, and whether they were asked for yet.
+    shorts: Vec<Video>,
+    shorts_read: bool,
+    gathering: Option<Task<()>>,
 }
 
 impl Subscriptions {
@@ -2694,6 +2717,9 @@ impl Subscriptions {
             loading: false,
             task: None,
             found: Vec::new(),
+            shorts: Vec::new(),
+            shorts_read: false,
+            gathering: None,
             found_for: None,
             dug: 0,
             finding: false,
@@ -2789,6 +2815,9 @@ impl Subscriptions {
         self.loading = false;
         self.task = None;
         self.found.clear();
+        self.shorts.clear();
+        self.shorts_read = false;
+        self.gathering = None;
         self.found_for = None;
         self.dug = 0;
         self.finding = false;
@@ -2863,6 +2892,77 @@ impl Subscriptions {
             })
             .ok();
         }));
+    }
+
+    /// The Shorts gathered for the Shorts page: those of the followed channels in turn, then
+    /// what a search for Shorts brings.
+    pub fn shorts(&self) -> &[Video] {
+        &self.shorts
+    }
+
+    pub fn is_gathering(&self) -> bool {
+        self.gathering.is_some()
+    }
+
+    /// Gathers the Shorts unless they are here or on their way.
+    pub fn gather(&mut self, cx: &mut Context<Self>) {
+        if !self.shorts_read && self.gathering.is_none() {
+            self.gather_again(cx);
+        }
+    }
+
+    /// Gathers the Shorts afresh.
+    pub fn gather_again(&mut self, cx: &mut Context<Self>) {
+        self.shorts_read = true;
+        let channels: Vec<String> = self
+            .kept
+            .channels
+            .iter()
+            .take(SHORTS_CHANNELS)
+            .map(|channel| channel.id.clone())
+            .collect();
+        let client = self.client.clone();
+        let request = self.io.spawn(async move {
+            let parts = channels
+                .iter()
+                .map(|id| client.channel_section(id, Tab::Shorts));
+            let (parts, searched) = futures::future::join(
+                futures::future::join_all(parts),
+                client.search(SHORTS_QUERY),
+            )
+            .await;
+            let mut lists: Vec<std::vec::IntoIter<Video>> = parts
+                .into_iter()
+                .filter_map(Result::ok)
+                .map(|section| section.videos.items.into_iter())
+                .collect();
+            // One from each channel in turn, so no channel fills the page.
+            let mut gathered: Vec<Video> = Vec::new();
+            for _ in 0..SHORTS_EACH {
+                gathered.extend(lists.iter_mut().filter_map(Iterator::next));
+            }
+            let searched = searched.map(|page| page.items).unwrap_or_default();
+            gathered.extend(searched.into_iter().filter_map(|found| match found {
+                Found::Video(video) => Some(video),
+                _ => None,
+            }));
+            let mut seen = std::collections::HashSet::new();
+            gathered.retain(|video| video.short && seen.insert(video.id.clone()));
+            anyhow::Ok(gathered)
+        });
+        self.gathering = Some(cx.spawn(async move |this, cx| {
+            let gathered = join(request).await;
+            this.update(cx, |this, cx| {
+                this.gathering = None;
+                match gathered {
+                    Ok(gathered) => this.shorts = gathered,
+                    Err(error) => log::warn!("video: cannot gather shorts: {error:#}"),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     /// Videos to find new channels by, the likeliest first.

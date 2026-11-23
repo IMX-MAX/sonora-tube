@@ -234,11 +234,15 @@ impl Render for Workspace {
                 if let Some(table) = shown_listing(cx) {
                     table.select_next(window, cx);
                     cx.stop_propagation();
+                } else if crate::screens::video::step_short(1, cx) {
+                    cx.stop_propagation();
                 }
             })
             .on_action(|_: &SelectPrevious, window, cx| {
                 if let Some(table) = shown_listing(cx) {
                     table.select_previous(window, cx);
+                    cx.stop_propagation();
+                } else if crate::screens::video::step_short(-1, cx) {
                     cx.stop_propagation();
                 }
             })

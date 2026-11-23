@@ -2,9 +2,10 @@ use gpui::{AnyView, Context, Entity, MouseButton, NavigationDirection, Render, T
 use gpui::{App, Font, FontFallbacks, SharedString, StyleRefinement, font, prelude::*};
 use gpui::{Pixels, Window, deferred, div};
 use input::{
-    CloseWindow, MinimizeWindow, NavigateBack, NavigateForward, OpenFilter, OpenSearch,
-    OpenSettings, Refresh, SeekBack, SeekForward, ShowMembers, ToggleFullscreen, TogglePlayback,
-    TogglePowerbar, ToggleWindowFullscreen, VolumeDown, VolumeUp, ZoomWindow,
+    CloseWindow, FrameBack, FrameForward, MinimizeWindow, NavigateBack, NavigateForward,
+    OpenFilter, OpenSearch, OpenSettings, Refresh, SeekBack, SeekForward, ShowMembers,
+    ToggleFullscreen, TogglePlayback, TogglePowerbar, ToggleWindowFullscreen, VolumeDown, VolumeUp,
+    ZoomWindow,
 };
 use router::{Destination, NavigationEvent, back, forward, navigate};
 use state::{
@@ -85,6 +86,7 @@ struct Screens {
     video_history: Entity<VideoFeedView>,
     video_later: Entity<VideoFeedView>,
     video_discover: Entity<VideoFeedView>,
+    video_shorts: Entity<VideoFeedView>,
     genres: Entity<Genres>,
     genre: Option<Entity<GenreView>>,
     genre_detail: Option<Entity<GenreDetails>>,
@@ -389,6 +391,7 @@ impl Root {
         let video_later = cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::Later, cx));
         let video_discover =
             cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::Discover, cx));
+        let video_shorts = cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::Shorts, cx));
         let video_history =
             cx.new(|cx| VideoFeedView::new(subscriptions.clone(), Feed::History, cx));
         let video_list =
@@ -534,6 +537,7 @@ impl Root {
                 video_history,
                 video_later,
                 video_discover,
+                video_shorts,
                 genres,
                 genre: None,
                 genre_detail: None,
@@ -855,6 +859,10 @@ impl Root {
                 let kept = self.screens.subscriptions.clone();
                 Box::new(move |cx| kept.read(cx).is_finding())
             }
+            Destination::Shorts => {
+                let kept = self.screens.subscriptions.clone();
+                Box::new(move |cx| kept.read(cx).is_gathering())
+            }
             Destination::History | Destination::Later => return None,
             Destination::Library(_) => {
                 let session = Sonora::global(cx).session.clone();
@@ -917,6 +925,10 @@ impl Root {
                 .screens
                 .subscriptions
                 .update(cx, |kept, cx| kept.find_again(cx)),
+            Destination::Shorts => self
+                .screens
+                .subscriptions
+                .update(cx, |kept, cx| kept.gather_again(cx)),
             Destination::History | Destination::Later => {}
             Destination::Library(_) => library.update(cx, |library, cx| {
                 library.reload(Shelf::Streaming, cx);
@@ -1230,6 +1242,12 @@ impl Root {
                     .subscriptions
                     .update(cx, |kept, cx| kept.find(cx));
                 self.screens.video_discover.clone().into()
+            }
+            Destination::Shorts => {
+                self.screens
+                    .subscriptions
+                    .update(cx, |kept, cx| kept.gather(cx));
+                self.screens.video_shorts.clone().into()
             }
             Destination::Library(tab) => {
                 self.screens
@@ -1722,12 +1740,24 @@ impl Render for Root {
             .on_action(cx.listener(|this, _: &SeekForward, _, cx| {
                 this.watching(cx, |watching, cx| watching.seek_by(SKIP, cx));
             }))
+            .on_action(cx.listener(|this, _: &FrameBack, _, cx| {
+                this.watching(cx, |watching, cx| watching.step_frame(false, cx));
+            }))
+            .on_action(cx.listener(|this, _: &FrameForward, _, cx| {
+                this.watching(cx, |watching, cx| watching.step_frame(true, cx));
+            }))
             .on_action(cx.listener(|this, _: &VolumeUp, _, cx| {
+                if crate::screens::video::step_short(-1, cx) {
+                    return;
+                }
                 this.watching(cx, |watching, cx| {
                     watching.set_volume((watching.volume() + LOUDER).min(1.), cx)
                 });
             }))
             .on_action(cx.listener(|this, _: &VolumeDown, _, cx| {
+                if crate::screens::video::step_short(1, cx) {
+                    return;
+                }
                 this.watching(cx, |watching, cx| {
                     watching.set_volume((watching.volume() - LOUDER).max(0.), cx)
                 });

@@ -44,14 +44,17 @@ pub enum NavEntry {
     Later,
     /// Videos from channels not followed yet, picked from what was watched.
     Discover,
+    /// The Shorts gathered from the followed channels and a search.
+    Shorts,
     Settings,
     Pins,
 }
 
 impl NavEntry {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Home,
         Self::Search,
+        Self::Shorts,
         Self::Discover,
         Self::Later,
         Self::History,
@@ -76,6 +79,7 @@ impl NavEntry {
             Self::History => "history",
             Self::Later => "later",
             Self::Discover => "discover",
+            Self::Shorts => "shorts",
             Self::Settings => "settings",
             Self::Pins => "sidebar-pins",
         }
@@ -93,6 +97,7 @@ impl NavEntry {
             Self::History => "nav-history",
             Self::Later => "nav-later",
             Self::Discover => "nav-discover",
+            Self::Shorts => "nav-shorts",
             Self::Settings => "nav-settings",
             Self::Pins => "nav-pinned",
         }
@@ -364,6 +369,8 @@ pub enum Destination {
     Later,
     /// Videos from channels not followed yet, picked from what was watched.
     Discover,
+    /// The Shorts gathered from the followed channels and a search.
+    Shorts,
     Library(LibraryTab),
     Album(SharedString),
     Song(SharedString),

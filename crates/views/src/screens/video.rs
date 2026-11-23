@@ -45,6 +45,10 @@ const SHORT_MIN: Pixels = px(168.);
 const SHORT_MAX: Pixels = px(520.);
 /// How long a turn of the wheel over a Short is deaf to the next, so one flick steps once.
 const STEP_REST: Duration = Duration::from_millis(450);
+/// How many windows' height ahead of the foot of a list its next stretch is fetched.
+const AHEAD: f32 = 2.;
+/// How much of its height a Short slides in by when stepped to.
+const SHORT_SLIDE: f32 = 0.35;
 /// How dark the foot of a Short's picture goes behind its title.
 const SHORT_SHADE: f32 = 0.7;
 /// How wide the picture and the text under it may grow on the watch page.
@@ -957,14 +961,50 @@ fn waiting(id: &'static str) -> impl IntoElement {
         .child(Spinner::new(id))
 }
 
-/// The button under a list that fetches its next stretch.
+/// On the page of a Short, goes to the one `by` places on, and says whether that page is up.
+pub(crate) fn step_short(by: isize, cx: &mut App) -> bool {
+    let current = router::trail(cx).read(cx).current();
+    let Some(stepped) = cx.try_global::<Stepped>() else {
+        return false;
+    };
+    if !matches!(current, Destination::Short(_)) {
+        return false;
+    }
+    let beside = stepped.0.read(cx).beside(by).map(|short| short.id.clone());
+    if let Some(id) = beside {
+        router::replace(Destination::Short(id.into()), cx);
+    }
+    true
+}
+
+/// The foot of a list with more to it: the next stretch is fetched once scrolling brings the
+/// foot within [`AHEAD`] windows of sight, and the button fetches it for whoever does not scroll.
 fn more(id: &'static str, on_click: impl Fn(&mut App) + 'static) -> impl IntoElement {
-    div().flex().w_full().justify_center().child(
-        Button::new(id)
-            .label(t!("video-more"))
-            .secondary()
-            .on_click(move |_, _, cx| on_click(cx)),
-    )
+    let on_click = Rc::new(on_click);
+    let reached = on_click.clone();
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .w_full()
+        .child(
+            gpui::canvas(
+                move |bounds, window, cx| {
+                    if bounds.top() < window.viewport_size().height * AHEAD {
+                        cx.defer(move |cx| reached(cx));
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .w_full()
+            .h_px(),
+        )
+        .child(
+            Button::new(id)
+                .label(t!("video-more"))
+                .secondary()
+                .on_click(move |_, _, cx| on_click(cx)),
+        )
 }
 
 /// The button that subscribes to a channel, or drops the subscription it already has.
@@ -1304,6 +1344,11 @@ pub(crate) struct WatchView {
     /// Whether the full screen controls were last drawn light, over a dark picture.
     /// When the wheel last stepped to another Short.
     stepped: Option<Instant>,
+    /// The Short last drawn, how many were stepped to since the page opened, and whether the
+    /// last step went on down the list, which is the way the next one slides in from.
+    shown: Option<String>,
+    slides: usize,
+    onward: bool,
     /// Which page of the side panel shows: the transcript, the chapters or the AI chat.
     panel: Panel,
     /// The field a question to the AI is written in.
@@ -1394,6 +1439,9 @@ impl WatchView {
             entered: false,
             stirred: None,
             stepped: None,
+            shown: None,
+            slides: 0,
+            onward: true,
             panel: Panel::Transcript,
             query,
             chat_scroll: ScrollHandle::new(),
@@ -2865,6 +2913,16 @@ impl WatchView {
         }
 
         let watching = self.watching.read(cx);
+        let now = watching.id().map(str::to_owned);
+        if now != self.shown {
+            let place = |id: &Option<String>| id.as_deref().and_then(|id| watching.reel_place(id));
+            if let (Some(from), Some(to)) = (place(&self.shown), place(&now)) {
+                self.onward = to > from;
+                self.slides += 1;
+            }
+            self.shown = now;
+        }
+        let (slides, onward) = (self.slides, self.onward);
         let player = watching.player();
         let position = player.and_then(|player| player.position()).unwrap_or(0.);
         let total = player.and_then(|player| player.duration()).unwrap_or(0.);
@@ -3135,14 +3193,28 @@ impl WatchView {
                                     cx,
                                 )),
                         ),
-                        None => this.child(
-                            div()
+                        None => {
+                            let short = div()
+                                .relative()
                                 .flex()
                                 .flex_col()
                                 .flex_none()
                                 .child(picture)
-                                .child(bar),
-                        ),
+                                .child(bar);
+                            let from = stage.height
+                                * match onward {
+                                    true => SHORT_SLIDE,
+                                    false => -SHORT_SLIDE,
+                                };
+                            match slides > 0 && ui::motion::animates(cx) {
+                                true => this.child(short.with_animation(
+                                    ("video-short-slide", slides),
+                                    Motion::Base.animation(),
+                                    move |this, t| this.top(from * (1. - t)).opacity(t),
+                                )),
+                                false => this.child(short),
+                            }
+                        }
                     })
                     .child(div().flex().flex_col().h(stage.height + foot).child(rail))
                     .when(beside, |this| {
@@ -4718,6 +4790,8 @@ pub(crate) enum Feed {
     Later,
     /// Videos from channels not followed, picked from what was watched.
     Discover,
+    /// The Shorts gathered from the followed channels and a search.
+    Shorts,
 }
 
 /// The home page and the watch history: a heading and a grid of videos.
@@ -4907,14 +4981,21 @@ impl Render for VideoFeedView {
                 t!("video-discover-empty"),
                 kept.found(),
             ),
+            Feed::Shorts => (
+                "shorts",
+                t!("video-shorts"),
+                t!("video-shorts-empty"),
+                kept.shorts(),
+            ),
         };
         let home = self.feed == Feed::Subscriptions;
         let loading = match self.feed {
             Feed::Discover => kept.is_finding(),
+            Feed::Shorts => kept.is_gathering(),
             _ => home && kept.is_loading(),
         };
         let (videos, reel) = sorted(videos);
-        let shorts = shorts_shelf(kind, &reel, self.width, false, cx);
+        let shorts = shorts_shelf(kind, &reel, self.width, self.feed == Feed::Shorts, cx);
         let total = videos.len() + reel.len();
         let listed = videos.len();
         let cards: Vec<AnyElement> = videos
@@ -4956,6 +5037,19 @@ impl Render for VideoFeedView {
                     })
                     .into_any_element(),
             ),
+            Feed::Shorts if !loading => {
+                let again = self.subscriptions.clone();
+                Some(
+                    Button::new("video-shorts-again")
+                        .icon("icons/refresh-cw.svg")
+                        .label(t!("video-discover-again"))
+                        .secondary()
+                        .on_click(move |_, _, cx| {
+                            again.update(cx, |kept, cx| kept.gather_again(cx));
+                        })
+                        .into_any_element(),
+                )
+            }
             _ => None,
         };
 

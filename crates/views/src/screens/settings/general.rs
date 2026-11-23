@@ -338,6 +338,23 @@ impl SettingsView {
         )
     }
 
+    /// The switch that keeps the Shorts row in the sidebar.
+    pub(super) fn shorts_nav_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let id = router::NavEntry::Shorts.id();
+        let on = self.settings.read(cx).nav_shown(id);
+
+        self.row(
+            t!("settings-shorts-nav"),
+            Switch::new("shorts-nav", on)
+                .name(t!("settings-shorts-nav"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings
+                        .update(cx, |settings, cx| settings.set_nav_shown(id, !on, cx));
+                }))
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn captions_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let on = self.settings.read(cx).captions();
 

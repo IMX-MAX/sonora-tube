@@ -45,6 +45,9 @@ pub(crate) fn nav_icon(
 /// Whether the sidebar shows `entry`. An optional row shows once the listener adds it, any other
 /// until they hide it.
 pub(crate) fn entry_shown(entry: NavEntry, settings: &AppSettings) -> bool {
+    if entry == NavEntry::Shorts && settings.hide_shorts() {
+        return false;
+    }
     match entry.optional() {
         true => settings.nav_added(entry.id()),
         false => settings.nav_shown(entry.id()),

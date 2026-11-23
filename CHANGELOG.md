@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- A Shorts row in the sidebar opens the Shorts of the channels you follow, and a switch in Settings, Video takes it away.
+- Up and Down move between Shorts, which slide into place.
+- `,` and `.` (the `<` and `>` keys) step a paused video one frame back or on.
+- Comments, search results and channel lists load more as you scroll.
 - A video's end cards show over its last seconds and open the video, playlist or channel they point at.
 - The screen stays awake while a video plays.
 - Timestamps in comments seek the video.
@@ -25,6 +29,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Subsonic and Navidrome servers get a Radio page in the sidebar that lists the server's internet radio stations and plays them.
 
 ### Changed
+- Shorts no longer go into the watch history.
 
 - The Brazilian Portuguese translation is complete again, including sessions, smart playlists and audio settings.
 - Removing songs, albums, artists or playlists from your library, songs from a playlist, or plays from your history happens at once without asking. Undo on the toast puts them back.

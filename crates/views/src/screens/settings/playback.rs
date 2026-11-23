@@ -14,6 +14,7 @@ impl SettingsView {
         vec![
             Group::new("settings-group-videos", "icons/play.svg").rows([
                 Slot::HideShorts,
+                Slot::ShortsRow,
                 Slot::Captions,
                 Slot::Ambient,
             ]),
