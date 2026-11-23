@@ -3002,6 +3002,8 @@ pub struct Subscriptions {
     shorts_failed: Option<Instant>,
     /// The wait after a failure, which has the Shorts looked at again when it ends.
     retrying: Option<Task<()>>,
+    /// Whether the search's place was already asked for again after failing.
+    shorts_retried: bool,
     gathering: Option<Task<()>>,
 }
 
@@ -3064,6 +3066,7 @@ impl Subscriptions {
             shorts_dry: false,
             shorts_failed: None,
             retrying: None,
+            shorts_retried: false,
             gathering: None,
             found_for: None,
             dug: 0,
@@ -3297,10 +3300,13 @@ impl Subscriptions {
                             },
                         ));
                         this.shorts_dry = this.shorts_more.is_none() && this.shorts.len() == held;
+                        this.shorts_retried = false;
                     }
                     Err(error) => {
                         // The search keeps its place, and is asked again once the wait is over.
-                        this.shorts_more = asked;
+                        // Only once, in case it is the place itself YouTube turns down.
+                        this.shorts_more = asked.filter(|_| !this.shorts_retried);
+                        this.shorts_retried = this.shorts_more.is_some();
                         this.shorts_failed = Some(Instant::now());
                         this.retrying = Some(cx.spawn(async move |this, cx| {
                             cx.background_executor().timer(SHORTS_RETRY).await;
