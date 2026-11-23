@@ -475,8 +475,8 @@ settings-installing = Installing…
 
 settings-space-used = Space used
 settings-group-videos = Videos
-settings-hide-shorts = Hide Shorts
-settings-hide-shorts-detail = Leaves Shorts out of search results and channels instead of listing them as ordinary videos
+settings-shorts = Shorts
+settings-shorts-detail = Lists Shorts in rows of their own on Home, in search and on channels, and plays them in an upright player. Turned off, no Short is listed anywhere
 settings-captions = Show captions
 settings-captions-detail = Starts a video with its captions on when it has any
 

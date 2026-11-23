@@ -375,6 +375,8 @@ pub enum Destination {
     Radio,
     /// A video, by its YouTube id.
     Watch(SharedString),
+    /// A Short, by its YouTube id, in the upright player.
+    Short(SharedString),
     /// A YouTube channel's uploads.
     Channel(SharedString),
     /// A YouTube playlist's videos.

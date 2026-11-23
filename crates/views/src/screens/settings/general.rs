@@ -324,15 +324,15 @@ impl SettingsView {
     }
 
     pub(super) fn hide_shorts_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).hide_shorts();
+        let on = !self.settings.read(cx).hide_shorts();
 
         self.row(
-            t!("settings-hide-shorts"),
-            Switch::new("hide-shorts", on)
-                .name(t!("settings-hide-shorts"))
+            t!("settings-shorts"),
+            Switch::new("shorts", on)
+                .name(t!("settings-shorts"))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.settings
-                        .update(cx, |settings, cx| settings.set_hide_shorts(!on, cx));
+                        .update(cx, |settings, cx| settings.set_hide_shorts(on, cx));
                 }))
                 .into_any_element(),
         )

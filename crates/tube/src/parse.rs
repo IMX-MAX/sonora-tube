@@ -295,6 +295,7 @@ fn tabs(answer: &Value) -> Vec<Tab> {
             let address = first(&tab["endpoint"], "url")?.as_str()?;
             match address.rsplit('/').next()? {
                 "videos" => Some(Tab::Videos),
+                "shorts" => Some(Tab::Shorts),
                 "playlists" => Some(Tab::Playlists),
                 "posts" | "community" => Some(Tab::Posts),
                 "releases" => Some(Tab::Releases),
@@ -310,6 +311,16 @@ pub(crate) fn section(answer: &Value) -> Section {
     let mut written = Vec::new();
     gather(answer, "backstagePostRenderer", &mut written);
     Section {
+        videos: Page {
+            items: items
+                .iter()
+                .filter_map(|found| match found {
+                    Found::Video(video) if video.short => Some(video.clone()),
+                    _ => None,
+                })
+                .collect(),
+            more: more.clone(),
+        },
         playlists: Page {
             items: items
                 .into_iter()
@@ -674,6 +685,10 @@ fn short(node: &Value) -> Option<Video> {
             .as_str()
             .map(str::to_owned),
         short: true,
+        still: first(&node["thumbnail"], "url")
+            .or_else(|| first(&node["thumbnailViewModel"], "url"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         ..Video::default()
     })
 }
@@ -700,6 +715,7 @@ fn video(node: &Value) -> Option<Video> {
             .and_then(text)
             .or_else(|| text(&node["descriptionSnippet"])),
         avatar: first(&node["channelThumbnailSupportedRenderers"], "thumbnail").and_then(thumbnail),
+        still: None,
     })
 }
 
@@ -735,6 +751,7 @@ fn lockup(node: &Value) -> Option<Found> {
                 short: false,
                 snippet: None,
                 avatar: None,
+                still: None,
             }))
         }
         "LOCKUP_CONTENT_TYPE_PLAYLIST" | "LOCKUP_CONTENT_TYPE_PODCAST" => {

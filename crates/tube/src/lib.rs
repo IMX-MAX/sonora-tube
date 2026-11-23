@@ -30,12 +30,22 @@ pub struct Video {
     /// The picture of the channel that made it, where the listing has one.
     #[serde(default)]
     pub avatar: Option<String>,
+    /// The upright picture a Short is listed with.
+    #[serde(default)]
+    pub still: Option<String>,
 }
 
 impl Video {
     /// The 16:9 still YouTube keeps for every video.
     pub fn thumbnail(&self) -> String {
         format!("https://i.ytimg.com/vi/{}/mqdefault.jpg", self.id)
+    }
+
+    /// The upright picture of a Short, or its first frame when it was listed without one.
+    pub fn upright(&self) -> String {
+        self.still
+            .clone()
+            .unwrap_or_else(|| format!("https://i.ytimg.com/vi/{}/frame0.jpg", self.id))
     }
 
     /// The page mpv is pointed at to play it.
@@ -236,21 +246,31 @@ pub fn marks(text: &str) -> Vec<(std::ops::Range<usize>, Mark)> {
             found.push((at..at + address.len(), Mark::Link(address.to_owned())));
             continue;
         }
-        let opened = word.trim_start_matches(['(', '[']);
-        let moment = opened.trim_end_matches(['.', ',', ')', ']', ':', ';', '-']);
-        let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
-        let pieces: Vec<&str> = moment.split(':').collect();
-        if !(2..=3).contains(&pieces.len())
-            || !pieces.iter().all(|piece| digits(piece) && piece.len() <= 2)
-            || pieces[1..].iter().any(|piece| piece.len() != 2)
-        {
-            continue;
+        // A stretch such as `6:21–7:07` holds a moment on each side of its dash.
+        let mut from = at;
+        for part in word.split_inclusive(['-', '–', '—']) {
+            let here = from;
+            from += part.len();
+            let opened = part.trim_start_matches(['(', '[']);
+            let moment = opened.trim_end_matches(['.', ',', ')', ']', ':', ';', '-', '–', '—']);
+            let digits =
+                |piece: &str| !piece.is_empty() && piece.bytes().all(|b| b.is_ascii_digit());
+            let pieces: Vec<&str> = moment.split(':').collect();
+            if !(2..=3).contains(&pieces.len())
+                || !pieces.iter().all(|piece| digits(piece) && piece.len() <= 2)
+                || pieces[1..].iter().any(|piece| piece.len() != 2)
+            {
+                continue;
+            }
+            let seconds = pieces.iter().fold(0., |total, piece| {
+                total * 60. + piece.parse::<f64>().unwrap_or(0.)
+            });
+            let lead = part.len() - opened.len();
+            found.push((
+                here + lead..here + lead + moment.len(),
+                Mark::Moment(seconds),
+            ));
         }
-        let seconds = pieces.iter().fold(0., |total, piece| {
-            total * 60. + piece.parse::<f64>().unwrap_or(0.)
-        });
-        let lead = word.len() - opened.len();
-        found.push((at + lead..at + lead + moment.len(), Mark::Moment(seconds)));
     }
     found
 }
@@ -370,6 +390,7 @@ pub struct ChannelPage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Tab {
     Videos,
+    Shorts,
     Playlists,
     Posts,
     Releases,
@@ -389,6 +410,8 @@ pub struct Post {
 /// What one part of a channel other than its videos lists. Releases come as playlists.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Section {
+    /// The Shorts of the part that lists them.
+    pub videos: Page<Video>,
     pub playlists: Page<Playlist>,
     pub posts: Page<Post>,
 }

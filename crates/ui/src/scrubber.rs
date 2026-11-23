@@ -107,7 +107,7 @@ pub struct Scrubber {
     value: Option<SharedString>,
     bubble: Option<(f32, SharedString)>,
     ranges: Vec<(f32, f32, Hsla)>,
-    cuts: (Vec<f32>, Hsla),
+    cuts: Vec<f32>,
     lift: Pixels,
     on_move: Option<Slide>,
     on_release: Option<Release>,
@@ -129,7 +129,7 @@ impl Scrubber {
             value: None,
             bubble: None,
             ranges: Vec::new(),
-            cuts: (Vec::new(), gpui::transparent_black()),
+            cuts: Vec::new(),
             lift: LIFT,
             on_move: None,
             on_release: None,
@@ -175,15 +175,15 @@ impl Scrubber {
         self
     }
 
-    /// Splits a horizontal track with thin gaps at each fraction, painted `color` to match what
-    /// lies behind the track, such as the chapters of a video.
-    pub fn cuts(mut self, cuts: impl IntoIterator<Item = f32>, color: Hsla) -> Self {
-        self.cuts = (
-            cuts.into_iter()
-                .filter(|cut| *cut > 0. && *cut < 1.)
-                .collect(),
-            color,
-        );
+    /// Splits a horizontal track into stretches with an empty gap at each fraction, such as the
+    /// chapters of a video. Whatever lies behind the track shows through the gaps.
+    pub fn cuts(mut self, cuts: impl IntoIterator<Item = f32>) -> Self {
+        self.cuts = cuts
+            .into_iter()
+            .filter(|cut| *cut > 0. && *cut < 1.)
+            .collect();
+        self.cuts.sort_by(f32::total_cmp);
+        self.cuts.dedup();
         self
     }
 
@@ -423,7 +423,7 @@ impl RenderOnce for Scrubber {
                 .w_full()
                 .h(line)
                 .rounded_full()
-                .bg(empty)
+                .when(cuts.is_empty(), |this| this.bg(empty))
                 .child(
                     div()
                         .absolute()
@@ -431,16 +431,35 @@ impl RenderOnce for Scrubber {
                         .bottom_0()
                         .left(inset)
                         .right(inset)
-                        .child(
+                        .when(cuts.is_empty(), |this| {
+                            this.child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .left(Pixels::ZERO - inset)
+                                    .right(relative(1. - fraction))
+                                    .rounded_full()
+                                    .bg(filled),
+                            )
+                        })
+                        .children(stretches(&cuts).map(|(start, end)| {
+                            // Each stretch is its own short track, filled as far as the
+                            // position has come into it.
+                            let come = ((fraction - start) / (end - start)).clamp(0., 1.);
                             div()
                                 .absolute()
                                 .top_0()
                                 .bottom_0()
-                                .left(Pixels::ZERO - inset)
-                                .right(relative(1. - fraction))
+                                .left(relative(start))
+                                .right(relative(1. - end))
+                                .when(start > 0., |this| this.ml(line / 2.))
+                                .when(end < 1., |this| this.mr(line / 2.))
                                 .rounded_full()
-                                .bg(filled),
-                        )
+                                .overflow_hidden()
+                                .bg(empty)
+                                .child(div().h_full().w(relative(come)).bg(filled))
+                        }))
                         .children(ranges.into_iter().map(|(start, end, color)| {
                             div()
                                 .absolute()
@@ -450,16 +469,6 @@ impl RenderOnce for Scrubber {
                                 .w(relative(end - start))
                                 .rounded_full()
                                 .bg(color)
-                        }))
-                        .children(cuts.0.into_iter().map(move |at| {
-                            div()
-                                .absolute()
-                                .top(Pixels::ZERO - line)
-                                .bottom(Pixels::ZERO - line)
-                                .left(relative(at))
-                                .ml(Pixels::ZERO - line / 2.)
-                                .w(line)
-                                .bg(cuts.1)
                         }))
                         .when(enabled, |this| {
                             this.child(
@@ -550,6 +559,18 @@ impl RenderOnce for Scrubber {
         scrubber.style().refine(&overrides);
         scrubber
     }
+}
+
+/// The stretches a track cut at these fractions falls into, or none when it is not cut.
+fn stretches(cuts: &[f32]) -> impl Iterator<Item = (f32, f32)> + use<> {
+    let ends: Vec<f32> = match cuts.is_empty() {
+        true => Vec::new(),
+        false => std::iter::once(0.)
+            .chain(cuts.iter().copied())
+            .chain(std::iter::once(1.))
+            .collect(),
+    };
+    (1..ends.len()).map(move |place| (ends[place - 1], ends[place]))
 }
 
 #[cfg(test)]

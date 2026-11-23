@@ -219,6 +219,10 @@ pub struct Watching {
     full: bool,
     /// Whether the account liked the video, `None` as a guest.
     liked: bool,
+    /// The Shorts the upright player steps through, in the order of the list one was opened
+    /// from, and whether the video on the page is played as one.
+    reel: Vec<Video>,
+    short: bool,
     /// Whether the video has gone into the history since it was opened, so that reading its
     /// page again, perhaps under another profile, adds nothing.
     seen: bool,
@@ -280,6 +284,8 @@ impl Watching {
             full: false,
             liked: false,
             seen: false,
+            reel: Vec::new(),
+            short: false,
             like: None,
             qualities: Vec::new(),
             board: None,
@@ -468,6 +474,12 @@ impl Watching {
             (assistant.client(), assistant.chapter_model().to_owned())
         };
         let Some(client) = client else { return };
+        if let Some(kept) = self.id.as_deref().and_then(kept_chapters) {
+            self.chapters = Arc::new(kept);
+            self.chapters_ai = true;
+            cx.notify();
+            return;
+        }
         let lines = match &self.script.lines {
             Some(lines) if !lines.is_empty() => lines.clone(),
             Some(_) => return,
@@ -501,6 +513,9 @@ impl Watching {
                 this.chaptering = None;
                 match made {
                     Ok(chapters) if !chapters.is_empty() => {
+                        if let Some(id) = &asked {
+                            keep_chapters(id, &chapters);
+                        }
                         this.chapters = Arc::new(chapters);
                         this.chapters_ai = true;
                     }
@@ -661,6 +676,7 @@ impl Watching {
                 id: channel.id.clone(),
                 name: channel.name.clone(),
             }),
+            short: self.short,
             ..Video::default()
         })
     }
@@ -800,7 +816,13 @@ impl Watching {
 
     /// Starts `id` playing and fetches its page. The music stops, since both would sound at once.
     pub fn open(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.show(id, false, cx);
+    }
+
+    /// Opens `id` as a long video, or as a Short when `short`: looping and from its start.
+    fn show(&mut self, id: &str, short: bool, cx: &mut Context<Self>) {
         if self.id.as_deref() == Some(id) {
+            self.set_short(short);
             // Opened again, perhaps under another profile, whose history has yet to see it.
             if let Some(seen) = self.video() {
                 self.subscriptions
@@ -814,6 +836,7 @@ impl Watching {
         self.playback.update(cx, |playback, cx| playback.pause(cx));
         self.id = Some(id.to_owned());
         self.seen = false;
+        self.set_short(short);
         self.watch = None;
         self.error = None;
         self.thread = Thread::default();
@@ -874,6 +897,40 @@ impl Watching {
         }));
     }
 
+    /// Opens a Short in the upright player, which plays it over and over and steps through
+    /// `reel`, the list it was opened from.
+    pub fn open_short(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.show(id, true, cx);
+        if !self.reel.iter().any(|short| short.id == id) {
+            self.reel.clear();
+        }
+    }
+
+    /// Whether the video is played as a Short: over and over, with none of a long video's tools.
+    fn set_short(&mut self, short: bool) {
+        self.short = short;
+        if let Some(player) = self.player() {
+            player.set_looping(short);
+        }
+    }
+
+    /// Whether the video on the page is played as a Short.
+    pub fn short(&self) -> bool {
+        self.short
+    }
+
+    /// The Shorts a press of next or previous steps through.
+    pub fn set_reel(&mut self, reel: Vec<Video>) {
+        self.reel = reel;
+    }
+
+    /// The Short `by` places from the one playing in the list it was opened from.
+    pub fn beside(&self, by: isize) -> Option<&Video> {
+        let id = self.id.as_deref()?;
+        let place = self.reel.iter().position(|short| short.id == id)?;
+        self.reel.get(place.checked_add_signed(by)?)
+    }
+
     /// Fetches the video's page again, leaving the player alone.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.id.take() else {
@@ -881,7 +938,7 @@ impl Watching {
         };
         let paused = self.player().is_some_and(|player| player.paused());
         let seen = self.seen;
-        self.open(&id, cx);
+        self.show(&id, self.short, cx);
         self.seen = seen;
         self.set_paused(paused, cx);
     }
@@ -1410,8 +1467,13 @@ impl Watching {
         let Some((player, _)) = &self.screen else {
             return Ok(());
         };
+        player.set_looping(self.short);
         player.stop();
-        let start = self.subscriptions.read(cx).resume(id).unwrap_or(0.);
+        // A Short is over in a moment and plays round again, so it always starts at its start.
+        let start = match self.short {
+            true => 0.,
+            false => self.subscriptions.read(cx).resume(id).unwrap_or(0.),
+        };
         if self.placing.is_none() {
             self.placing = Some(cx.spawn(async move |this, cx| {
                 loop {
@@ -1535,6 +1597,9 @@ pub struct VideoList {
     playlists: HashMap<Tab, Page<Playlist>>,
     posts: Page<Post>,
     posts_read: bool,
+    /// The channel's Shorts, and whether they were asked for yet.
+    shorts: Page<Video>,
+    shorts_read: bool,
     part: Option<Task<()>>,
 }
 
@@ -1568,6 +1633,8 @@ impl VideoList {
             playlists: HashMap::new(),
             posts: Page::default(),
             posts_read: false,
+            shorts: Page::default(),
+            shorts_read: false,
             part: None,
         }
     }
@@ -1593,6 +1660,11 @@ impl VideoList {
         &self.posts.items
     }
 
+    /// The Shorts of the channel, once its Shorts part was opened.
+    pub fn shorts(&self) -> &[Video] {
+        &self.shorts.items
+    }
+
     /// Opens a part of the channel, fetching it the first time.
     pub fn set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         if self.tab == tab {
@@ -1603,6 +1675,7 @@ impl VideoList {
         self.loading = false;
         let read = match tab {
             Tab::Videos => true,
+            Tab::Shorts => self.shorts_read,
             Tab::Posts => self.posts_read,
             Tab::Playlists | Tab::Releases => self.playlists.contains_key(&tab),
         };
@@ -1636,6 +1709,15 @@ impl VideoList {
                 this.loading = false;
                 match crate::settled(loaded, cx) {
                     Ok(section) => match tab {
+                        Tab::Shorts => {
+                            this.shorts_read = true;
+                            for short in section.videos.items {
+                                if !this.shorts.items.contains(&short) {
+                                    this.shorts.items.push(short);
+                                }
+                            }
+                            this.shorts.more = section.videos.more;
+                        }
                         Tab::Posts => {
                             this.posts_read = true;
                             for post in section.posts.items {
@@ -1659,6 +1741,7 @@ impl VideoList {
                         log::warn!("video: cannot read that part of the channel: {reason}");
                         // Kept as read, so an empty part is shown instead of asked for forever.
                         match tab {
+                            Tab::Shorts => this.shorts_read = true,
                             Tab::Posts => this.posts_read = true,
                             Tab::Playlists | Tab::Releases | Tab::Videos => {
                                 this.playlists.entry(tab).or_default();
@@ -1705,6 +1788,7 @@ impl VideoList {
     pub fn has_more(&self) -> bool {
         match self.tab {
             Tab::Videos => self.more.is_some(),
+            Tab::Shorts => self.shorts.more.is_some(),
             Tab::Posts => self.posts.more.is_some(),
             Tab::Playlists | Tab::Releases => self
                 .playlists
@@ -1743,6 +1827,8 @@ impl VideoList {
         self.playlists.clear();
         self.posts = Page::default();
         self.posts_read = false;
+        self.shorts = Page::default();
+        self.shorts_read = false;
         self.part = None;
         cx.notify();
 
@@ -1806,6 +1892,7 @@ impl VideoList {
         }
         let further = match self.tab {
             Tab::Videos => None,
+            Tab::Shorts => Some(self.shorts.more.take()),
             Tab::Posts => Some(self.posts.more.take()),
             Tab::Playlists | Tab::Releases => Some(
                 self.playlists
@@ -2225,6 +2312,71 @@ fn forget_channels(cx: &mut App) {
     }
 }
 
+/// Where the chapters the AI cut for a video are kept, so that they are not asked for again.
+fn chapters_path(video: &str) -> Option<PathBuf> {
+    let name: String = video
+        .chars()
+        .filter(|letter| letter.is_ascii_alphanumeric() || matches!(letter, '-' | '_'))
+        .collect();
+    (!name.is_empty()).then(|| {
+        dirs::data_local_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("youtube-plus")
+            .join(CHAPTERS)
+            .join(format!("{name}.json"))
+    })
+}
+
+/// The chapters the AI cut for the video within [`CHAPTERS_KEPT`], deleting older ones.
+fn kept_chapters(video: &str) -> Option<Vec<tube::Chapter>> {
+    let path = chapters_path(video)?;
+    let age = std::fs::metadata(&path).ok()?.modified().ok()?.elapsed();
+    if age.is_ok_and(|age| age > CHAPTERS_KEPT) {
+        std::fs::remove_file(&path).ok();
+        return None;
+    }
+    let kept: Vec<(f64, String)> = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+    let chapters: Vec<tube::Chapter> = kept
+        .into_iter()
+        .map(|(start, title)| tube::Chapter { start, title })
+        .collect();
+    (!chapters.is_empty()).then_some(chapters)
+}
+
+/// Keeps the chapters the AI cut for the video, and clears out those kept too long.
+fn keep_chapters(video: &str, chapters: &[tube::Chapter]) {
+    let Some(path) = chapters_path(video) else {
+        return;
+    };
+    let kept: Vec<(f64, &str)> = chapters
+        .iter()
+        .map(|chapter| (chapter.start, chapter.title.as_str()))
+        .collect();
+    let written = serde_json::to_vec(&kept)
+        .map_err(anyhow::Error::from)
+        .and_then(|bytes| {
+            if let Some(folder) = path.parent() {
+                std::fs::create_dir_all(folder)?;
+            }
+            Ok(std::fs::write(&path, bytes)?)
+        });
+    if let Err(error) = written {
+        log::warn!("video: cannot keep the ai chapters: {error:#}");
+    }
+    let stale = path
+        .parent()
+        .and_then(|folder| std::fs::read_dir(folder).ok());
+    for entry in stale.into_iter().flatten().flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|made| made.elapsed().is_ok_and(|age| age > CHAPTERS_KEPT));
+        if old {
+            std::fs::remove_file(entry.path()).ok();
+        }
+    }
+}
+
 /// Writes a file only its owner can read, making its folder first.
 /// Tells the assistant Mistral turned its key down, when `reason` says so.
 /// The key and chapter model in use, told apart without holding the key.
@@ -2286,6 +2438,10 @@ const PROFILE: &str = "profile";
 const CHANNELS: &str = "google";
 /// The file beside the cookies that says a guest profile is in use while they are kept.
 const AWAY: &str = "guest";
+/// The folder of chapters the AI cut, one file a video.
+const CHAPTERS: &str = "chapters";
+/// How long the chapters the AI cut for a video are kept before they are cut afresh.
+const CHAPTERS_KEPT: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// The one [`Subscriptions`] of the app, where the chrome finds it.
 struct Following(Entity<Subscriptions>);

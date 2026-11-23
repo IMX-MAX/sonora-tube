@@ -16,13 +16,6 @@ const SESSIONS: usize = 5;
 /// The first line of every run, which is how a later start finds where each run began.
 const STARTED: &str = "logging: youtube-plus";
 
-/// Logs to stderr only, for a process that is not the app, such as the Widevine host.
-pub fn console() {
-    env_logger::Builder::from_env(Env::default().default_filter_or(CONSOLE))
-        .format_timestamp(None)
-        .init();
-}
-
 pub fn init() {
     let console = env_logger::Builder::from_env(Env::default().default_filter_or(CONSOLE))
         .format_timestamp(None)

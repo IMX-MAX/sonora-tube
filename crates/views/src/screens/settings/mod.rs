@@ -828,10 +828,7 @@ impl SettingsView {
                 t!("settings-window-rounding"),
                 t!("settings-window-rounding-detail"),
             ),
-            Slot::HideShorts => (
-                t!("settings-hide-shorts"),
-                t!("settings-hide-shorts-detail"),
-            ),
+            Slot::HideShorts => (t!("settings-shorts"), t!("settings-shorts-detail")),
             Slot::Captions => (t!("settings-captions"), t!("settings-captions-detail")),
             Slot::GuestProfiles => (t!("settings-group-guests"), t!("settings-guests-detail")),
             Slot::GoogleProfiles => (t!("settings-group-google"), t!("settings-google-detail")),

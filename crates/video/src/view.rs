@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use futures::StreamExt as _;
 use gpui::prelude::*;
-use gpui::{Context, Entity, ObjectFit, Pixels, RenderImage, Subscription, Task, Window, div, img};
+use gpui::{
+    Context, Entity, ObjectFit, Pixels, RenderImage, Subscription, Task, Window, canvas, div, img,
+};
 
 use crate::{Frames, Player};
 
@@ -74,13 +76,30 @@ impl Render for VideoView {
         }
         self.shown.clone_from(&frame);
 
-        div().size_full().when_some(frame, |this, frame| {
-            this.child(
-                img(frame)
-                    .size_full()
-                    .rounded(self.radius)
-                    .object_fit(ObjectFit::Contain),
-            )
-        })
+        let player = self.player.clone();
+        // The renderer draws frames as large as the picture is painted and no larger.
+        let measure = canvas(
+            move |bounds, window, _| {
+                let size = bounds
+                    .size
+                    .map(|side| (side.as_f32() * window.scale_factor()).ceil());
+                player.fit(size.width as u32, size.height as u32);
+            },
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .size_full();
+        div()
+            .relative()
+            .size_full()
+            .child(measure)
+            .when_some(frame, |this, frame| {
+                this.child(
+                    img(frame)
+                        .size_full()
+                        .rounded(self.radius)
+                        .object_fit(ObjectFit::Contain),
+                )
+            })
     }
 }

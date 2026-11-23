@@ -6,7 +6,7 @@
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -27,6 +27,8 @@ const GLOW_STEP: usize = 24;
 /// The widest frame the renderer produces. A larger video is scaled down by mpv, since every
 /// frame is copied to the GPU and a 4K copy sixty times a second is more than the copy is worth.
 const WIDEST: i64 = 1920;
+/// The narrowest frame the renderer produces, however small the picture is shown.
+const SMALLEST: i64 = 64;
 /// How long the render thread sleeps between looks at its stop flag when no frame arrives.
 const IDLE: Duration = Duration::from_millis(250);
 /// `MPV_RENDER_UPDATE_FRAME`: a new frame is ready to be rendered.
@@ -37,6 +39,10 @@ pub type Frames = UnboundedReceiver<()>;
 
 /// What the render thread and the view share: the newest frame, replaced as each one lands.
 type Latest = Arc<Mutex<Option<Arc<RenderImage>>>>;
+
+/// The room the picture is shown in, in device pixels, as its width above its height in one
+/// number. Zero until a view has painted it.
+type Room = Arc<AtomicU64>;
 
 /// The eased colour of each half of the picture, written by the render thread.
 type Glow = Arc<[AtomicU32; 2]>;
@@ -54,6 +60,7 @@ pub struct Player {
     core: Arc<Core>,
     latest: Latest,
     glow: Glow,
+    room: Room,
     stop: Option<Sender<Wake>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -62,6 +69,8 @@ pub struct Player {
 enum Wake {
     /// mpv has something new for the renderer.
     Update,
+    /// The room the picture is shown in changed, so the frame on screen is the wrong size.
+    Resize,
     /// The player is being dropped.
     Stop,
 }
@@ -104,14 +113,15 @@ impl Player {
 
         let latest = Latest::default();
         let glow = Glow::default();
+        let room = Room::default();
         let (wake, woken) = mpsc::channel();
         let (frames, receiver) = unbounded();
         let renderer = Renderer::new(&core, wake.clone())?;
         let thread = std::thread::Builder::new()
             .name("video-render".into())
             .spawn({
-                let (latest, glow) = (latest.clone(), glow.clone());
-                move || renderer.run(&woken, &latest, &glow, &frames)
+                let (latest, glow, room) = (latest.clone(), glow.clone(), room.clone());
+                move || renderer.run(&woken, &latest, &glow, &room, &frames)
             })
             .context("cannot start the video render thread")?;
 
@@ -120,6 +130,7 @@ impl Player {
                 core,
                 latest,
                 glow,
+                room,
                 stop: Some(wake),
                 thread: Some(thread),
             },
@@ -188,6 +199,17 @@ impl Player {
         )
     }
 
+    /// Tells the renderer how large the picture is shown, in device pixels, so that it draws
+    /// frames no larger than that. A view calls it each time it paints.
+    pub fn fit(&self, width: u32, height: u32) {
+        let room = u64::from(width) << 32 | u64::from(height);
+        if self.room.swap(room, Ordering::Relaxed) != room
+            && let Some(wake) = &self.stop
+        {
+            let _ = wake.send(Wake::Resize);
+        }
+    }
+
     /// The newest frame, if one has been rendered yet.
     pub fn frame(&self) -> Option<Arc<RenderImage>> {
         self.latest.lock().ok()?.clone()
@@ -241,6 +263,17 @@ impl Player {
     pub fn set_speed(&self, speed: f64) {
         if let Err(error) = self.core.set("speed", &speed.to_string()) {
             log::warn!("video: cannot set the speed: {error:#}");
+        }
+    }
+
+    /// Starts the video over each time it ends, as a Short does, or lets it end.
+    pub fn set_looping(&self, looping: bool) {
+        let value = match looping {
+            true => "inf",
+            false => "no",
+        };
+        if let Err(error) = self.core.set("loop-file", value) {
+            log::warn!("video: cannot change looping: {error:#}");
         }
     }
 
@@ -392,21 +425,24 @@ impl Renderer {
         woken: &mpsc::Receiver<Wake>,
         latest: &Latest,
         glow: &Glow,
+        room: &Room,
         frames: &UnboundedSender<()>,
     ) {
         let mut eased = [[0f32; 3]; 2];
         loop {
-            match woken.recv_timeout(IDLE) {
+            let resized = match woken.recv_timeout(IDLE) {
                 Ok(Wake::Stop) | Err(RecvTimeoutError::Disconnected) => return,
                 Err(RecvTimeoutError::Timeout) => continue,
-                Ok(Wake::Update) => {}
-            }
+                Ok(Wake::Update) => false,
+                Ok(Wake::Resize) => true,
+            };
             // SAFETY: the context is live and only this thread calls into it.
             let flags = unsafe { sys::mpv_render_context_update(self.context) };
-            if flags & UPDATE_FRAME == 0 {
+            // A picture shown at a new size is drawn again even when it stands still.
+            if flags & UPDATE_FRAME == 0 && !resized {
                 continue;
             }
-            let Some((image, halves)) = self.render() else {
+            let Some((image, halves)) = self.render(room.load(Ordering::Relaxed)) else {
                 continue;
             };
             for (side, now) in halves.into_iter().enumerate() {
@@ -427,13 +463,20 @@ impl Renderer {
         }
     }
 
-    /// Renders the current frame at the video's own size, capped at [`WIDEST`].
-    fn render(&self) -> Option<(RenderImage, [[f32; 3]; 2])> {
+    /// Renders the current frame as large as it is shown in `room`, and never larger than the
+    /// video itself or wider than [`WIDEST`].
+    fn render(&self, room: u64) -> Option<(RenderImage, [[f32; 3]; 2])> {
         let (native_width, native_height) = (self.core.int("dwidth")?, self.core.int("dheight")?);
         if native_width <= 0 || native_height <= 0 {
             return None;
         }
-        let width = native_width.min(WIDEST);
+        let (across, down) = (i64::from((room >> 32) as u32), i64::from(room as u32));
+        let mut width = native_width.min(WIDEST);
+        // Letterboxed in the room, the picture is as wide as the room or as tall as it.
+        if across > 0 && down > 0 {
+            width = width.min(across).min(down * native_width / native_height);
+        }
+        let width = width.max(SMALLEST);
         let height = (native_height * width / native_width).max(1);
         let (width, height) = (c_int::try_from(width).ok()?, c_int::try_from(height).ok()?);
         let stride = usize::try_from(width).ok()? * 4;

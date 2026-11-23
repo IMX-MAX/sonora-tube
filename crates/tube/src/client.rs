@@ -75,6 +75,7 @@ const RETRY: Duration = Duration::from_millis(300);
 /// How many pages of an account's subscriptions are read, each some hundred channels.
 const SUBSCRIBED_PAGES: usize = 20;
 const VIDEOS_TAB: &str = "EgZ2aWRlb3PyBgQKAjoA";
+const SHORTS_TAB: &str = "EgZzaG9ydHPyBgUKA5oBAA%3D%3D";
 const PLAYLISTS_TAB: &str = "EglwbGF5bGlzdHPyBgoKCEIGCgIQaCIA";
 const POSTS_TAB: &str = "EgVwb3N0c_IGBAoCSgA%3D";
 const RELEASES_TAB: &str = "EghyZWxlYXNlc_IGBQoDsgEA";
@@ -327,13 +328,18 @@ impl Client {
         let answer = self
             .call("browse", json!({ "browseId": id, "params": VIDEOS_TAB }))
             .await?;
-        parse::channel(id, &answer).context("cannot read the channel")
+        let mut channel = parse::channel(id, &answer).context("cannot read the channel")?;
+        if self.no_shorts.load(Ordering::Relaxed) {
+            channel.tabs.retain(|tab| *tab != Tab::Shorts);
+        }
+        Ok(channel)
     }
 
     /// What a part of a channel other than its videos lists.
     pub async fn channel_section(&self, id: &str, tab: Tab) -> Result<Section> {
         let params = match tab {
             Tab::Videos => VIDEOS_TAB,
+            Tab::Shorts => SHORTS_TAB,
             Tab::Playlists => PLAYLISTS_TAB,
             Tab::Posts => POSTS_TAB,
             Tab::Releases => RELEASES_TAB,

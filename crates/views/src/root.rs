@@ -734,7 +734,10 @@ impl Root {
         cx: &mut Context<Self>,
         act: impl FnOnce(&mut Watching, &mut Context<Watching>),
     ) {
-        if !matches!(router::trail(cx).read(cx).current(), Destination::Watch(_)) {
+        if !matches!(
+            router::trail(cx).read(cx).current(),
+            Destination::Watch(_) | Destination::Short(_)
+        ) {
             return;
         }
         self.screens.watching.update(cx, act);
@@ -887,7 +890,7 @@ impl Root {
                 let radio = self.screens.radio.clone();
                 Box::new(move |cx| radio.read(cx).is_loading(cx))
             }
-            Destination::Watch(_) => {
+            Destination::Watch(_) | Destination::Short(_) => {
                 let watching = self.screens.watching.clone();
                 Box::new(move |cx| watching.read(cx).is_loading())
             }
@@ -945,6 +948,10 @@ impl Root {
                 .screens
                 .song_detail
                 .update(cx, |detail, cx| detail.refresh(cx)),
+            Destination::Short(_) => self
+                .screens
+                .watching
+                .update(cx, |watching, cx| watching.refresh(cx)),
             Destination::User(_) => self
                 .screens
                 .user_profile
@@ -1171,7 +1178,7 @@ impl Root {
         let cached = destination != Destination::Equalizer;
 
         // A video still playing as its page is left carries on in a small window of its own.
-        let on_page = matches!(destination, Destination::Watch(_));
+        let on_page = matches!(destination, Destination::Watch(_) | Destination::Short(_));
         if destination != Destination::Fullscreen {
             let carried = self
                 .screens
@@ -1190,6 +1197,12 @@ impl Root {
                 self.screens
                     .watching
                     .update(cx, |watching, cx| watching.open(&id, cx));
+                self.screens.watch.clone().into()
+            }
+            Destination::Short(id) => {
+                self.screens
+                    .watching
+                    .update(cx, |watching, cx| watching.open_short(&id, cx));
                 self.screens.watch.clone().into()
             }
             Destination::Channel(id) => {
