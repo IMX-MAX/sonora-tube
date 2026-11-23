@@ -2702,6 +2702,8 @@ pub struct Subscriptions {
     shorts_dry: bool,
     /// When asking for more Shorts last failed, so it is not asked again straight away.
     shorts_failed: Option<Instant>,
+    /// The wait after a failure, which has the Shorts looked at again when it ends.
+    retrying: Option<Task<()>>,
     gathering: Option<Task<()>>,
 }
 
@@ -2763,6 +2765,7 @@ impl Subscriptions {
             shorts_more: None,
             shorts_dry: false,
             shorts_failed: None,
+            retrying: None,
             gathering: None,
             found_for: None,
             dug: 0,
@@ -2967,6 +2970,7 @@ impl Subscriptions {
             return;
         }
         let token = self.shorts_more.take();
+        let asked = token.clone();
         let client = self.client.clone();
         let request = self.io.spawn(async move {
             match token {
@@ -2997,7 +3001,13 @@ impl Subscriptions {
                         this.shorts_dry = this.shorts_more.is_none() && this.shorts.len() == held;
                     }
                     Err(error) => {
+                        // The search keeps its place, and is asked again once the wait is over.
+                        this.shorts_more = asked;
                         this.shorts_failed = Some(Instant::now());
+                        this.retrying = Some(cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(SHORTS_RETRY).await;
+                            this.update(cx, |_, cx| cx.notify()).ok();
+                        }));
                         log::warn!("video: cannot gather more shorts: {error:#}");
                     }
                 }
@@ -3021,6 +3031,7 @@ impl Subscriptions {
         fastrand::shuffle(&mut channels);
         channels.truncate(SHORTS_CHANNELS);
         self.shorts_dry = false;
+        self.shorts_failed = None;
         let client = self.client.clone();
         let request = self.io.spawn(async move {
             let parts = channels
