@@ -1149,13 +1149,10 @@ impl Watching {
         if !self.live {
             return;
         }
-        // Already at the newest moment, so there is nothing to open again.
-        if self.behind_live().is_some_and(|behind| behind < LIVE_NEAR) {
-            if let Some(player) = self.player() {
-                player.set_paused(false);
-            }
-            self.keep_awake(cx);
-            cx.notify();
+        // Playing at the newest moment already, so there is nothing to open again. A paused
+        // broadcast has moved on meanwhile, however near its end the player thinks it is.
+        let playing = self.player().is_some_and(|player| !player.paused());
+        if playing && self.behind_live().is_some_and(|behind| behind < LIVE_NEAR) {
             return;
         }
         // The player's idea of where a broadcast ends is the one it opened with, so the
