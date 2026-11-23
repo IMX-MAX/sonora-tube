@@ -35,6 +35,9 @@ pub struct Video {
     /// The upright picture a Short is listed with.
     #[serde(default)]
     pub still: Option<String>,
+    /// Whether it was being broadcast live when it was listed.
+    #[serde(default)]
+    pub live: bool,
 }
 
 impl Video {
@@ -166,6 +169,8 @@ pub struct Quality {
 pub struct Streams {
     pub qualities: Vec<Quality>,
     pub board: Option<Storyboard>,
+    /// Whether it is being broadcast live right now.
+    pub live: bool,
 }
 
 /// What pressing an end card opens.

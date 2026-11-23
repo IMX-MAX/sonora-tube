@@ -460,6 +460,7 @@ impl Client {
         Ok(Streams {
             qualities,
             board: parse::storyboard(&answer),
+            live: answer["videoDetails"]["isLive"].as_bool().unwrap_or(false),
         })
     }
 

@@ -105,6 +105,18 @@ impl Player {
         ] {
             core.option(name, value)?;
         }
+        // Frames are scaled and converted on the CPU, so the quick scaler is used: at the size a
+        // video is watched it looks the same and takes a fraction of the time. An mpv too old
+        // to know one of these plays without it.
+        for (name, value) in [
+            ("sws-allow-zimg", "no"),
+            ("sws-scaler", "fast-bilinear"),
+            ("sws-fast", "yes"),
+        ] {
+            if let Err(error) = core.option(name, value) {
+                log::warn!("video: cannot set {name}: {error:#}");
+            }
+        }
         if let Some(bundled) = bundled_ytdl() {
             core.option("script-opts", &format!("ytdl_hook-ytdl_path={bundled}"))?;
         }
@@ -242,6 +254,13 @@ impl Player {
     /// How long the video is, in seconds. None for a live stream or before the file has opened.
     pub fn duration(&self) -> Option<f64> {
         self.core.double("duration")
+    }
+
+    /// Moves to the newest moment a live broadcast has reached.
+    pub fn seek_live(&self) {
+        if let Err(error) = self.core.command(&["seek", "100", "absolute-percent"]) {
+            log::warn!("video: cannot seek to live: {error:#}");
+        }
     }
 
     /// Moves by a number of seconds, negative for backwards.

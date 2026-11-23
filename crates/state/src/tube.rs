@@ -252,6 +252,8 @@ pub struct Watching {
     qualities: Vec<Quality>,
     /// The small pictures the seek bar previews the video with.
     board: Option<Storyboard>,
+    /// Whether the video is a broadcast that is live right now.
+    live: bool,
     /// The cards the video ends on, once YouTube has named them.
     cards: Arc<Vec<EndCard>>,
     carding: Option<Task<()>>,
@@ -332,6 +334,7 @@ impl Watching {
             like: None,
             qualities: Vec::new(),
             board: None,
+            live: false,
             cards: Arc::default(),
             carding: None,
             pointed: None,
@@ -727,7 +730,8 @@ impl Watching {
         let (Some(at), Some(length)) = (player.position(), player.duration()) else {
             return;
         };
-        if length <= 0. || player.idle() {
+        // A broadcast's length keeps growing, so a place in it means nothing later.
+        if self.live || length <= 0. || player.idle() {
             return;
         }
         self.subscriptions
@@ -1116,6 +1120,28 @@ impl Watching {
         cx.notify();
     }
 
+    /// Whether the video is a broadcast that is live right now.
+    pub fn live(&self) -> bool {
+        self.live
+    }
+
+    /// How many seconds the picture is behind a live broadcast's newest moment. None when the
+    /// video is not live or its length is not known yet.
+    pub fn behind_live(&self) -> Option<f64> {
+        let player = self.player().filter(|_| self.live)?;
+        Some((player.duration()? - player.position()?).max(0.))
+    }
+
+    /// Jumps to the newest moment of a live broadcast and plays on from there.
+    pub fn go_live(&mut self, cx: &mut Context<Self>) {
+        if let Some(player) = self.player().filter(|_| self.live) {
+            player.seek_live();
+            player.set_paused(false);
+        }
+        self.keep_awake(cx);
+        cx.notify();
+    }
+
     /// Asks SponsorBlock for the video's sponsored stretches, when its switch is on.
     fn find_sponsors(&mut self, cx: &mut Context<Self>) {
         let settings = crate::Sonora::global(cx).settings.clone();
@@ -1238,6 +1264,9 @@ impl Watching {
 
     /// The stretches that will be skipped, for marking on the seek bar.
     pub fn sponsors(&self, cx: &App) -> Vec<(f64, f64)> {
+        if self.live {
+            return Vec::new();
+        }
         self.skipped_sponsors(cx)
             .into_iter()
             .map(|sponsor| (sponsor.start, sponsor.end))
@@ -1246,7 +1275,7 @@ impl Watching {
 
     /// Jumps past a sponsored stretch the video has reached, and redraws while a notice shows.
     fn skip_sponsors(&mut self, cx: &mut Context<Self>) {
-        if self.sponsors.is_empty() && self.sponsor_skipped.is_none() {
+        if self.live || (self.sponsors.is_empty() && self.sponsor_skipped.is_none()) {
             return;
         }
         if self
@@ -1280,6 +1309,9 @@ impl Watching {
 
     /// What to tell the viewer about sponsors right now: one is coming, or one was skipped.
     pub fn sponsor_notice(&self, cx: &App) -> Option<SponsorNotice> {
+        if self.live {
+            return None;
+        }
         if let Some((sponsor, _)) = self.sponsor_skipped {
             return Some(SponsorNotice::Skipped(sponsor));
         }
@@ -1941,6 +1973,7 @@ impl Watching {
         self.pace();
         self.qualities.clear();
         self.board = None;
+        self.live = false;
         self.pointed = None;
         self.keep_awake(cx);
         self.load_cards(id, cx);
@@ -1972,6 +2005,12 @@ impl Watching {
                     Ok(streams) => {
                         this.qualities = streams.qualities;
                         this.board = streams.board;
+                        this.live = streams.live;
+                        // A broadcast starts at its newest moment, never where it was left.
+                        let start = match streams.live {
+                            true => 0.,
+                            false => start,
+                        };
                         this.quality()
                             .map(|quality| player.play(&quality.picture, &quality.sound, start))
                     }

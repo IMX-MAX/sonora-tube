@@ -335,3 +335,5 @@ video-sponsor-coming = Skipping a sponsor in { $seconds }s
 video-sponsor-skipped = Skipped a sponsor
 video-sponsor-ai = { $notice } (found by AI)
 video-sponsor-watch = Watch anyway
+video-live = Live
+video-go-live = Go to live

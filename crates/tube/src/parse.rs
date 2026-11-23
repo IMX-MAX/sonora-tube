@@ -690,8 +690,21 @@ fn short(node: &Value) -> Option<Video> {
             .or_else(|| first(&node["thumbnailViewModel"], "url"))
             .and_then(Value::as_str)
             .map(str::to_owned),
+        live: false,
         ..Video::default()
     })
+}
+
+/// Whether a listed video carries one of the marks YouTube puts on a live broadcast.
+fn live(node: &Value) -> bool {
+    const MARKS: [&str; 3] = [
+        "\"BADGE_STYLE_TYPE_LIVE_NOW\"",
+        "\"THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE\"",
+        "\"style\":\"LIVE\"",
+    ];
+    // The marks sit at different depths in each renderer, so the node is searched as text.
+    let written = node.to_string();
+    MARKS.iter().any(|mark| written.contains(mark))
 }
 
 /// A video from the older renderers, which name each field.
@@ -717,6 +730,7 @@ fn video(node: &Value) -> Option<Video> {
             .or_else(|| text(&node["descriptionSnippet"])),
         avatar: first(&node["channelThumbnailSupportedRenderers"], "thumbnail").and_then(thumbnail),
         still: None,
+        live: live(node),
     })
 }
 
@@ -753,6 +767,7 @@ fn lockup(node: &Value) -> Option<Found> {
                 snippet: None,
                 avatar: None,
                 still: None,
+                live: live(&node["contentImage"]),
             }))
         }
         "LOCKUP_CONTENT_TYPE_PLAYLIST" | "LOCKUP_CONTENT_TYPE_PODCAST" => {

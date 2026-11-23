@@ -35,6 +35,8 @@ use crate::shared::trouble;
 
 const CHANNEL_ICON: &str = "icons/user.svg";
 /// How far the unplayed stretch of the seek bar leans from the played colour to the page behind.
+/// How many seconds behind a live broadcast the picture is before the way back is offered.
+const LIVE_BEHIND: f64 = 15.;
 const UNPLAYED: f32 = 0.62;
 const PLAYLIST_ICON: &str = "icons/list.svg";
 /// The narrowest a video tile gets before the grid drops a column.
@@ -586,7 +588,10 @@ fn video_tile(
         id,
         Card {
             picture,
-            badge: video.length.clone().map(Into::into),
+            badge: match video.live {
+                true => Some(t!("video-live")),
+                false => video.length.clone().map(Into::into),
+            },
             title: &video.title,
             lines,
             corner: Some(later(scope, video, kept, cx)),
@@ -769,9 +774,13 @@ fn video_row(
                 .when_some(kept.read(cx).progress(&video.id), |this, watched| {
                     this.child(watched_bar(picture, watched, cx))
                 })
-                .when_some(video.length.clone(), |this, length| {
-                    this.child(length_badge(length.into(), cx))
-                })
+                .when_some(
+                    match video.live {
+                        true => Some(t!("video-live")),
+                        false => video.length.clone().map(Into::into),
+                    },
+                    |this, length| this.child(length_badge(length, cx)),
+                )
                 .child(later(scope, video, kept, cx)),
         )
         .child(
@@ -1713,6 +1722,55 @@ impl WatchView {
             })
     }
 
+    /// The mark a live broadcast has where a video has its length: a dot and "Live" at its
+    /// newest moment, and a way back to it once the viewer has fallen behind.
+    fn live_mark(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let behind = self
+            .watching
+            .read(cx)
+            .behind_live()
+            .is_some_and(|behind| behind > LIVE_BEHIND);
+        let name = match behind {
+            true => t!("video-go-live"),
+            false => t!("video-live"),
+        };
+        let watching = self.watching.clone();
+        div()
+            .id("video-live")
+            .role(Role::Button)
+            .aria_label(name.clone())
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1p5()
+            .px_2()
+            .py_0p5()
+            .rounded(theme.radius)
+            .text_size(theme.text(Text::Small))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(match behind {
+                true => theme.muted_foreground,
+                false => theme.foreground,
+            })
+            .cursor_pointer()
+            .hover(|this| this.bg(theme.secondary_hover))
+            .child(
+                div()
+                    .size(theme.metrics.pad / 2.)
+                    .rounded_full()
+                    .bg(match behind {
+                        true => theme.muted_foreground,
+                        false => theme.danger,
+                    }),
+            )
+            .child(name)
+            .on_click(move |_, _, cx| {
+                watching.update(cx, |watching, cx| watching.go_live(cx));
+            })
+            .into_any_element()
+    }
+
     /// The small card in the picture's corner that says a sponsored stretch is about to be
     /// skipped, or just was, and lets the viewer watch it anyway.
     fn sponsor_notice(&self, cx: &Context<Self>) -> Option<AnyElement> {
@@ -1749,6 +1807,9 @@ impl WatchView {
                 .text_size(theme.text(Text::Small))
                 .text_color(theme.overlay_foreground)
                 .occlude()
+                // A press on the card is not a press on the picture under it.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(|_, _, cx| cx.stop_propagation())
                 .child(text)
                 .child(
                     Button::new("video-sponsor-watch")
@@ -1757,6 +1818,7 @@ impl WatchView {
                         .small()
                         .tint(theme.overlay_foreground)
                         .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
                             watching.update(cx, |watching, cx| watching.watch_sponsor(sponsor, cx));
                         }),
                 )
@@ -2530,7 +2592,10 @@ impl WatchView {
                         )
                     }),
             )
-            .child(time(ends))
+            .child(match watching.live() {
+                true => self.live_mark(cx),
+                false => time(ends).into_any_element(),
+            })
             .children(self.chapter_now(position, cx))
             .child(div().flex_1())
             .child(tray)
