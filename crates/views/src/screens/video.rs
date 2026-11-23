@@ -1730,7 +1730,7 @@ impl WatchView {
                             match &target {
                                 tube::EndTarget::Video(id) => Destination::Watch(id.clone().into()),
                                 tube::EndTarget::Playlist(id) => {
-                                    Destination::Playlist(id.clone().into())
+                                    Destination::Videos(id.clone().into())
                                 }
                                 tube::EndTarget::Channel(id) => {
                                     Destination::Channel(id.clone().into())
