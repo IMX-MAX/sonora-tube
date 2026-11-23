@@ -1,29 +1,23 @@
+// The music services went and what is left of their shared code goes in steps, so parts of it
+// stand unused for now.
+#![allow(dead_code, unused_imports)]
+
 mod aac;
-pub mod apple;
 pub mod artwork;
 mod audio;
-pub mod binimum;
 mod calendar;
 pub mod connect;
 pub mod cover;
 pub mod credentials;
-pub mod deezer;
 pub mod drm;
 pub mod engine;
 pub mod equalizer;
 pub mod escape;
-pub mod jellyfin;
-pub mod kugou;
 pub mod link;
-#[cfg(test)]
-mod live_tests;
 pub mod local;
-pub mod lrclib;
 pub mod lyrics;
 mod models;
 mod mp4;
-pub mod musixmatch;
-pub mod netease;
 pub mod order;
 pub mod output;
 pub mod potoken;
@@ -35,10 +29,7 @@ pub mod smart;
 pub mod soloist;
 mod spectrum;
 mod sponsorblock;
-pub mod spotify;
 mod stream;
-pub mod subsonic;
-pub mod tidal;
 mod trim;
 pub mod trouble;
 pub mod vault;
