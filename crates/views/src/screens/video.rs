@@ -1672,6 +1672,24 @@ impl WatchView {
         let Some(at) = watching.player().and_then(|player| player.position()) else {
             return Vec::new();
         };
+        // The cards are placed on the picture, which is narrower or shorter than its room when
+        // the two differ in shape.
+        let shape = watching
+            .player()
+            .and_then(|player| player.frame())
+            .map(|frame| frame.size(0))
+            .filter(|size| size.height.0 > 0)
+            .map_or(room.width / room.height, |size| {
+                size.width.0 as f32 / size.height.0 as f32
+            });
+        let picture = match shape > room.width / room.height {
+            true => size(room.width, room.width / shape),
+            false => size(room.height * shape, room.height),
+        };
+        let (left, top) = (
+            (room.width - picture.width) / 2.,
+            (room.height - picture.height) / 2.,
+        );
         let cards = watching.cards();
         let count = cards.len();
         cards
@@ -1679,7 +1697,7 @@ impl WatchView {
             .enumerate()
             .filter(|(_, card)| card.start <= at && at < card.end)
             .map(|(place, card)| {
-                let width = room.width * card.width;
+                let width = picture.width * card.width;
                 let height = width / card.aspect;
                 let round = matches!(card.target, tube::EndTarget::Channel(_));
                 let name = SharedString::from(card.title.clone());
@@ -1691,8 +1709,8 @@ impl WatchView {
                     .aria_position_in_set(place + 1)
                     .aria_size_of_set(count)
                     .absolute()
-                    .left(room.width * card.left)
-                    .top(room.height * card.top)
+                    .left(left + picture.width * card.left)
+                    .top(top + picture.height * card.top)
                     .w(width)
                     .h(height)
                     .overflow_hidden()
