@@ -281,9 +281,13 @@ impl Pen {
                 }
                 tube::Mark::Moment(seconds) => seconds,
             };
-            // Only a dash between two moments makes them the ends of one stretch.
+            // Only a dash between two moments makes them the ends of one stretch, whether or
+            // not each moment sits in brackets of its own.
             let joined = badges.last_mut().filter(|last| {
-                let between = &line.text[last.range.end..range.start];
+                let between = line.text[last.range.end..range.start]
+                    .trim()
+                    .trim_start_matches([']', ')'])
+                    .trim_end_matches(['[', '(']);
                 last.until.is_none()
                     && seconds > last.from
                     && matches!(between.trim(), "-" | "–" | "—")
