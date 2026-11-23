@@ -257,6 +257,10 @@ pub struct Watching {
     carding: Option<Task<()>>,
     /// The stretch of the video an answer pointed at, marked on the seek bar until it is over.
     pointed: Option<(f64, f64)>,
+    /// The streams of the Shorts next to the one playing, asked for ahead so stepping to one
+    /// starts it without waiting on YouTube, and the requests still out for them.
+    ahead: HashMap<String, tube::Streams>,
+    preloading: HashMap<String, Task<()>>,
     /// The video's sponsored stretches in order, and the ones the viewer chose to watch.
     sponsors: Vec<Sponsor>,
     sponsors_kept: Vec<Sponsor>,
@@ -331,6 +335,8 @@ impl Watching {
             cards: Arc::default(),
             carding: None,
             pointed: None,
+            ahead: HashMap::new(),
+            preloading: HashMap::new(),
             sponsors: Vec::new(),
             sponsors_kept: Vec::new(),
             sponsor_skipped: None,
@@ -1012,7 +1018,51 @@ impl Watching {
     }
 
     /// Takes in the Shorts gathered since, and asks for more when few are left ahead.
+    /// Asks for the streams of the Shorts just after and before the one playing, and forgets
+    /// those of Shorts no longer near.
+    fn preload(&mut self, cx: &mut Context<Self>) {
+        if !self.short {
+            self.ahead.clear();
+            self.preloading.clear();
+            return;
+        }
+        let near: Vec<String> = SHORTS_PRELOAD
+            .iter()
+            .filter_map(|by| self.beside(*by))
+            .map(|short| short.id.clone())
+            .collect();
+        self.ahead.retain(|id, _| near.contains(id));
+        self.preloading.retain(|id, _| near.contains(id));
+        for id in near {
+            if self.ahead.contains_key(&id) || self.preloading.contains_key(&id) {
+                continue;
+            }
+            let (client, asked) = (self.client.clone(), id.clone());
+            let request = self.io.spawn(async move { client.streams(&asked).await });
+            let asked = id.clone();
+            let task = cx.spawn(async move |this, cx| {
+                let named = join(request).await;
+                this.update(cx, |this, _| {
+                    if this.preloading.remove(&asked).is_none() {
+                        return;
+                    }
+                    match named {
+                        Ok(streams) => {
+                            this.ahead.insert(asked, streams);
+                        }
+                        Err(error) => {
+                            log::warn!("video: cannot ready the short {asked}: {error:#}");
+                        }
+                    }
+                })
+                .ok();
+            });
+            self.preloading.insert(id, task);
+        }
+    }
+
     fn extend_reel(&mut self, cx: &mut Context<Self>) {
+        self.preload(cx);
         if !self.endless || !self.short {
             return;
         }
@@ -1901,9 +1951,15 @@ impl Watching {
         // Asking YouTube for the streams directly is seconds faster than letting the player
         // scrape the page, which stays as the way out when YouTube holds them back.
         let (client, asked) = (self.client.clone(), id.to_owned());
+        let held = self.ahead.remove(id);
         let request = self.io.spawn({
             let asked = asked.clone();
-            async move { client.streams(&asked).await }
+            async move {
+                match held {
+                    Some(streams) => Ok(streams),
+                    None => client.streams(&asked).await,
+                }
+            }
         });
         self.stream = Some(cx.spawn(async move |this, cx| {
             let named = join(request).await;
@@ -2818,6 +2874,8 @@ const SHORTS_EACH: usize = 10;
 const SHORTS_QUERY: &str = "#shorts";
 /// How near the end of the endless Shorts the one playing gets before more are fetched.
 const SHORTS_AHEAD: isize = 4;
+/// Which Shorts around the one playing have their streams asked for ahead.
+const SHORTS_PRELOAD: [isize; 3] = [1, 2, -1];
 /// How long after a failure more Shorts are not asked for.
 const SHORTS_RETRY: Duration = Duration::from_secs(30);
 /// How many of a channel's newest uploads go into the feed.
