@@ -1802,8 +1802,6 @@ impl WatchView {
                 .py_1()
                 .rounded(theme.radius)
                 .bg(theme.overlay)
-                .border_1()
-                .border_color(theme.sponsor)
                 .text_size(theme.text(Text::Small))
                 .text_color(theme.overlay_foreground)
                 .occlude()
@@ -2647,17 +2645,6 @@ impl WatchView {
                                     |(start, end)| ((start / total) as f32, (end / total) as f32),
                                 ),
                                 theme.selection,
-                            )
-                            .ranges(
-                                self.watching
-                                    .read(cx)
-                                    .sponsors(cx)
-                                    .into_iter()
-                                    .filter(|_| total > 0.)
-                                    .map(|(start, end)| {
-                                        ((start / total) as f32, (end / total) as f32)
-                                    }),
-                                theme.sponsor,
                             )
                             .name(t!("video-position"))
                             .value(elapsed)

@@ -225,8 +225,6 @@ pub struct ThemeOverrides {
     pub popover_foreground: Option<String>,
     pub progress_bar: Option<String>,
     pub selection: Option<String>,
-    /// The colour of a sponsored stretch on a video's seek bar.
-    pub sponsor: Option<String>,
     pub sidebar: Option<String>,
     pub sidebar_accent: Option<String>,
     pub sidebar_border: Option<String>,
@@ -275,7 +273,6 @@ impl ThemeOverrides {
             popover_foreground,
             progress_bar,
             selection,
-            sponsor,
             sidebar,
             sidebar_accent,
             sidebar_border,
@@ -317,7 +314,6 @@ impl ThemeOverrides {
                 | "popover_foreground"
                 | "progress_bar"
                 | "selection"
-                | "sponsor"
                 | "sidebar"
                 | "sidebar_accent"
                 | "sidebar_border"
@@ -364,7 +360,6 @@ impl ThemeOverrides {
             popover_foreground,
             progress_bar,
             selection,
-            sponsor,
             sidebar,
             sidebar_accent,
             sidebar_border,
@@ -416,8 +411,6 @@ pub struct Theme {
     pub popover_foreground: Hsla,
     pub progress_bar: Hsla,
     pub selection: Hsla,
-    /// The colour of a sponsored stretch on a video's seek bar.
-    pub sponsor: Hsla,
     pub sidebar: Hsla,
     /// The fill under the sidebar entry of the page that is open, thinned the way
     /// `secondary_hover` is and for the same reason.
@@ -483,7 +476,6 @@ impl Theme {
             popover_foreground: rgb(0xfafafa).into(),
             progress_bar: rgb(0xf5f5f5).into(),
             selection: rgb(0x1d4ed8).into(),
-            sponsor: rgb(0x22c55e).into(),
             sidebar: rgb(0x0a0a0a).into(),
             sidebar_accent: rgba(0x50505066).into(),
             sidebar_border: rgb(0x262626).into(),
@@ -528,7 +520,6 @@ impl Theme {
             popover_foreground: rgb(0x171717).into(),
             progress_bar: rgb(0x262626).into(),
             selection: rgb(0x2563eb).into(),
-            sponsor: rgb(0x16a34a).into(),
             sidebar: rgb(0xf5f5f5).into(),
             sidebar_accent: rgba(0xcdcdcd66).into(),
             sidebar_border: rgb(0xd4d4d4).into(),
@@ -737,7 +728,6 @@ impl Theme {
             popover_foreground,
             progress_bar,
             selection,
-            sponsor,
             sidebar,
             sidebar_accent,
             sidebar_border,
@@ -781,7 +771,6 @@ impl Theme {
         apply_color!(popover_foreground);
         apply_color!(progress_bar);
         apply_color!(selection);
-        apply_color!(sponsor);
         apply_color!(sidebar);
         apply_color!(sidebar_accent);
         apply_color!(sidebar_border);

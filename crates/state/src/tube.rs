@@ -1292,17 +1292,6 @@ impl Watching {
             .collect()
     }
 
-    /// The stretches that will be skipped, for marking on the seek bar.
-    pub fn sponsors(&self, cx: &App) -> Vec<(f64, f64)> {
-        if self.live {
-            return Vec::new();
-        }
-        self.skipped_sponsors(cx)
-            .into_iter()
-            .map(|sponsor| (sponsor.start, sponsor.end))
-            .collect()
-    }
-
     /// Jumps past a sponsored stretch the video has reached, and redraws while a notice shows.
     fn skip_sponsors(&mut self, cx: &mut Context<Self>) {
         if self.live || (self.sponsors.is_empty() && self.sponsor_skipped.is_none()) {
