@@ -5027,7 +5027,7 @@ impl Render for VideoFeedView {
                     return;
                 }
                 watching.update(cx, |watching, cx| watching.set_endless_reel(cx));
-                router::replace(Destination::Short(first), cx);
+                router::up(Destination::Short(first), cx);
             });
         }
         if self.feed == Feed::Discover && !loading && (1..FOUND_MOST).contains(&total) {

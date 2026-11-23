@@ -2988,7 +2988,11 @@ impl Subscriptions {
                         ));
                         this.shorts_dry = this.shorts_more.is_none() && this.shorts.len() == held;
                     }
-                    Err(error) => log::warn!("video: cannot gather more shorts: {error:#}"),
+                    Err(error) => {
+                        // Asked again only once the Shorts are gathered afresh.
+                        this.shorts_dry = true;
+                        log::warn!("video: cannot gather more shorts: {error:#}");
+                    }
                 }
                 cx.notify();
             })
