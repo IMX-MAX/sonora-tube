@@ -219,6 +219,11 @@ impl Player {
         self.core.flag("pause").unwrap_or(false)
     }
 
+    /// Whether the video played to its end and stands on its last frame.
+    pub fn ended(&self) -> bool {
+        self.core.flag("eof-reached").unwrap_or(false)
+    }
+
     pub fn set_paused(&self, paused: bool) {
         let value = match paused {
             true => "yes",

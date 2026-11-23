@@ -7,9 +7,9 @@ use std::time::Duration;
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, ClipboardItem, Context, ElementId, Entity, FontStyle, FontWeight, HighlightStyle,
-    InteractiveText, Pixels, SharedString, StrikethroughStyle, StyledText, UnderlineStyle, Window,
-    div, px, relative, svg,
+    AnyElement, Bounds, ClipboardItem, Context, ElementId, Entity, FontStyle, FontWeight,
+    HighlightStyle, Hsla, InteractiveText, PathBuilder, Pixels, SharedString, StrikethroughStyle,
+    StyledText, TextLayout, UnderlineStyle, Window, canvas, div, point, px, relative, svg,
 };
 use i18n::t;
 use router::{Destination, SettingsPage, navigate};
@@ -41,20 +41,41 @@ const SUGGESTIONS: [&str; 3] = [
     "video-ai-suggest-moment",
 ];
 
+/// A space the line never breaks at.
+const SPACE: &str = "\u{a0}";
+/// The room kept at the start of a moment's badge, a space either side of its triangle's.
+const LEAD: &str = "\u{a0}\u{a0}\u{a0}\u{a0}";
+/// The room kept at the end of a moment's badge.
+const TAIL: &str = SPACE;
+
+/// A moment or a stretch of the video named in a line, drawn as a badge that seeks.
+#[derive(Clone)]
+struct Badge {
+    /// Where in the line the badge stands.
+    range: Range<usize>,
+    from: f64,
+    /// Where the stretch ends, when the badge names one.
+    until: Option<f64>,
+}
+
 /// Draws the blocks of one answer, numbering what it draws so each piece keeps its own id.
-struct Pen {
-    theme: Theme,
-    watching: Entity<Watching>,
-    /// Which message of the chat the answer is.
-    place: usize,
-    drawn: usize,
+pub(super) struct Pen {
+    pub theme: Theme,
+    pub watching: Entity<Watching>,
+    /// Which message of the chat the answer is, or a number of its own for text elsewhere.
+    pub place: usize,
+    pub drawn: usize,
 }
 
 impl Pen {
     /// An id no other piece of the chat has.
     fn id(&mut self, kind: &'static str) -> ElementId {
         self.drawn += 1;
-        (kind, self.place * PIECES + self.drawn).into()
+        (
+            kind,
+            self.place.wrapping_mul(PIECES).wrapping_add(self.drawn),
+        )
+            .into()
     }
 
     /// `blocks` one under the other.
@@ -231,12 +252,12 @@ impl Pen {
             .into_any_element()
     }
 
-    /// A line of text with its bold, italics and code, its moments and addresses drawn as the
-    /// description's links are and seeking or opening when pressed.
-    fn line(&mut self, line: &Rich) -> AnyElement {
+    /// A line of text with its bold, italics and code. Its addresses open when pressed, and its
+    /// moments stand as badges that seek: two joined by a dash are one badge for the stretch
+    /// between them, which stays marked on the seek bar until it has played.
+    pub(super) fn line(&mut self, line: &Rich) -> AnyElement {
         let theme = self.theme;
-        let text = SharedString::from(line.text.clone());
-        let mut presses = tube::marks(&text);
+        let mut presses = tube::marks(&line.text);
         for (range, look) in &line.looks {
             let Some(address) = &look.link else { continue };
             presses.retain(|(other, _)| other.end <= range.start || other.start >= range.end);
@@ -250,12 +271,74 @@ impl Pen {
         });
         presses.sort_by_key(|(range, _)| range.start);
 
-        // Highlights may not overlap, so the line is cut wherever any look starts or ends.
-        let mut cuts: Vec<usize> = line
+        let mut links = Vec::new();
+        let mut badges: Vec<Badge> = Vec::new();
+        for (range, mark) in presses {
+            let seconds = match mark {
+                tube::Mark::Link(address) => {
+                    links.push((range, address));
+                    continue;
+                }
+                tube::Mark::Moment(seconds) => seconds,
+            };
+            // Only a dash between two moments makes them the ends of one stretch.
+            let joined = badges.last_mut().filter(|last| {
+                let between = &line.text[last.range.end..range.start];
+                last.until.is_none()
+                    && seconds > last.from
+                    && matches!(between.trim(), "-" | "–" | "—")
+            });
+            match joined {
+                Some(last) => {
+                    last.range.end = range.end;
+                    last.until = Some(seconds);
+                }
+                None => badges.push(Badge {
+                    range,
+                    from: seconds,
+                    until: None,
+                }),
+            }
+        }
+
+        // Room is made inside each badge for its triangle, which moves everything after it.
+        let mut text = String::with_capacity(line.text.len());
+        let mut added = Vec::new();
+        let mut copied = 0;
+        for badge in &badges {
+            text.push_str(&line.text[copied..badge.range.start]);
+            text.push_str(LEAD);
+            text.push_str(&line.text[badge.range.clone()]);
+            text.push_str(TAIL);
+            copied = badge.range.end;
+            added.push((badge.range.start, LEAD.len()));
+            added.push((badge.range.end, TAIL.len()));
+        }
+        text.push_str(&line.text[copied..]);
+        let moved = |at: usize| {
+            let before = added.iter().filter(|(place, _)| *place < at);
+            at + before.map(|(_, length)| length).sum::<usize>()
+        };
+        let moved_range = |range: &Range<usize>| moved(range.start)..moved(range.end);
+        let looks: Vec<_> = line
             .looks
             .iter()
+            .map(|(range, look)| (moved_range(range), look))
+            .collect();
+        let links: Vec<_> = links
+            .into_iter()
+            .map(|(range, address)| (moved_range(&range), address))
+            .collect();
+        for badge in &mut badges {
+            badge.range = moved(badge.range.start)..moved(badge.range.end) + TAIL.len();
+        }
+
+        // Highlights may not overlap, so the line is cut wherever any look starts or ends.
+        let mut cuts: Vec<usize> = looks
+            .iter()
             .map(|(range, _)| range)
-            .chain(presses.iter().map(|(range, _)| range))
+            .chain(links.iter().map(|(range, _)| range))
+            .chain(badges.iter().map(|badge| &badge.range))
             .flat_map(|range| [range.start, range.end])
             .collect();
         cuts.sort_unstable();
@@ -267,7 +350,7 @@ impl Pen {
                 let within = |range: &Range<usize>| range.start <= from && to <= range.end;
                 let mut style = HighlightStyle::default();
                 let mut any = false;
-                for (_, look) in line.looks.iter().filter(|(range, _)| within(range)) {
+                for (_, look) in looks.iter().filter(|(range, _)| within(range)) {
                     any = true;
                     if look.bold {
                         style.font_weight = Some(FontWeight::SEMIBOLD);
@@ -285,56 +368,124 @@ impl Pen {
                         });
                     }
                 }
-                match presses.iter().find(|(range, _)| within(range)) {
-                    // A moment stands as a badge in a tint of the theme's colour.
-                    Some((_, tube::Mark::Moment(_))) => {
-                        any = true;
-                        style.color = Some(theme.progress_bar);
-                        style.font_weight = Some(FontWeight::SEMIBOLD);
-                        style.background_color =
-                            Some(ui::motion::mix(theme.progress_bar, theme.background, TINT));
-                    }
-                    Some((_, tube::Mark::Link(_))) => {
-                        any = true;
-                        style.color = Some(theme.progress_bar);
-                        style.underline = Some(UnderlineStyle {
-                            thickness: LINE,
-                            ..Default::default()
-                        });
-                    }
-                    None => {}
+                if badges.iter().any(|badge| within(&badge.range)) {
+                    any = true;
+                    style.color = Some(theme.progress_bar);
+                    style.font_weight = Some(FontWeight::SEMIBOLD);
+                } else if links.iter().any(|(range, _)| within(range)) {
+                    any = true;
+                    style.color = Some(theme.progress_bar);
+                    style.underline = Some(UnderlineStyle {
+                        thickness: LINE,
+                        ..Default::default()
+                    });
                 }
                 any.then_some((from..to, style))
             })
             .collect();
 
-        let ranges = presses.iter().map(|(range, _)| range.clone()).collect();
+        let ranges = links
+            .iter()
+            .map(|(range, _)| range.clone())
+            .chain(badges.iter().map(|badge| badge.range.clone()))
+            .collect();
         let watching = self.watching.clone();
-        let styled = StyledText::new(text).with_highlights(highlights);
+        let styled = StyledText::new(SharedString::from(text)).with_highlights(highlights);
         let letters = styled.layout().clone();
         // The text only turns the pointer into a hand over a link; the press is read by the
         // box around it, which also hears a click a redraw falls inside of, as one does on
         // every frame of a playing video.
         let words =
             InteractiveText::new(self.id("video-ai-line"), styled).on_click(ranges, |_, _, _| {});
+        let backs = {
+            let (letters, badges) = (letters.clone(), badges.clone());
+            let fill = ui::motion::mix(theme.progress_bar, theme.background, TINT);
+            canvas(
+                |_, _, _| {},
+                move |bounds, (), window, _| {
+                    for badge in &badges {
+                        back(badge, &letters, bounds, fill, &theme, window);
+                    }
+                },
+            )
+            .absolute()
+            .inset_0()
+        };
         div()
             .id(self.id("video-ai-words"))
+            .relative()
             .on_click(move |event, _, cx| {
                 let Ok(at) = letters.index_for_position(event.position()) else {
                     return;
                 };
-                let pressed = presses.iter().find(|(range, _)| range.contains(&at));
-                match pressed.map(|(_, mark)| mark) {
-                    Some(tube::Mark::Moment(seconds)) => {
-                        let seconds = *seconds;
-                        watching.update(cx, |watching, cx| watching.seek_to(seconds, cx));
-                    }
-                    Some(tube::Mark::Link(address)) => cx.open_url(address),
-                    None => {}
+                if let Some(badge) = badges.iter().find(|badge| badge.range.contains(&at)) {
+                    let (from, until) = (badge.from, badge.until.unwrap_or(badge.from));
+                    watching.update(cx, |watching, cx| watching.point_at(from, until, cx));
+                } else if let Some((_, address)) =
+                    links.iter().find(|(range, _)| range.contains(&at))
+                {
+                    cx.open_url(address);
                 }
             })
+            .child(backs)
             .child(words)
             .into_any_element()
+    }
+}
+
+/// Paints what stands behind a moment's badge: its rounded back, and the triangle in the room
+/// kept at its start. A badge the line breaks inside of is backed on both of its lines.
+fn back(
+    badge: &Badge,
+    letters: &TextLayout,
+    within: Bounds<Pixels>,
+    fill: Hsla,
+    theme: &Theme,
+    window: &mut Window,
+) {
+    let (Some(start), Some(end)) = (
+        letters.position_for_index(badge.range.start),
+        letters.position_for_index(badge.range.end),
+    ) else {
+        return;
+    };
+    let height = letters.line_height();
+    let radius = theme.radius.min(height / 2.);
+    let mut piece = |left: Pixels, right: Pixels, top: Pixels| {
+        let bounds = Bounds::from_corners(point(left, top), point(right, top + height));
+        window.paint_quad(gpui::fill(bounds, fill).corner_radii(radius));
+    };
+    match start.y == end.y {
+        true => piece(start.x, end.x, start.y),
+        false => {
+            piece(start.x, within.right(), start.y);
+            piece(within.left(), end.x, end.y);
+        }
+    }
+
+    // The triangle fills the middle of the room the leading spaces keep.
+    let (Some(left), Some(right)) = (
+        letters.position_for_index(badge.range.start + SPACE.len()),
+        letters.position_for_index(badge.range.start + LEAD.len() - SPACE.len()),
+    ) else {
+        return;
+    };
+    if left.y != start.y || right.y != start.y {
+        return;
+    }
+    let side = (right.x - left.x).min(height / 2.);
+    let top = start.y + (height - side) / 2.;
+    let mut path = PathBuilder::fill();
+    path.add_polygon(
+        &[
+            point(left.x, top),
+            point(left.x + side, top + side / 2.),
+            point(left.x, top + side),
+        ],
+        true,
+    );
+    if let Ok(path) = path.build() {
+        window.paint_path(path, theme.progress_bar);
     }
 }
 

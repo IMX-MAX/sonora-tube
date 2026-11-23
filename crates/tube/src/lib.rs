@@ -166,6 +166,31 @@ pub struct Streams {
     pub board: Option<Storyboard>,
 }
 
+/// What pressing an end card opens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EndTarget {
+    Video(String),
+    Playlist(String),
+    Channel(String),
+}
+
+/// A card the maker laid over the last seconds of a video, pointing at something to see next.
+/// The place and the size are shares of the picture, from 0 to 1.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EndCard {
+    pub target: EndTarget,
+    pub title: String,
+    pub image: Option<String>,
+    pub left: f32,
+    pub top: f32,
+    pub width: f32,
+    /// The width of the card over its height.
+    pub aspect: f32,
+    /// The seconds of the video the card is shown from and until.
+    pub start: f64,
+    pub end: f64,
+}
+
 /// Sheets of small pictures taken through a video at even steps, which a seek bar shows the
 /// moment under the pointer from.
 #[derive(Clone, Debug, Default, PartialEq)]

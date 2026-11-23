@@ -9,8 +9,9 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
 
 use crate::{
-    Caption, Channel, ChannelPage, ChannelRef, Comment, Comments, Found, Identity, Line, Page,
-    Playlist, PlaylistPage, Post, Quality, Section, Storyboard, Tab, Video, Watch,
+    Caption, Channel, ChannelPage, ChannelRef, Comment, Comments, EndCard, EndTarget, Found,
+    Identity, Line, Page, Playlist, PlaylistPage, Post, Quality, Section, Storyboard, Tab, Video,
+    Watch,
 };
 
 /// Containers whose contents are never listed: ads, the side card of a search and the chapter
@@ -774,6 +775,45 @@ fn is_video(id: &str) -> bool {
         && id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// The end cards of a video, from the `endscreen` of a player answer. A card that leads off
+/// YouTube is left out.
+pub(crate) fn end_cards(endscreen: &Value) -> Vec<EndCard> {
+    let Some(elements) = endscreen["endscreenRenderer"]["elements"].as_array() else {
+        return Vec::new();
+    };
+    elements
+        .iter()
+        .filter_map(|element| {
+            let card = &element["endscreenElementRenderer"];
+            let endpoint = &card["endpoint"];
+            let target = match card["style"].as_str()? {
+                "VIDEO" => EndTarget::Video(string(&endpoint["watchEndpoint"]["videoId"])?),
+                "PLAYLIST" => {
+                    EndTarget::Playlist(string(&endpoint["watchEndpoint"]["playlistId"])?)
+                }
+                "CHANNEL" => EndTarget::Channel(string(&endpoint["browseEndpoint"]["browseId"])?),
+                _ => return None,
+            };
+            let share = |name: &str| card[name].as_f64().map(|share| share as f32);
+            let moment = |name: &str| {
+                let written = card[name].as_str()?.parse::<f64>().ok()?;
+                Some(written / 1000.)
+            };
+            Some(EndCard {
+                target,
+                title: text(&card["title"]).unwrap_or_default(),
+                image: thumbnail(&card["image"]),
+                left: share("left")?,
+                top: share("top")?,
+                width: share("width")?,
+                aspect: share("aspectRatio").filter(|aspect| *aspect > 0.)?,
+                start: moment("startMs")?,
+                end: moment("endMs")?,
+            })
+        })
+        .collect()
 }
 
 /// The sheets of preview pictures a player answer names, at the size a seek bar shows.

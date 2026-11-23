@@ -281,7 +281,7 @@ video-home-find = Find channels
 video-like = Like
 video-like-remove = Remove like
 video-speed = Playback speed
-video-more = More controls
+video-more-controls = More controls
 video-quality = Picture quality
 video-quality-auto = Auto
 video-quality-auto-at = Auto ({ $height }p)
@@ -325,3 +325,7 @@ video-chapter-meta = { $start } · { $minutes ->
        *[other] { $minutes } min
     }
 video-chapter-now = Chapter: { $title }
+video-partners = { $count ->
+    [one] Made together with
+   *[other] Made together with { $count } channels
+}

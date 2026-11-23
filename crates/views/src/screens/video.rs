@@ -1586,6 +1586,12 @@ impl WatchView {
                     stage.when_some(view.filter(|_| !buffering), |this, view| this.child(view))
                 }
             })
+            .children(
+                (!floating)
+                    .then(|| self.end_cards(room, cx))
+                    .into_iter()
+                    .flatten(),
+            )
             .when(hurried, |this| {
                 this.child(
                     div()
@@ -1656,6 +1662,91 @@ impl WatchView {
                         ),
                 )
             })
+    }
+
+    /// The cards the video ends on that are due now, each where its maker laid it over the
+    /// picture and opening what it points at when pressed.
+    fn end_cards(&self, room: Size<Pixels>, cx: &Context<Self>) -> Vec<AnyElement> {
+        let theme = cx.theme();
+        let watching = self.watching.read(cx);
+        let Some(at) = watching.player().and_then(|player| player.position()) else {
+            return Vec::new();
+        };
+        let cards = watching.cards();
+        let count = cards.len();
+        cards
+            .iter()
+            .enumerate()
+            .filter(|(_, card)| card.start <= at && at < card.end)
+            .map(|(place, card)| {
+                let width = room.width * card.width;
+                let height = width / card.aspect;
+                let round = matches!(card.target, tube::EndTarget::Channel(_));
+                let name = SharedString::from(card.title.clone());
+                let target = card.target.clone();
+                div()
+                    .id(("video-end-card", place))
+                    .role(Role::Link)
+                    .aria_label(name.clone())
+                    .aria_position_in_set(place + 1)
+                    .aria_size_of_set(count)
+                    .absolute()
+                    .left(room.width * card.left)
+                    .top(room.height * card.top)
+                    .w(width)
+                    .h(height)
+                    .overflow_hidden()
+                    .map(|this| match round {
+                        true => this.rounded_full(),
+                        false => this.rounded(theme.radius).corner_smoothing(theme.smoothing),
+                    })
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.overlay)
+                    .cursor_pointer()
+                    // A press on a card is not one on the picture, which would pause the video.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        navigate(
+                            match &target {
+                                tube::EndTarget::Video(id) => Destination::Watch(id.clone().into()),
+                                tube::EndTarget::Playlist(id) => {
+                                    Destination::Playlist(id.clone().into())
+                                }
+                                tube::EndTarget::Channel(id) => {
+                                    Destination::Channel(id.clone().into())
+                                }
+                            },
+                            cx,
+                        );
+                    })
+                    .when_some(card.image.clone(), |this, image| {
+                        this.child(
+                            gpui::img(SharedString::from(image))
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Cover),
+                        )
+                    })
+                    .when(!round && !card.title.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .px_2()
+                                .py_1()
+                                .bg(theme.overlay)
+                                .text_size(theme.text(Text::Small))
+                                .text_color(theme.overlay_foreground)
+                                .truncate()
+                                .child(name),
+                        )
+                    })
+                    .into_any_element()
+            })
+            .collect()
     }
 
     /// The picture of the moment under the pointer and its time, standing over the seek bar.
@@ -2239,7 +2330,7 @@ impl WatchView {
                     Button::new("video-more")
                         .icon("icons/ellipsis.svg")
                         .ghost()
-                        .tooltip("video-more"),
+                        .tooltip("video-more-controls"),
                 ),
             });
         let buttons = div()
@@ -2360,6 +2451,13 @@ impl WatchView {
                     .child(
                         Scrubber::new(&self.seek, fraction)
                             .cuts(cuts)
+                            // The stretch an answer pointed at stands out until it has played.
+                            .ranges(
+                                self.watching.read(cx).pointed().filter(|_| total > 0.).map(
+                                    |(start, end)| ((start / total) as f32, (end / total) as f32),
+                                ),
+                                theme.foreground,
+                            )
                             .name(t!("video-position"))
                             .value(elapsed)
                             .colors(
@@ -3395,55 +3493,93 @@ impl WatchView {
                     // Everyone else a video made together is credited to, each with its own
                     // way to its channel and to following it.
                     let count = watch.partners.len();
-                    this.child(div().flex().flex_wrap().items_center().gap_4().children(
-                        watch.partners.iter().enumerate().map(|(place, partner)| {
-                            let name = SharedString::from(partner.name.clone());
-                            let opened = SharedString::from(partner.id.clone());
+                    let together = div()
+                        .text_size(theme.text(Text::Small))
+                        .text_color(theme.muted_foreground)
+                        .child(t!("video-partners", count = count));
+                    let credited = div()
+                        .p(theme.metrics.pad)
+                        .rounded(theme.radius)
+                        .corner_smoothing(theme.smoothing)
+                        .bg(theme.secondary)
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(together);
+                    this.child(
+                        credited.child(
                             div()
-                                .id(SharedString::from(format!("video-partner-{}", partner.id)))
-                                .role(Role::Link)
-                                .aria_label(name.clone())
-                                .aria_position_in_set(place + 1)
-                                .aria_size_of_set(count)
                                 .flex()
+                                .flex_wrap()
                                 .items_center()
-                                .gap_3()
-                                .cursor_pointer()
-                                .on_click(move |_, _, cx| {
-                                    navigate(Destination::Channel(opened.clone()), cx);
-                                })
-                                .child(
-                                    Avatar::new(partner.avatar.clone()).size(theme.metrics.control),
-                                )
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .child(
-                                            div()
-                                                .text_size(theme.text(Text::Label))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .child(name),
-                                        )
-                                        .when_some(partner.subscribers.clone(), |this, count| {
-                                            this.child(
-                                                div()
-                                                    .text_size(theme.text(Text::Small))
-                                                    .text_color(theme.muted_foreground)
-                                                    .child(count),
+                                .gap_x_6()
+                                .gap_y_3()
+                                .children(watch.partners.iter().enumerate().map(
+                                    |(place, partner)| {
+                                        let name = SharedString::from(partner.name.clone());
+                                        let opened = SharedString::from(partner.id.clone());
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "video-partner-{}",
+                                                partner.id
+                                            )))
+                                            .role(Role::Link)
+                                            .aria_label(name.clone())
+                                            .aria_position_in_set(place + 1)
+                                            .aria_size_of_set(count)
+                                            .flex()
+                                            .items_center()
+                                            .gap_3()
+                                            .cursor_pointer()
+                                            .on_click(move |_, _, cx| {
+                                                navigate(Destination::Channel(opened.clone()), cx);
+                                            })
+                                            .child(
+                                                Avatar::new(partner.avatar.clone())
+                                                    .size(theme.metrics.control),
                                             )
-                                        }),
-                                )
-                                .child(subscribe(
-                                    gpui::ElementId::Name(
-                                        format!("video-partner-subscribe-{}", partner.id).into(),
-                                    ),
-                                    partner,
-                                    &self.subscriptions,
-                                    cx,
-                                ))
-                        }),
-                    ))
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .child(
+                                                        div()
+                                                            .text_size(theme.text(Text::Label))
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .child(name),
+                                                    )
+                                                    .when_some(
+                                                        partner.subscribers.clone(),
+                                                        |this, count| {
+                                                            this.child(
+                                                                div()
+                                                                    .text_size(
+                                                                        theme.text(Text::Small),
+                                                                    )
+                                                                    .text_color(
+                                                                        theme.muted_foreground,
+                                                                    )
+                                                                    .child(count),
+                                                            )
+                                                        },
+                                                    ),
+                                            )
+                                            .child(subscribe(
+                                                gpui::ElementId::Name(
+                                                    format!(
+                                                        "video-partner-subscribe-{}",
+                                                        partner.id
+                                                    )
+                                                    .into(),
+                                                ),
+                                                partner,
+                                                &self.subscriptions,
+                                                cx,
+                                            ))
+                                    },
+                                )),
+                        ),
+                    )
                 })
                 .when(!watch.description.is_empty(), |this| {
                     this.child(
@@ -3505,7 +3641,7 @@ impl WatchView {
             .id(SharedString::from(format!("video-comment-{}", comment.id)))
             .role(Role::Comment)
             .aria_label(byline.clone())
-            .aria_description(text.clone())
+            .aria_description(text)
             .aria_position_in_set(place.0 + 1)
             .aria_size_of_set(place.1)
             .flex()
@@ -3536,7 +3672,21 @@ impl WatchView {
                             .text_color(theme.muted_foreground)
                             .child(byline),
                     )
-                    .child(div().text_size(theme.text(Text::Label)).child(text))
+                    .child(div().text_size(theme.text(Text::Label)).child({
+                        // The moments a comment names seek the video, as an answer's do.
+                        let mut key = std::hash::DefaultHasher::new();
+                        std::hash::Hash::hash(&comment.id, &mut key);
+                        let mut pen = ai::Pen {
+                            theme: *theme,
+                            watching: self.watching.clone(),
+                            place: std::hash::Hasher::finish(&key) as usize,
+                            drawn: 0,
+                        };
+                        pen.line(&markdown::Rich {
+                            text: comment.text.clone(),
+                            looks: Vec::new(),
+                        })
+                    }))
                     .child(
                         div()
                             .flex()

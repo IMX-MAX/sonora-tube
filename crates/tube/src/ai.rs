@@ -26,6 +26,10 @@ pub const MODELS: [&str; 9] = [
 pub const MODEL: &str = "mistral-small-latest";
 /// How much of the transcript goes to the model, in characters, so a long video still fits.
 const READ: usize = 90_000;
+/// How much of the description goes to the model, in characters.
+const DESCRIPTION: usize = 4_000;
+/// How much of the top comments goes to the model, in characters.
+const COMMENTS: usize = 6_000;
 /// How long one transcript entry grows before a new timestamp starts, in characters.
 const ENTRY: usize = 160;
 
@@ -85,24 +89,29 @@ impl Mistral {
     }
 
     /// The answer to the last message of `said`, from a model that read the video's transcript
-    /// and writes the moments it points at as `[m:ss]`.
+    /// with its `description` and its top `comments`, and writes the moments it points at as `[m:ss]`.
     pub async fn ask(
         &self,
         model: &str,
         title: &str,
+        description: &str,
         lines: &[Line],
+        comments: &[String],
         said: &[Said],
     ) -> Result<String> {
         let brief = format!(
             "You answer questions about the YouTube video \"{title}\" from its transcript below. \
              Each transcript entry starts with the moment it is spoken, as [m:ss] or [h:mm:ss]. \
              Whenever you refer to a part of the video, cite the moment it happens in that same \
-             form, for example [4:05], so the viewer can jump to it. Answer in Markdown: lists, bold, tables \
+             form, for example [4:05], so the viewer can jump to it, and a stretch of it as its start \
+             and end joined by a dash, for example [4:05]-[5:10]. Answer in Markdown: lists, bold, tables \
              and code blocks are drawn, and math goes in LaTeX between $ signs, or $$ signs for \
              an equation on its own line. Never put a moment inside a code span or an equation. \
              Keep answers short and direct and answer in the language of the question. \
-             If the transcript does not cover something, say so rather than guessing.\n\n\
+             If the transcript does not cover something, say so rather than guessing.{}{}\n\n\
              Transcript:\n{}",
+            described(description),
+            viewers(comments),
             transcript(lines)
         );
         let mut messages = vec![json!({ "role": "system", "content": brief })];
@@ -187,6 +196,43 @@ async fn checked(answer: reqwest::Response) -> Result<Value> {
         429 => bail!("mistral is rate limiting this key: {reason}"),
         _ => bail!("mistral answered {status}: {reason}"),
     }
+}
+
+/// The description as part of the brief, cut to [`DESCRIPTION`] characters, or nothing when the
+/// video has none.
+fn described(description: &str) -> String {
+    let description = description.trim();
+    if description.is_empty() {
+        return String::new();
+    }
+    let kept: String = description.chars().take(DESCRIPTION).collect();
+    format!(
+        "\n\nThe uploader's description of the video follows. It may hold links, credits and \
+         chapters the transcript does not.\n\nDescription:\n{kept}"
+    )
+}
+
+/// The top comments as part of the brief, cut to [`COMMENTS`] characters, or nothing without any.
+fn viewers(comments: &[String]) -> String {
+    if comments.is_empty() {
+        return String::new();
+    }
+    let mut written = String::from(
+        "\n\nThe video's top comments follow, each with who wrote it and how many liked it. \
+         They are what viewers think, not what the video says: draw on them when asked about \
+         reactions or opinions, and say that a point comes from the comments.\n\nTop comments:",
+    );
+    let mut room = COMMENTS;
+    for comment in comments {
+        let length = comment.chars().count();
+        if length > room {
+            break;
+        }
+        room -= length;
+        written.push_str("\n- ");
+        written.push_str(&comment.replace('\n', " "));
+    }
+    written
 }
 
 /// The transcript as entries that each start with their moment, cut to [`READ`] characters.

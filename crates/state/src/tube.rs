@@ -9,8 +9,8 @@ use std::time::Duration;
 use gpui::{AnyView, App, AppContext as _, ClipboardItem, Context, Entity, Global, Image, Task};
 use tube::ai::{Said, Speaker};
 use tube::{
-    Caption, Channel, Chapter, Client, Comment, Found, Identity, Line, Page, Peek, Playlist, Post,
-    Quality, Storyboard, Tab, Video, Watch,
+    Caption, Channel, Chapter, Client, Comment, EndCard, Found, Identity, Line, Page, Peek,
+    Playlist, Post, Quality, Storyboard, Tab, Video, Watch,
 };
 use video::{Player, VideoView};
 
@@ -141,6 +141,8 @@ const CAPTION_STAYS: f64 = 5.;
 const OPENING_CHECK: Duration = Duration::from_millis(250);
 const OPENING_CHECKS: usize = 80;
 /// How often the place a video is watched up to is written down.
+/// How many of the top comments the AI is told of.
+const TOLD_COMMENTS: usize = 30;
 const PLACE_EVERY: Duration = Duration::from_secs(5);
 /// The share of a video before which it is not worth resuming and after which it is finished.
 const RESUME_FROM: f32 = 0.02;
@@ -231,6 +233,11 @@ pub struct Watching {
     qualities: Vec<Quality>,
     /// The small pictures the seek bar previews the video with.
     board: Option<Storyboard>,
+    /// The cards the video ends on, once YouTube has named them.
+    cards: Arc<Vec<EndCard>>,
+    carding: Option<Task<()>>,
+    /// The stretch of the video an answer pointed at, marked on the seek bar until it is over.
+    pointed: Option<(f64, f64)>,
     /// The tallest picture the user wants, `None` to let the app choose.
     ceiling: Option<u32>,
     /// Whether the picture's colours glow around it.
@@ -289,6 +296,9 @@ impl Watching {
             like: None,
             qualities: Vec::new(),
             board: None,
+            cards: Arc::default(),
+            carding: None,
+            pointed: None,
             ceiling: None,
             ambient: true,
             speed: 1.,
@@ -419,15 +429,35 @@ impl Watching {
             self.chat.failed = Some("no key".to_owned());
             return;
         };
-        let title = self
+        let (title, description) = self
             .watch
             .as_ref()
-            .map(|watch| watch.title.clone())
+            .map(|watch| (watch.title.clone(), watch.description.clone()))
             .unwrap_or_default();
+        // The best comments go along, where they are here. Ones not fetched yet are asked for,
+        // for the questions that follow.
+        let comments: Vec<String> = match self.newest {
+            true => Vec::new(),
+            false => self
+                .thread
+                .comments
+                .iter()
+                .take(TOLD_COMMENTS)
+                .map(|comment| {
+                    let likes = comment.likes.as_deref().unwrap_or("0");
+                    format!("{} ({likes} likes): {}", comment.author.name, comment.text)
+                })
+                .collect(),
+        };
+        if comments.is_empty() && !self.newest {
+            self.load_comments(cx);
+        }
         let (said, asked) = (self.chat.said.clone(), self.id.clone());
-        let request = self
-            .io
-            .spawn(async move { client.ask(&model, &title, &lines, &said).await });
+        let request = self.io.spawn(async move {
+            client
+                .ask(&model, &title, &description, &lines, &comments, &said)
+                .await
+        });
         self.chat.task = Some(cx.spawn(async move |this, cx| {
             let answered = join(request).await;
             this.update(cx, |this, cx| {
@@ -954,7 +984,70 @@ impl Watching {
         if let Some(player) = self.player() {
             player.set_paused(paused);
         }
+        self.keep_awake(cx);
         cx.notify();
+    }
+
+    /// Whether the video played to its end.
+    pub fn ended(&self) -> bool {
+        self.player().is_some_and(|player| player.ended())
+    }
+
+    /// Keeps the screen on for as long as the video plays, and lets it sleep once it does not.
+    fn keep_awake(&self, cx: &mut Context<Self>) {
+        let playing = self
+            .player()
+            .is_some_and(|player| !player.paused() && !player.ended() && !player.idle());
+        let wake = crate::Sonora::global(cx).wake.clone();
+        wake.update(cx, |wake, cx| wake.set_watching(playing, cx));
+    }
+
+    /// The cards the video ends on, each with the seconds it is shown between.
+    pub fn cards(&self) -> Arc<Vec<EndCard>> {
+        self.cards.clone()
+    }
+
+    fn load_cards(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.cards = Arc::default();
+        // A Short plays round and round, so it never comes to its end cards.
+        if self.short {
+            self.carding = None;
+            return;
+        }
+        let (client, asked) = (self.client.clone(), id.to_owned());
+        let request = self.io.spawn({
+            let asked = asked.clone();
+            async move { client.end_cards(&asked).await }
+        });
+        self.carding = Some(cx.spawn(async move |this, cx| {
+            let cards = match join(request).await {
+                Ok(cards) => cards,
+                Err(error) => {
+                    log::warn!("video: no end cards for {asked}: {error:#}");
+                    return;
+                }
+            };
+            this.update(cx, |this, cx| {
+                if this.id.as_deref() == Some(asked.as_str()) {
+                    this.cards = Arc::new(cards);
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// The stretch an answer pointed at, while the video is still inside or before it.
+    pub fn pointed(&self) -> Option<(f64, f64)> {
+        let (start, end) = self.pointed?;
+        let at = self.player()?.position()?;
+        (at < end).then_some((start, end))
+    }
+
+    /// Goes to the start of a stretch and marks it on the seek bar until it has played.
+    pub fn point_at(&mut self, start: f64, end: f64, cx: &mut Context<Self>) {
+        self.pointed = (end > start).then_some((start, end));
+        self.seek_to(start, cx);
     }
 
     /// Whether the picture is in its own small window.
@@ -985,6 +1078,11 @@ impl Watching {
     }
 
     pub fn toggle(&mut self, cx: &mut Context<Self>) {
+        // A video that has ended starts over rather than staying on its last frame.
+        if self.ended() {
+            self.seek_to(0., cx);
+            return self.set_paused(false, cx);
+        }
         let paused = self.player().is_some_and(|player| player.paused());
         self.set_paused(!paused, cx);
     }
@@ -1482,6 +1580,7 @@ impl Watching {
                         if this.player().is_some_and(|player| !player.paused()) {
                             this.place(cx);
                         }
+                        this.keep_awake(cx);
                     });
                     if alive.is_err() {
                         return;
@@ -1498,6 +1597,9 @@ impl Watching {
         self.pace();
         self.qualities.clear();
         self.board = None;
+        self.pointed = None;
+        self.keep_awake(cx);
+        self.load_cards(id, cx);
         if self.captions {
             self.load_transcript(cx);
         }
