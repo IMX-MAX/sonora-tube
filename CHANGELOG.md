@@ -8,7 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- Sponsored stretches are skipped, from SponsorBlock, from Mistral reading the transcript, or both, each with its own switch in Settings. They are marked on the seek bar, and a card in the corner of the picture lets you watch one anyway.
+- Sponsored stretches are skipped, with SponsorBlock, Mistral or both, and a card on the picture lets you watch one anyway.
 - Live broadcasts open at their newest moment, show a Live mark, and offer a way back to live once you fall behind.
 - The next Shorts are readied ahead, so stepping to one starts sooner.
 - A Shorts row in the sidebar opens straight into a Short and keeps bringing more as you step down, and a switch in Settings, Video takes it away.

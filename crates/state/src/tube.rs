@@ -144,6 +144,8 @@ const OPENING_CHECKS: usize = 80;
 /// How many of the top comments the AI is told of.
 const TOLD_COMMENTS: usize = 30;
 const PLACE_EVERY: Duration = Duration::from_secs(5);
+/// How far behind the newest moment of a broadcast, in seconds, still counts as live.
+const LIVE_NEAR: f64 = 15.;
 /// How often the video is checked for having reached a sponsored stretch.
 const SPONSOR_EVERY: Duration = Duration::from_millis(250);
 /// How many seconds before a sponsored stretch its notice comes up, and how long the notice
@@ -1147,6 +1149,15 @@ impl Watching {
         if !self.live {
             return;
         }
+        // Already at the newest moment, so there is nothing to open again.
+        if self.behind_live().is_some_and(|behind| behind < LIVE_NEAR) {
+            if let Some(player) = self.player() {
+                player.set_paused(false);
+            }
+            self.keep_awake(cx);
+            cx.notify();
+            return;
+        }
         // The player's idea of where a broadcast ends is the one it opened with, so the
         // broadcast is opened again, which always starts at its newest moment.
         if let Some(id) = self.id.clone()
@@ -1270,7 +1281,14 @@ impl Watching {
             .collect();
         tube::sponsor::settle(on)
             .into_iter()
-            .filter(|sponsor| !self.sponsors_kept.contains(sponsor))
+            .filter(|sponsor| {
+                // A stretch the viewer chose to watch stays kept when a source switched off
+                // leaves a shorter one in its place.
+                !self
+                    .sponsors_kept
+                    .iter()
+                    .any(|kept| sponsor.start < kept.end && kept.start < sponsor.end)
+            })
             .collect()
     }
 
