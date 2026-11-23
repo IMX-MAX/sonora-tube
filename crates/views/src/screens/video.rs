@@ -19,7 +19,7 @@ use gpui::{
 };
 use i18n::t;
 use router::{Destination, navigate};
-use state::{Outcome, Subscriptions, Toasts, VideoList, VideoSearch, Watching};
+use state::{Outcome, SponsorNotice, Subscriptions, Toasts, VideoList, VideoSearch, Watching};
 use tube::{Channel, Comment, Found, Playlist, Post, Tab, Video};
 use ui::{
     ActiveTheme as _, Artwork, Avatar, Button, Input, Menu, MenuItem, Motion, Popup, Room,
@@ -1640,6 +1640,7 @@ impl WatchView {
                     .into_iter()
                     .flatten(),
             )
+            .children((!floating).then(|| self.sponsor_notice(cx)).flatten())
             .when(hurried, |this| {
                 this.child(
                     div()
@@ -1710,6 +1711,57 @@ impl WatchView {
                         ),
                 )
             })
+    }
+
+    /// The small card in the picture's corner that says a sponsored stretch is about to be
+    /// skipped, or just was, and lets the viewer watch it anyway.
+    fn sponsor_notice(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let theme = cx.theme();
+        let notice = self.watching.read(cx).sponsor_notice(cx)?;
+        let (sponsor, text) = match notice {
+            SponsorNotice::Coming(sponsor, left) => (
+                sponsor,
+                t!("video-sponsor-coming", seconds = left.ceil() as i64),
+            ),
+            SponsorNotice::Skipped(sponsor) => (sponsor, t!("video-sponsor-skipped")),
+        };
+        let text = match sponsor.ai {
+            true => t!("video-sponsor-ai", notice = text.to_string()),
+            false => text,
+        };
+        let watching = self.watching.clone();
+        Some(
+            div()
+                .id("video-sponsor-notice")
+                .absolute()
+                .right(theme.metrics.pad)
+                .bottom(theme.metrics.pad)
+                .flex()
+                .items_center()
+                .gap_2()
+                .pl_3()
+                .pr_1()
+                .py_1()
+                .rounded(theme.radius)
+                .bg(theme.overlay)
+                .border_1()
+                .border_color(theme.sponsor)
+                .text_size(theme.text(Text::Small))
+                .text_color(theme.overlay_foreground)
+                .occlude()
+                .child(text)
+                .child(
+                    Button::new("video-sponsor-watch")
+                        .label(t!("video-sponsor-watch"))
+                        .ghost()
+                        .small()
+                        .tint(theme.overlay_foreground)
+                        .on_click(move |_, _, cx| {
+                            watching.update(cx, |watching, cx| watching.watch_sponsor(sponsor, cx));
+                        }),
+                )
+                .into_any_element(),
+        )
     }
 
     /// The cards the video ends on that are due now, each where its maker laid it over the
@@ -2529,7 +2581,18 @@ impl WatchView {
                                 self.watching.read(cx).pointed().filter(|_| total > 0.).map(
                                     |(start, end)| ((start / total) as f32, (end / total) as f32),
                                 ),
-                                theme.foreground,
+                                theme.selection,
+                            )
+                            .ranges(
+                                self.watching
+                                    .read(cx)
+                                    .sponsors(cx)
+                                    .into_iter()
+                                    .filter(|_| total > 0.)
+                                    .map(|(start, end)| {
+                                        ((start / total) as f32, (end / total) as f32)
+                                    }),
+                                theme.sponsor,
                             )
                             .name(t!("video-position"))
                             .value(elapsed)

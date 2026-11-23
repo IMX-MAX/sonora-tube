@@ -18,6 +18,8 @@ impl SettingsView {
                 Slot::Captions,
                 Slot::Ambient,
             ]),
+            Group::new("settings-group-sponsors", "icons/skip-forward.svg")
+                .rows([Slot::SponsorBlock, Slot::SponsorAi]),
             Group::new("settings-group-ai", "icons/message-square.svg").rows([
                 Slot::AiKey,
                 Slot::AiChatModel,

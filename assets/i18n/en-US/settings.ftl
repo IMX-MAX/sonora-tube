@@ -512,3 +512,9 @@ settings-profile-use-name = Use { $name }
 settings-profile-used = In use
 settings-profile-used-name = { $name }, in use
 settings-profile-remove = Delete profile
+
+settings-group-sponsors = Sponsor skipping
+settings-sponsorblock = Skip with SponsorBlock
+settings-sponsorblock-detail = Skips the sponsored stretches that SponsorBlock's viewers marked. Only a short piece of the video's scrambled id is sent to look them up
+settings-sponsor-ai = Find sponsors with Mistral
+settings-sponsor-ai-detail = Has Mistral read the transcript and skips the sponsored stretches it finds. Needs your Mistral key and a video with a transcript, and works with SponsorBlock on or off

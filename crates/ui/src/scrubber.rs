@@ -14,6 +14,8 @@ const TRACK: f32 = 0.5;
 const THUMB: f32 = 1.5;
 const HIT: f32 = 3.;
 const BUBBLE: f32 = 7.;
+/// How far a marked range that has played is dimmed toward the background.
+const PASSED: f32 = 0.3;
 /// How far the bubble stands off the track unless `lift` says otherwise.
 const LIFT: Pixels = px(12.);
 /// How far one screen reader step moves the slider, as a share of its length.
@@ -159,19 +161,18 @@ impl Scrubber {
         self
     }
 
-    /// Marks fractional ranges without changing pointer or drag behavior. Passed sections use
-    /// a blend toward the theme background so they stay visible over the filled track.
+    /// Marks fractional ranges without changing pointer or drag behavior, on top of any marked
+    /// before. Passed sections keep their own colour, dimmed a little toward the theme
+    /// background, so they stay apart from the filled track.
     pub fn ranges(mut self, ranges: impl IntoIterator<Item = (f32, f32)>, color: Hsla) -> Self {
-        self.ranges = ranges
-            .into_iter()
-            .filter_map(|(start, end)| {
+        self.ranges
+            .extend(ranges.into_iter().filter_map(|(start, end)| {
                 if !start.is_finite() || !end.is_finite() {
                     return None;
                 }
                 let (start, end) = (start.clamp(0., 1.), end.clamp(0., 1.));
                 (end > start).then_some((start, end, color))
-            })
-            .collect();
+            }));
         self
     }
 
@@ -333,7 +334,7 @@ impl RenderOnce for Scrubber {
                     (
                         start,
                         end.min(fraction),
-                        filled.blend(cx.theme().background.opacity(0.45)),
+                        color.blend(cx.theme().background.opacity(PASSED)),
                     ),
                     (start.max(fraction), end, color),
                 ]

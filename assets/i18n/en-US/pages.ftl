@@ -330,3 +330,8 @@ video-partners = { $count ->
     [one] Made together with
    *[other] Made together with { $count } channels
 }
+
+video-sponsor-coming = Skipping a sponsor in { $seconds }s
+video-sponsor-skipped = Skipped a sponsor
+video-sponsor-ai = { $notice } (found by AI)
+video-sponsor-watch = Watch anyway

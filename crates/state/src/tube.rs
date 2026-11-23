@@ -10,7 +10,7 @@ use gpui::{AnyView, App, AppContext as _, ClipboardItem, Context, Entity, Global
 use tube::ai::{Said, Speaker};
 use tube::{
     Caption, Channel, Chapter, Client, Comment, EndCard, Found, Identity, Line, Page, Peek,
-    Playlist, Post, Quality, Storyboard, Tab, Video, Watch,
+    Playlist, Post, Quality, Sponsor, Storyboard, Tab, Video, Watch,
 };
 use video::{Player, VideoView};
 
@@ -144,6 +144,14 @@ const OPENING_CHECKS: usize = 80;
 /// How many of the top comments the AI is told of.
 const TOLD_COMMENTS: usize = 30;
 const PLACE_EVERY: Duration = Duration::from_secs(5);
+/// How often the video is checked for having reached a sponsored stretch.
+const SPONSOR_EVERY: Duration = Duration::from_millis(250);
+/// How many seconds before a sponsored stretch its notice comes up, and how long the notice
+/// of one just skipped stays.
+const SPONSOR_AHEAD: f64 = 8.;
+const SPONSOR_SHOWN: Duration = Duration::from_secs(6);
+/// How near its end a sponsored stretch is no longer worth skipping, in seconds.
+const SPONSOR_TAIL: f64 = 1.;
 /// The share of a video before which it is not worth resuming and after which it is finished.
 const RESUME_FROM: f32 = 0.02;
 const RESUME_UNTIL: f32 = 0.95;
@@ -198,6 +206,15 @@ struct Script {
 }
 
 /// The video being watched: its player, its page and its comments.
+/// What the viewer is told about a sponsored stretch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SponsorNotice {
+    /// It starts in this many seconds and will be skipped.
+    Coming(Sponsor, f64),
+    /// It was just skipped.
+    Skipped(Sponsor),
+}
+
 pub struct Watching {
     client: Client,
     io: Io,
@@ -240,6 +257,15 @@ pub struct Watching {
     carding: Option<Task<()>>,
     /// The stretch of the video an answer pointed at, marked on the seek bar until it is over.
     pointed: Option<(f64, f64)>,
+    /// The video's sponsored stretches in order, and the ones the viewer chose to watch.
+    sponsors: Vec<Sponsor>,
+    sponsors_kept: Vec<Sponsor>,
+    /// The stretch last skipped and when, so its notice can offer to go back.
+    sponsor_skipped: Option<(Sponsor, Instant)>,
+    sponsor_ai_tried: bool,
+    sponsoring: Option<Task<()>>,
+    sponsoring_ai: Option<Task<()>>,
+    skipping: Option<Task<()>>,
     /// The tallest picture the user wants, `None` to let the app choose.
     ceiling: Option<u32>,
     /// Whether the picture's colours glow around it.
@@ -305,6 +331,13 @@ impl Watching {
             cards: Arc::default(),
             carding: None,
             pointed: None,
+            sponsors: Vec::new(),
+            sponsors_kept: Vec::new(),
+            sponsor_skipped: None,
+            sponsor_ai_tried: false,
+            sponsoring: None,
+            sponsoring_ai: None,
+            skipping: None,
             ceiling: None,
             ambient: true,
             speed: 1.,
@@ -578,6 +611,7 @@ impl Watching {
             self.chapters_failed = false;
         }
         self.chapter(cx);
+        self.find_sponsors_ai(cx);
     }
 
     /// Whether the comments come newest first.
@@ -885,6 +919,12 @@ impl Watching {
         self.chapters_ai = false;
         self.chaptering = None;
         self.chapters_failed = false;
+        self.sponsors.clear();
+        self.sponsors_kept.clear();
+        self.sponsor_skipped = None;
+        self.sponsor_ai_tried = false;
+        self.sponsoring = None;
+        self.sponsoring_ai = None;
         if self.script.open {
             self.load_transcript(cx);
         }
@@ -923,7 +963,9 @@ impl Watching {
                                 .update(cx, |kept, cx| kept.watched_now(seen, cx));
                         }
                         this.load_comments(cx);
+                        this.find_sponsors(cx);
                         this.chapter(cx);
+                        this.find_sponsors_ai(cx);
                     }
                     Err(reason) => this.error = Some(reason),
                 }
@@ -1021,6 +1063,193 @@ impl Watching {
             player.set_paused(paused);
         }
         self.keep_awake(cx);
+        cx.notify();
+    }
+
+    /// Asks SponsorBlock for the video's sponsored stretches, when its switch is on.
+    fn find_sponsors(&mut self, cx: &mut Context<Self>) {
+        let settings = crate::Sonora::global(cx).settings.clone();
+        if self.short || self.sponsoring.is_some() || !settings.read(cx).sponsorblock() {
+            return;
+        }
+        let Some(id) = self.id.clone() else { return };
+        let client = self.client.clone();
+        let asked = id.clone();
+        let request = self.io.spawn(async move { client.sponsors(&asked).await });
+        self.sponsoring = Some(cx.spawn(async move |this, cx| {
+            let found = join(request).await;
+            this.update(cx, |this, cx| {
+                if this.id.as_deref() != Some(id.as_str()) {
+                    return;
+                }
+                match found {
+                    Ok(found) => this.add_sponsors(found, cx),
+                    Err(error) => log::warn!("video: cannot ask sponsorblock: {error:#}"),
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Has the AI look for sponsored stretches in the transcript, when its switch is on and
+    /// there is a key. Fetches the transcript first when it is not here.
+    fn find_sponsors_ai(&mut self, cx: &mut Context<Self>) {
+        let settings = crate::Sonora::global(cx).settings.clone();
+        if self.short
+            || self.sponsor_ai_tried
+            || self.sponsoring_ai.is_some()
+            || self.watch.is_none()
+            || !settings.read(cx).sponsor_ai()
+        {
+            return;
+        }
+        let Some(assistant) = Assistant::entity(cx) else {
+            return;
+        };
+        let (client, model) = {
+            let assistant = assistant.read(cx);
+            (assistant.client(), assistant.chapter_model().to_owned())
+        };
+        let Some(client) = client else { return };
+        let lines = match &self.script.lines {
+            Some(lines) if !lines.is_empty() => lines.clone(),
+            Some(_) => return,
+            None => {
+                if !self.script.failed {
+                    self.load_transcript(cx);
+                }
+                return;
+            }
+        };
+        self.sponsor_ai_tried = true;
+        let title = self
+            .watch
+            .as_ref()
+            .map(|watch| watch.title.clone())
+            .unwrap_or_default();
+        let length = self
+            .player()
+            .and_then(|player| player.duration())
+            .unwrap_or(0.);
+        let asked = self.id.clone();
+        let request = self
+            .io
+            .spawn(async move { client.sponsors(&model, &title, &lines, length).await });
+        self.sponsoring_ai = Some(cx.spawn(async move |this, cx| {
+            let found = join(request).await;
+            this.update(cx, |this, cx| {
+                if this.id != asked {
+                    return;
+                }
+                this.sponsoring_ai = None;
+                match found {
+                    Ok(found) => this.add_sponsors(found, cx),
+                    Err(error) => {
+                        let reason = format!("{error:#}");
+                        log::warn!("video: the ai cannot find sponsors: {reason}");
+                        refused(&reason, cx);
+                    }
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Takes in stretches just found, leaving out any that overlap one already here.
+    fn add_sponsors(&mut self, found: Vec<Sponsor>, cx: &mut Context<Self>) {
+        for sponsor in found {
+            let overlaps = self
+                .sponsors
+                .iter()
+                .any(|held| sponsor.start < held.end && held.start < sponsor.end);
+            if !overlaps {
+                self.sponsors.push(sponsor);
+            }
+        }
+        self.sponsors
+            .sort_by(|one, other| one.start.total_cmp(&other.start));
+        cx.notify();
+    }
+
+    /// The stretches that get skipped: those whose switch is on and that were not kept.
+    fn skipped_sponsors(&self, cx: &App) -> Vec<Sponsor> {
+        let settings = crate::Sonora::global(cx).settings.read(cx);
+        let (marked, ai) = (settings.sponsorblock(), settings.sponsor_ai());
+        self.sponsors
+            .iter()
+            .filter(|sponsor| match sponsor.ai {
+                true => ai,
+                false => marked,
+            })
+            .filter(|sponsor| !self.sponsors_kept.contains(sponsor))
+            .copied()
+            .collect()
+    }
+
+    /// The stretches that will be skipped, for marking on the seek bar.
+    pub fn sponsors(&self, cx: &App) -> Vec<(f64, f64)> {
+        self.skipped_sponsors(cx)
+            .into_iter()
+            .map(|sponsor| (sponsor.start, sponsor.end))
+            .collect()
+    }
+
+    /// Jumps past a sponsored stretch the video has reached, and redraws while a notice shows.
+    fn skip_sponsors(&mut self, cx: &mut Context<Self>) {
+        if self.sponsors.is_empty() && self.sponsor_skipped.is_none() {
+            return;
+        }
+        if self
+            .sponsor_skipped
+            .is_some_and(|(_, when)| when.elapsed() > SPONSOR_SHOWN)
+        {
+            self.sponsor_skipped = None;
+            cx.notify();
+        }
+        let Some(at) = self
+            .player()
+            .filter(|player| !player.paused())
+            .and_then(|player| player.position())
+        else {
+            return;
+        };
+        let skipped = self.skipped_sponsors(cx);
+        if let Some(sponsor) = skipped
+            .iter()
+            .find(|sponsor| at >= sponsor.start && at < sponsor.end - SPONSOR_TAIL)
+        {
+            self.sponsor_skipped = Some((*sponsor, Instant::now()));
+            self.seek_to(sponsor.end, cx);
+        } else if skipped
+            .iter()
+            .any(|sponsor| at < sponsor.start && sponsor.start - at <= SPONSOR_AHEAD)
+        {
+            cx.notify();
+        }
+    }
+
+    /// What to tell the viewer about sponsors right now: one is coming, or one was skipped.
+    pub fn sponsor_notice(&self, cx: &App) -> Option<SponsorNotice> {
+        if let Some((sponsor, _)) = self.sponsor_skipped {
+            return Some(SponsorNotice::Skipped(sponsor));
+        }
+        let at = self.player().and_then(|player| player.position())?;
+        self.skipped_sponsors(cx)
+            .into_iter()
+            .find(|sponsor| at < sponsor.start && sponsor.start - at <= SPONSOR_AHEAD)
+            .map(|sponsor| SponsorNotice::Coming(sponsor, sponsor.start - at))
+    }
+
+    /// Lets the stretch play: it is no longer skipped, and one just skipped starts over.
+    pub fn watch_sponsor(&mut self, sponsor: Sponsor, cx: &mut Context<Self>) {
+        self.sponsors_kept.push(sponsor);
+        if self
+            .sponsor_skipped
+            .take()
+            .is_some_and(|(skipped, _)| skipped == sponsor)
+        {
+            self.seek_to(sponsor.start, cx);
+        }
         cx.notify();
     }
 
@@ -1432,6 +1661,7 @@ impl Watching {
                     this.answer(cx);
                 }
                 this.chapter(cx);
+                this.find_sponsors_ai(cx);
                 cx.notify();
             })
             .ok();
@@ -1626,6 +1856,16 @@ impl Watching {
             true => 0.,
             false => self.subscriptions.read(cx).resume(id).unwrap_or(0.),
         };
+        if self.skipping.is_none() {
+            self.skipping = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(SPONSOR_EVERY).await;
+                    if this.update(cx, |this, cx| this.skip_sponsors(cx)).is_err() {
+                        return;
+                    }
+                }
+            }));
+        }
         if self.placing.is_none() {
             self.placing = Some(cx.spawn(async move |this, cx| {
                 loop {

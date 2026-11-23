@@ -355,6 +355,38 @@ impl SettingsView {
         )
     }
 
+    /// The switch that skips the stretches SponsorBlock's viewers marked.
+    pub(super) fn sponsorblock_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.settings.read(cx).sponsorblock();
+
+        self.row(
+            t!("settings-sponsorblock"),
+            Switch::new("sponsorblock", on)
+                .name(t!("settings-sponsorblock"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings
+                        .update(cx, |settings, cx| settings.set_sponsorblock(!on, cx));
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// The switch that has the AI find sponsored stretches in a video's transcript.
+    pub(super) fn sponsor_ai_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.settings.read(cx).sponsor_ai();
+
+        self.row(
+            t!("settings-sponsor-ai"),
+            Switch::new("sponsor-ai", on)
+                .name(t!("settings-sponsor-ai"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings
+                        .update(cx, |settings, cx| settings.set_sponsor_ai(!on, cx));
+                }))
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn captions_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let on = self.settings.read(cx).captions();
 

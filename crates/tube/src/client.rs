@@ -297,6 +297,11 @@ impl Client {
         self.no_shorts.store(hidden, Ordering::Relaxed);
     }
 
+    /// The stretches of `video` that SponsorBlock's viewers marked as paid or self-promoting.
+    pub async fn sponsors(&self, video: &str) -> Result<Vec<crate::Sponsor>> {
+        crate::sponsor::marked(&self.http, video).await
+    }
+
     /// Searches videos, channels and playlists together.
     pub async fn search(&self, query: &str) -> Result<Page<Found>> {
         let answer = self.call("search", json!({ "query": query })).await?;
