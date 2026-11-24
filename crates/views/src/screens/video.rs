@@ -3889,7 +3889,7 @@ impl PipView {
                 return None;
             }
             let id = id.to_owned();
-            watching.leave(cx);
+            watching.set_paused(true, cx);
             Some(id)
         });
         if let Some(id) = dismissed {
