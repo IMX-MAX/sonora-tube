@@ -172,7 +172,7 @@ impl YouTubeProvider {
         ProviderSession {
             profile: UserProfile {
                 id: GUEST_ID.to_string(),
-                display_name: "YouTube Music".to_string(),
+                display_name: self.name().to_owned(),
                 avatar: None,
             },
             api: Arc::new(YouTubeClient::new(api.clone())),
@@ -332,7 +332,7 @@ impl Default for YouTubeProvider {
 #[async_trait]
 impl MusicProvider for YouTubeProvider {
     fn name(&self) -> &'static str {
-        "YouTube Music"
+        "YouTube"
     }
 
     fn slug(&self) -> &'static str {

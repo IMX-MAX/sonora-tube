@@ -8,7 +8,7 @@ login-signed-in = Đã đăng nhập với tên { $name }
 login-failed-title = Đăng nhập thất bại
 login-problem-region = Spotify không mở phiên từ quốc gia bạn đang ở. Hãy đăng nhập từ quốc gia của bạn, hoặc đổi quốc gia trong tài khoản Spotify.
 login-problem-credentials = Phiên đã lưu cho dịch vụ này không còn hợp lệ. Hãy đăng nhập lại để tiếp tục.
-login-problem-network = YouTube+ không kết nối được với dịch vụ nhạc. Hãy kiểm tra kết nối internet và thử lại.
+login-problem-network = YouTube+ không kết nối được với YouTube. Hãy kiểm tra kết nối internet và thử lại.
 login-problem-cancelled = Yêu cầu đăng nhập chưa được chấp thuận trong trình duyệt hoặc đã hết thời gian. Hãy bắt đầu lại để hoàn tất.
 login-problem-refused = Spotify đã từ chối đăng nhập. Hãy chờ một lát rồi thử lại.
 login-problem-premium = YouTube+ phát nhạc qua Spotify Premium, nhưng tài khoản này không có Premium. Hãy đăng nhập bằng tài khoản Premium để tiếp tục.
@@ -48,7 +48,7 @@ login-account-title = Chọn tài khoản
 login-account-detail = Phiên này đã đăng nhập vào nhiều tài khoản Google. Hãy chọn tài khoản YouTube+ sẽ dùng.
 login-choose-title = Đăng nhập vào { $provider }
 login-choose-detail = Chọn cách đăng nhập vào { $provider }.
-login-providers = Dịch vụ nhạc
+login-providers = Tùy chọn đăng nhập
 
 # album and playlist pages
 

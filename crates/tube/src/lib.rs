@@ -4,6 +4,8 @@
 //! playlists. Ads and promoted shelves are dropped while parsing and never reach a caller, and
 //! Shorts come back as ordinary videos unless the client is told to leave them out.
 
+use std::time::Duration;
+
 pub mod ai;
 mod client;
 mod parse;
@@ -164,6 +166,8 @@ pub struct Quality {
 pub struct Streams {
     pub qualities: Vec<Quality>,
     pub board: Option<Storyboard>,
+    /// YouTube's published running time, absent for live broadcasts.
+    pub duration: Option<Duration>,
 }
 
 /// Sheets of small pictures taken through a video at even steps, which a seek bar shows the

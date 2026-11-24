@@ -229,6 +229,7 @@ pub struct Watching {
     like: Option<Task<()>>,
     /// The qualities the video can be played at, best first, once YouTube has named them.
     qualities: Vec<Quality>,
+    duration: Option<Duration>,
     /// The small pictures the seek bar previews the video with.
     board: Option<Storyboard>,
     /// The tallest picture the user wants, `None` to let the app choose.
@@ -288,6 +289,7 @@ impl Watching {
             short: false,
             like: None,
             qualities: Vec::new(),
+            duration: None,
             board: None,
             ceiling: None,
             ambient: true,
@@ -835,6 +837,7 @@ impl Watching {
         self.newest = false;
         self.playback.update(cx, |playback, cx| playback.pause(cx));
         self.id = Some(id.to_owned());
+        self.duration = None;
         self.seen = false;
         self.set_short(short);
         self.watch = None;
@@ -1062,6 +1065,11 @@ impl Watching {
     /// The qualities the video can be played at, best first. Empty until YouTube names them.
     pub fn qualities(&self) -> &[Quality] {
         &self.qualities
+    }
+
+    /// The running time shown in listings, when YouTube has published one for this video.
+    pub fn duration(&self) -> Option<Duration> {
+        self.duration
     }
 
     /// The tallest picture asked for, `None` when the app chooses.
@@ -1520,6 +1528,7 @@ impl Watching {
                     Ok(streams) => {
                         this.qualities = streams.qualities;
                         this.board = streams.board;
+                        this.duration = streams.duration;
                         this.quality()
                             .map(|quality| player.play(&quality.picture, &quality.sound, start))
                     }

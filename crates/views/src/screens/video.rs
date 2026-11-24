@@ -2038,6 +2038,10 @@ impl WatchView {
         let (level, muted, captions) = (watching.volume(), watching.muted(), watching.captions());
         let (captioned, silenced) = (self.watching.clone(), self.watching.clone());
         let (scripted, script) = (watching.transcript_open(), self.watching.clone());
+        let transcript_tooltip = match scripted {
+            true => "video-transcript-hide",
+            false => "video-transcript-show",
+        };
         let floating = watching.floating();
         let (full, filled) = (watching.full(), self.watching.clone());
         let (discussed, theater) = (self.discussed, self.theater);
@@ -2061,10 +2065,10 @@ impl WatchView {
                 .child(text)
         };
 
-        let ends = SharedString::from(format!(
-            "{elapsed} / {}",
-            clock(Duration::from_secs_f64(total.max(0.)))
-        ));
+        let duration = watching
+            .duration()
+            .unwrap_or_else(|| Duration::from_secs_f64(total.max(0.).round()));
+        let ends = SharedString::from(format!("{elapsed} / {}", clock(duration)));
         let spread = self.spread
             || self.choosing.is_some()
             || self.pacing.is_some()
@@ -2107,14 +2111,11 @@ impl WatchView {
                         .items_center()
                         .gap_2()
                         .child(
-                            Button::new("video-transcript")
+                            Button::new(transcript_tooltip)
                                 .icon("icons/text-select.svg")
                                 .ghost()
                                 .selected(scripted)
-                                .tooltip(match scripted {
-                                    true => "video-transcript-hide",
-                                    false => "video-transcript-show",
-                                })
+                                .tooltip(transcript_tooltip)
                                 .on_click(move |_, _, cx| {
                                     script
                                         .update(cx, |watching, cx| watching.toggle_transcript(cx));

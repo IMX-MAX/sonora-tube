@@ -9,8 +9,8 @@ login-failed-title = Sign-in failed
 login-problem-region = Spotify will not open a session from the country you are in. Sign in from your home country, or change the country on your Spotify account.
 login-problem-credentials = Your saved session for this service is no longer valid. Sign in again to continue.
 login-problem-password = The server did not accept that username and password. Check them and try again.
-login-problem-network = YouTube+ could not reach the music service. Check your internet connection and try again.
-login-problem-blocked = The music service is refusing connections from your network. If you use a VPN, try another server or turn it off.
+login-problem-network = YouTube+ could not reach YouTube. Check your internet connection and try again.
+login-problem-blocked = YouTube is refusing connections from your network. If you use a VPN, try another server or turn it off.
 login-problem-cancelled = The sign-in was not approved in the browser, or ran out of time. Start again to finish.
 login-problem-refused = Spotify turned down the sign-in. Wait a moment and try again.
 login-problem-premium = YouTube+ streams through Spotify Premium, and this account does not have it. Sign in with a Premium account to continue.
@@ -55,9 +55,9 @@ login-profile-title = Choose a profile
 login-profile-detail = This account has more than one profile. Pick the one YouTube+ should use.
 login-choose-title = Sign in to { $provider }
 login-choose-detail = Choose how to sign in to { $provider }.
-login-providers = Music services
+login-providers = Sign-in options
 login-welcome-title = Welcome to YouTube+
-login-welcome-detail = You can add more services later in Settings.
+login-welcome-detail = Sign in to YouTube or watch as a guest.
 login-or = or
 
 # album and playlist pages

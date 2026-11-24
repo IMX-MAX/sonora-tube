@@ -4,6 +4,8 @@
 //! tree for the few renderers that are a video, a channel or a playlist, rather than by a fixed
 //! path. The same walk is where the clutter is dropped.
 
+use std::time::Duration;
+
 use anyhow::{Context as _, Result};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
@@ -140,6 +142,8 @@ pub(crate) fn watch(id: &str, answer: &Value) -> Result<Watch> {
         likes: first(primary, "likeButtonViewModel")
             .and_then(|like| first(like, "title"))
             .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|title| title.chars().next().is_some_and(char::is_numeric))
             .map(str::to_owned),
         description: secondary
             .and_then(|secondary| text(&secondary["attributedDescription"]))
@@ -155,6 +159,16 @@ pub(crate) fn watch(id: &str, answer: &Value) -> Result<Watch> {
             .map(|status| status == "LIKE"),
         comments,
     })
+}
+
+/// The whole-second duration YouTube publishes, rather than the length of a media rendition.
+pub(crate) fn duration(player: &Value) -> Option<Duration> {
+    let details = &player["videoDetails"];
+    if details["isLive"].as_bool() == Some(true) {
+        return None;
+    }
+    let seconds = details["lengthSeconds"].as_str()?.parse::<u64>().ok()?;
+    (seconds > 0).then(|| Duration::from_secs(seconds))
 }
 
 pub(crate) fn comments(answer: &Value) -> Comments {
@@ -950,5 +964,48 @@ fn entity(name: &str) -> Option<char> {
             },
             None => None,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn watch_only_reports_visible_like_counts() {
+        for (title, expected) in [
+            ("Like", None),
+            ("", None),
+            ("1.2K", Some("1.2K")),
+            ("0", Some("0")),
+        ] {
+            let answer = json!({
+                "contents": {"twoColumnWatchNextResults": {"results": {"results": {
+                    "contents": [{"videoPrimaryInfoRenderer": {
+                        "likeButtonViewModel": {"toggleButtonViewModel": {
+                            "defaultButtonViewModel": {"buttonViewModel": {"title": title}}
+                        }}
+                    }}]
+                }}}}
+            });
+            assert_eq!(
+                watch("jNQXAC9IVRw", &answer).unwrap().likes.as_deref(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn duration_uses_published_seconds_instead_of_rendition_length() {
+        let mut player = json!({
+            "videoDetails": {"lengthSeconds": "282"},
+            "streamingData": {"adaptiveFormats": [{"approxDurationMs": "281489"}]}
+        });
+        assert_eq!(duration(&player), Some(Duration::from_secs(282)));
+        player["videoDetails"]["isLive"] = json!(true);
+        assert_eq!(duration(&player), None);
+        assert_eq!(duration(&json!({})), None);
     }
 }

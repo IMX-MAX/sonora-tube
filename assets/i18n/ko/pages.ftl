@@ -9,8 +9,8 @@ login-failed-title = 로그인 실패
 login-problem-region = 현재 계신 국가에서는 Spotify 세션을 열 수 없습니다. 거주 국가에서 로그인하거나 Spotify 계정의 국가 설정을 변경하세요.
 login-problem-credentials = 이 서비스에 저장된 세션이 더 이상 유효하지 않습니다. 계속하려면 다시 로그인하세요.
 login-problem-password = 서버에서 해당 사용자 이름과 비밀번호를 허용하지 않았습니다. 확인 후 다시 시도하세요.
-login-problem-network = YouTube+가 음악 서비스에 연결할 수 없습니다. 인터넷 연결을 확인하고 다시 시도하세요.
-login-problem-blocked = 음악 서비스에서 현재 네트워크의 연결을 거부하고 있습니다. VPN을 사용 중인 경우 다른 서버를 시도하거나 VPN을 끄세요.
+login-problem-network = YouTube+가 YouTube에 연결할 수 없습니다. 인터넷 연결을 확인하고 다시 시도하세요.
+login-problem-blocked = YouTube에서 현재 네트워크의 연결을 거부하고 있습니다. VPN을 사용 중인 경우 다른 서버를 시도하거나 VPN을 끄세요.
 login-problem-cancelled = 브라우저에서 로그인이 승인되지 않았거나 시간이 초과되었습니다. 완료하려면 처음부터 다시 시작하세요.
 login-problem-refused = Spotify가 로그인을 거부했습니다. 잠시 후 다시 시도하세요.
 login-problem-premium = YouTube+는 Spotify Premium을 통해 스트리밍되지만, 이 계정에는 해당 멤버십이 없습니다. 계속하려면 Premium 계정으로 로그인하세요.
@@ -55,9 +55,9 @@ login-profile-title = 프로필 선택
 login-profile-detail = 이 계정에 두 개 이상의 프로필이 있습니다. YouTube+에서 사용할 프로필을 선택하세요.
 login-choose-title = { $provider }에 로그인
 login-choose-detail = { $provider }에 로그인할 방법을 선택하세요.
-login-providers = 음악 서비스
+login-providers = 로그인 옵션
 login-welcome-title = YouTube+에 오신 것을 환영합니다!
-login-welcome-detail = 나중에 설정에서 음악 서비스를 더 추가할 수 있습니다.
+login-welcome-detail = YouTube에 로그인하거나 게스트로 시청하세요.
 login-or = 또는
 
 # album and playlist pages

@@ -9,7 +9,7 @@ login-failed-title = Gagal masuk
 login-problem-region = Spotify tidak mendukung sesi dari wilayah tempat Anda berada saat ini. Masuk dari negara asal Anda, atau ubah pengaturan negara di akun Spotify Anda.
 login-problem-credentials = Sesi Spotify yang tersimpan sudah tidak berlaku. Masuk kembali untuk melanjutkan.
 login-problem-password = Server tidak menerima nama pengguna dan kata sandi tersebut. Periksa kembali dan coba lagi.
-login-problem-network = YouTube+ tidak dapat terhubung ke layanan musik. Periksa koneksi internet Anda dan coba lagi.
+login-problem-network = YouTube+ tidak dapat terhubung ke YouTube. Periksa koneksi internet Anda dan coba lagi.
 login-problem-cancelled = Halaman peramban ditutup sebelum otorisasi selesai. Silakan coba lagi.
 login-problem-refused = Spotify menolak permintaan masuk. Tunggu beberapa saat dan coba lagi.
 login-problem-premium = YouTube+ memerlukan akun Spotify Premium untuk streaming. Akun ini tidak memiliki langganan Premium. Masuk dengan akun Premium untuk melanjutkan.
@@ -54,9 +54,9 @@ login-profile-title = Pilih profil
 login-profile-detail = Akun ini memiliki lebih dari satu profil. Pilih profil yang akan digunakan YouTube+.
 login-choose-title = Masuk ke { $provider }
 login-choose-detail = Pilih cara untuk Masuk ke { $provider }.
-login-providers = Layanan musik
+login-providers = Opsi masuk
 login-welcome-title = Selamat datang di YouTube+
-login-welcome-detail = Anda dapat menambahkan layanan lain nanti di Pengaturan.
+login-welcome-detail = Masuk ke YouTube atau tonton sebagai tamu.
 login-or = atau
 
 # album and playlist pages

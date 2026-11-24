@@ -455,6 +455,7 @@ impl Client {
         Ok(Streams {
             qualities,
             board: parse::storyboard(&answer),
+            duration: parse::duration(&answer),
         })
     }
 
