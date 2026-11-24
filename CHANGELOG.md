@@ -27,6 +27,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- YouTube+ uses less memory after you leave a video or close its mini-player.
 - On Linux, a quit signal exits the app even when it is set to keep running in the background.
 - On Linux, the app still opens when the configured runtime directory does not exist.
 - Shorts start faster, especially when you go back to one you just watched.

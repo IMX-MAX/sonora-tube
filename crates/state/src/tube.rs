@@ -284,7 +284,8 @@ pub struct Watching {
     error: Option<String>,
     thread: Thread,
     script: Script,
-    /// Made on the first video and kept, so one mpv serves every video after it.
+    /// Made when a video plays and dropped once nothing shows it, so mpv and its buffers are
+    /// freed while no video is on screen.
     screen: Option<(Arc<Player>, Entity<VideoView>)>,
     /// The volume from 0 to 1, as the slider shows it.
     volume: f32,
@@ -327,6 +328,9 @@ pub struct Watching {
     newest: bool,
     /// Writes down how far the video is watched while it plays.
     placing: Option<Task<()>>,
+    /// Whether the video's page was left and its player freed, so a fetch of the page again
+    /// leaves it unplayed until it is opened.
+    away: bool,
     shot: Option<Task<()>>,
     /// The video's chapters in order: the description's, or the AI's when it lists none.
     chapters: Arc<Vec<Chapter>>,
@@ -392,6 +396,7 @@ impl Watching {
             task: None,
             newest: false,
             placing: None,
+            away: false,
             shot: None,
             chapters: Arc::default(),
             chapters_ai: false,
@@ -911,6 +916,7 @@ impl Watching {
 
     /// Starts `id` playing and fetches its page. The music stops, since both would sound at once.
     pub fn open(&mut self, id: &str, listed_duration: Option<String>, cx: &mut Context<Self>) {
+        self.away = false;
         self.show(id, false, listed_duration, cx);
     }
 
@@ -931,6 +937,9 @@ impl Watching {
             if let Some(seen) = self.video() {
                 self.subscriptions
                     .update(cx, |kept, cx| kept.watched_now(seen, cx));
+            }
+            if self.screen.is_none() && !self.away {
+                self.reload(cx);
             }
             self.set_paused(false, cx);
             return;
@@ -962,9 +971,8 @@ impl Watching {
         self.liked = self.subscriptions.read(cx).liked(id);
         cx.notify();
 
-        if let Err(error) = self.play(id, cx) {
-            log::error!("video: cannot play {id}: {error:#}");
-            self.error = Some(format!("{error:#}"));
+        if !self.away {
+            self.reload(cx);
         }
 
         let (client, asked) = (self.client.clone(), id.to_owned());
@@ -1006,6 +1014,7 @@ impl Watching {
     /// Opens a Short in the upright player, which plays it over and over and steps through
     /// `reel`, the list it was opened from.
     pub fn open_short(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.away = false;
         self.show(id, true, None, cx);
         if !self.reel.iter().any(|short| short.id == id) {
             self.reel.clear();
@@ -1050,11 +1059,26 @@ impl Watching {
         self.set_paused(paused, cx);
     }
 
-    /// Stops the video when its page is left, so nothing plays unseen.
+    /// Stops the video when its page is left, so nothing plays unseen, and frees the player.
+    /// Coming back to the page plays it again from where it was left.
     pub fn leave(&mut self, cx: &mut Context<Self>) {
         self.place(cx);
         self.full = false;
-        self.set_paused(true, cx);
+        self.away = true;
+        self.placing = None;
+        self.stream = None;
+        self.screen = None;
+        cx.notify();
+    }
+
+    /// Makes a player for the video on the page, once its page was left, and starts it.
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        self.away = false;
+        let Some(id) = self.id.clone() else { return };
+        if let Err(error) = self.play(&id, cx) {
+            log::error!("video: cannot play {id}: {error:#}");
+            self.error = Some(format!("{error:#}"));
+        }
     }
 
     pub fn set_paused(&mut self, paused: bool, cx: &mut Context<Self>) {
@@ -1092,6 +1116,10 @@ impl Watching {
     }
 
     pub fn toggle(&mut self, cx: &mut Context<Self>) {
+        if self.screen.is_none() {
+            self.reload(cx);
+            return;
+        }
         let paused = self.player().is_some_and(|player| player.paused());
         self.set_paused(!paused, cx);
     }
