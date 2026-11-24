@@ -116,6 +116,8 @@ pub struct ShortStreams {
 }
 
 impl ShortStreams {
+    /// Consumes these sources and fetches the HLS manifest. If resolving its address failed,
+    /// returns the stored error without making a request.
     pub async fn hls(self, client: &Client) -> Result<Streams> {
         client.read_hls(self.manifest?, self.board).await
     }
