@@ -11,7 +11,7 @@ use sha1::{Digest as _, Sha1};
 use crate::parse;
 use crate::{
     Caption, Captions, Channel, ChannelPage, Comments, Found, Identity, Page, PlaylistPage,
-    Section, Streams, Tab, Video, Watch,
+    Quality, Section, Streams, Tab, Video, Watch,
 };
 
 const ORIGIN: &str = "https://www.youtube.com";
@@ -419,9 +419,7 @@ impl Client {
         })
     }
 
-    /// The qualities a video can be played at, best first, each a pair of addresses a player
-    /// opens directly. That skips the page scraping a player would otherwise do before the
-    /// first frame.
+    /// The video's playback metadata, plus direct streams when available to skip page scraping.
     pub async fn streams(&self, id: &str) -> Result<Streams> {
         if self.visitor().is_none() {
             self.call("visitor_id", json!({})).await?;
@@ -429,6 +427,18 @@ impl Client {
         let answer = self
             .call_as(&HEADSET, "player", json!({ "videoId": id }))
             .await?;
+        let duration = parse::duration(&answer);
+        let board = parse::storyboard(&answer);
+        let qualities = self.stream_qualities(&answer).await;
+        Ok(Streams {
+            qualities,
+            board,
+            duration,
+        })
+    }
+
+    /// Fetches the direct stream list, independently of the video's playback metadata.
+    async fn stream_qualities(&self, answer: &Value) -> Result<Vec<Quality>> {
         let list = answer["streamingData"]["hlsManifestUrl"]
             .as_str()
             .with_context(|| {
@@ -452,10 +462,7 @@ impl Client {
             .context("cannot read the stream list")?;
         let qualities = parse::qualities(&listed);
         ensure!(!qualities.is_empty(), "the stream list names no stream");
-        Ok(Streams {
-            qualities,
-            board: parse::storyboard(&answer),
-        })
+        Ok(qualities)
     }
 
     fn visitor(&self) -> Option<String> {
