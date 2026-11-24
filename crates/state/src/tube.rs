@@ -1648,7 +1648,7 @@ impl Watching {
             cx.background_executor().timer(OPENING_CHECK).await;
             if player.duration().is_some() {
                 if let Some(opened) = opened {
-                    this.update(cx, |this, cx| {
+                    this.update(cx, |this, _| {
                         if this.id.as_deref() == Some(id) {
                             this.short_streams
                                 .push_front((id.to_owned(), opened, streams));
