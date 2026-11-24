@@ -583,17 +583,23 @@ fn whole_banner(address: &str) -> String {
 /// YouTube marks as the default, then the language the video was recorded in, then anything
 /// that is not a dub. YouTube lists dubs first and often marks no default.
 fn fitness(line: &str) -> u8 {
-    if attribute(line, "DEFAULT") == Some("YES") {
-        return 3;
-    }
     let tags = attribute(line, "YT-EXT-XTAGS")
         .and_then(|tags| URL_SAFE_NO_PAD.decode(tags.trim_end_matches('=')).ok())
         .map(|tags| String::from_utf8_lossy(&tags).into_owned())
         .unwrap_or_default();
-    match (tags.contains("original"), tags.contains("dubbed")) {
-        (true, _) => 2,
-        (false, false) => 1,
-        (false, true) => 0,
+    audio_fitness(
+        attribute(line, "DEFAULT") == Some("YES"),
+        tags.contains("original"),
+        tags.contains("dubbed"),
+    )
+}
+
+fn audio_fitness(default: bool, original: bool, dubbed: bool) -> u8 {
+    match (default, original, dubbed) {
+        (true, _, _) => 3,
+        (false, true, _) => 2,
+        (false, false, false) => 1,
+        (false, false, true) => 0,
     }
 }
 
@@ -651,6 +657,66 @@ pub(crate) fn qualities(listed: &str) -> Vec<Quality> {
             plain,
         ));
     }
+    best_qualities(found)
+}
+
+/// Pairs a Short's directly playable H.264 pictures with its original AAC sound.
+pub(crate) fn mp4_qualities(formats: &Value) -> Vec<Quality> {
+    let Some(formats) = formats.as_array() else {
+        return Vec::new();
+    };
+    let address = |format: &Value| string(&format["url"]).filter(|url| url.starts_with("https://"));
+    let Some(sound) = formats
+        .iter()
+        .filter(|format| {
+            format["mimeType"]
+                .as_str()
+                .is_some_and(|mime| mime.starts_with("audio/mp4; codecs=\"mp4a."))
+        })
+        .filter_map(|format| {
+            let track = &format["audioTrack"];
+            let name = string(&track["displayName"])
+                .or_else(|| text(&track["displayName"]))
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            Some((
+                audio_fitness(
+                    track["audioIsDefault"].as_bool().unwrap_or(false),
+                    name.contains("original"),
+                    name.contains("dubbed"),
+                ),
+                format["bitrate"].as_u64().unwrap_or_default(),
+                address(format)?,
+            ))
+        })
+        .max_by_key(|(fitness, bitrate, _)| (*fitness, *bitrate))
+        .map(|(_, _, sound)| sound)
+    else {
+        return Vec::new();
+    };
+    let found = formats
+        .iter()
+        .filter(|format| {
+            format["mimeType"]
+                .as_str()
+                .is_some_and(|mime| mime.starts_with("video/mp4; codecs=\"avc1."))
+        })
+        .filter_map(|format| {
+            Some((
+                Quality {
+                    height: format["height"].as_u64()?.try_into().ok()?,
+                    rate: format["fps"].as_u64().unwrap_or_default().try_into().ok()?,
+                    picture: address(format)?,
+                    sound: sound.clone(),
+                },
+                true,
+            ))
+        })
+        .collect();
+    best_qualities(found)
+}
+
+fn best_qualities(mut found: Vec<(Quality, bool)>) -> Vec<Quality> {
     // Within a height the smoother picture wins, then the plainer codec, then the last listed,
     // which carries the better sound.
     found.sort_by_key(|(quality, plain)| (quality.height, quality.rate, *plain));

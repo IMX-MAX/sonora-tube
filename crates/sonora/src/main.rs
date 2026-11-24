@@ -100,9 +100,16 @@ fn main() -> ExitCode {
         }
     };
 
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    let x11_fallback = x11_fallback();
     let app = gpui_platform::application()
         .with_assets(assets::Assets)
         .with_http_client(Arc::new(http::Client::new(io.handle())));
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    let app = match x11_fallback {
+        Some(request) => app.with_windowing(request),
+        None => app,
+    };
     let opened_urls_sender = sender.clone();
     app.on_open_urls(move |opened| {
         opened_urls_sender.send(opened).ok();
@@ -110,6 +117,8 @@ fn main() -> ExitCode {
     app.on_reopen(show_window);
 
     app.run(move |cx: &mut App| {
+        #[cfg(unix)]
+        quit_on_signal(&io, cx);
         #[cfg(target_os = "macos")]
         dock::install_icon();
         if let Err(error) = assets::Assets.load_fonts(cx) {
@@ -623,6 +632,80 @@ unsafe extern "system" fn work_area(
 #[cfg(not(target_os = "windows"))]
 fn platform_handle(_window: &gpui::Window) -> Option<*mut std::ffi::c_void> {
     None
+}
+
+/// Uses X11 when the invalid runtime path prevents resolving a relative Wayland socket.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn x11_fallback() -> Option<gpui::WindowingRequest> {
+    use std::path::Path;
+
+    use gpui::{GraphicalEnvironment, WindowingRequest};
+
+    let mut environment = GraphicalEnvironment::detect();
+    let relative_wayland = environment
+        .wayland_display
+        .as_deref()
+        .is_some_and(|display| !display.is_empty() && Path::new(display).is_relative());
+    let runtime_exists = environment
+        .xdg_runtime_dir
+        .as_deref()
+        .is_some_and(|dir| Path::new(dir).is_dir());
+    let has_x11 = environment
+        .x11_display
+        .as_ref()
+        .is_some_and(|display| !display.is_empty());
+    let should_fall_back = relative_wayland
+        && !runtime_exists
+        && has_x11
+        && std::env::var_os("WAYLAND_SOCKET").is_none();
+    match should_fall_back {
+        true => {
+            log::warn!(
+                "sonora: cannot resolve the Wayland socket without a runtime directory; using X11"
+            );
+            environment.wayland_display = None;
+            Some(WindowingRequest::Windowed(environment))
+        }
+        false => None,
+    }
+}
+
+/// Treats Unix shutdown signals as an explicit quit, not a window close into the tray.
+#[cfg(unix)]
+fn quit_on_signal(io: &state::Io, cx: &mut App) {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let handle = io.handle();
+    let _runtime = handle.enter();
+    let signals = [SignalKind::terminate(), SignalKind::interrupt()]
+        .into_iter()
+        .chain(should_listen_for_hangup().then_some(SignalKind::hangup()));
+    for kind in signals {
+        match signal(kind) {
+            Ok(mut signal) => cx
+                .spawn(async move |cx| {
+                    if signal.recv().await.is_some() {
+                        cx.update(|cx| cx.quit());
+                    }
+                })
+                .detach(),
+            Err(error) => log::warn!("sonora: cannot listen for signal {kind:?}: {error:#}"),
+        }
+    }
+}
+
+/// Respects a launcher such as nohup that asks the process to ignore SIGHUP.
+#[cfg(unix)]
+fn should_listen_for_hangup() -> bool {
+    let mut disposition = std::mem::MaybeUninit::<libc::sigaction>::uninit();
+    // SAFETY: A null new action only queries the disposition, writing to the valid output pointer.
+    if unsafe { libc::sigaction(libc::SIGHUP, std::ptr::null(), disposition.as_mut_ptr()) } != 0 {
+        let error = std::io::Error::last_os_error();
+        log::warn!("sonora: cannot read the SIGHUP disposition: {error:#}");
+        return false;
+    }
+    // SAFETY: A successful sigaction call initialized the output.
+    unsafe { disposition.assume_init().sa_sigaction != libc::SIG_IGN }
 }
 
 #[cfg(test)]
