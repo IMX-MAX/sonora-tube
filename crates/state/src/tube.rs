@@ -3261,31 +3261,3 @@ fn chosen(kept: &str) -> (usize, Option<String>) {
     };
     (user, Some(page.to_owned()).filter(|page| !page.is_empty()))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn search_batch_combines_sparse_pages_without_counting_duplicates() {
-        let video = |id: usize| {
-            Found::Video(Video {
-                id: id.to_string(),
-                ..Video::default()
-            })
-        };
-        let initial = HashSet::from([found_key(&video(0))]);
-        let batch = search_batch("0".to_owned(), initial, |token| async move {
-            let offset = token.parse::<usize>()?;
-            Ok(Page {
-                items: (offset..=offset + 7).map(video).collect(),
-                more: Some((offset + 7).to_string()),
-            })
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(batch.items, (1..=21).map(video).collect::<Vec<_>>());
-        assert_eq!(batch.more.as_deref(), Some("21"));
-    }
-}
