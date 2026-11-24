@@ -245,11 +245,7 @@ fn quit_on_signal(io: &state::Io, cx: &mut App) {
 
     let handle = io.handle();
     let _runtime = handle.enter();
-    for kind in [
-        SignalKind::terminate(),
-        SignalKind::interrupt(),
-        SignalKind::hangup(),
-    ] {
+    for kind in [SignalKind::terminate(), SignalKind::interrupt()] {
         match signal(kind) {
             Ok(mut signal) => cx
                 .spawn(async move |cx| {
