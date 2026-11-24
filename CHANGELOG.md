@@ -27,7 +27,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- Leaving a video or closing its mini-player frees the player, so YouTube+ gives back the memory a video took instead of holding on to it until it quits.
+- YouTube+ uses less memory after you leave a video or close its mini-player.
 - Removing a single track from history or a playlist shows a translated menu label again.
 - With a light theme, the rest of the app no longer turns dark while the fullscreen player opens or closes.
 - Repeat All starts a playlist over even when its last songs are unavailable, instead of stopping at the end.
