@@ -981,11 +981,6 @@ impl Watching {
     pub fn leave(&mut self, cx: &mut Context<Self>) {
         self.place(cx);
         self.full = false;
-        self.unload(cx);
-    }
-
-    /// Frees the player, leaving the video on the page unplayed until it is opened again.
-    pub fn unload(&mut self, cx: &mut Context<Self>) {
         self.away = true;
         self.placing = None;
         self.stream = None;
