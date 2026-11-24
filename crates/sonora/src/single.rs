@@ -210,7 +210,7 @@ fn name() -> io::Result<Name<'static>> {
 
 /// The user's runtime folder, which the session manager creates readable by this user alone. A
 /// Flatpak sandbox gets a fresh one per launch, so there the app's own subfolder, shared by every
-/// launch, is used instead. Without a runtime folder the socket goes in the user's cache folder.
+/// launch, is used instead. Without an existing runtime folder the socket goes in the user's cache folder.
 #[cfg(all(unix, not(target_os = "macos")))]
 fn private_dir() -> io::Result<std::path::PathBuf> {
     use std::os::unix::fs::DirBuilderExt as _;
@@ -218,7 +218,17 @@ fn private_dir() -> io::Result<std::path::PathBuf> {
 
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from);
+        .map(PathBuf::from)
+        .filter(|dir| {
+            if dir.is_dir() {
+                return true;
+            }
+            log::warn!(
+                "single: XDG_RUNTIME_DIR {} is not a directory; using the cache folder",
+                dir.display()
+            );
+            false
+        });
     let dir = match (runtime, std::env::var_os("FLATPAK_ID")) {
         (Some(runtime), Some(app)) => runtime.join("app").join(app),
         (Some(runtime), None) => return Ok(runtime),

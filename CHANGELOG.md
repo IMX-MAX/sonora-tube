@@ -27,6 +27,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- On Linux, a quit signal exits the app even when it is set to keep running in the background.
+- On Linux, the app still opens when the configured runtime directory does not exist.
 - Removing a single track from history or a playlist shows a translated menu label again.
 - With a light theme, the rest of the app no longer turns dark while the fullscreen player opens or closes.
 - Repeat All starts a playlist over even when its last songs are unavailable, instead of stopping at the end.

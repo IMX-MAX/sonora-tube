@@ -110,6 +110,8 @@ fn main() -> ExitCode {
     app.on_reopen(show_window);
 
     app.run(move |cx: &mut App| {
+        #[cfg(unix)]
+        quit_on_signal(&io, cx);
         #[cfg(target_os = "macos")]
         dock::install_icon();
         if let Err(error) = assets::Assets.load_fonts(cx) {
@@ -234,6 +236,31 @@ fn main() -> ExitCode {
         cx.activate(true);
     });
     ExitCode::SUCCESS
+}
+
+/// Treats Unix shutdown signals as an explicit quit, not a window close into the tray.
+#[cfg(unix)]
+fn quit_on_signal(io: &state::Io, cx: &mut App) {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let handle = io.handle();
+    let _runtime = handle.enter();
+    for kind in [
+        SignalKind::terminate(),
+        SignalKind::interrupt(),
+        SignalKind::hangup(),
+    ] {
+        match signal(kind) {
+            Ok(mut signal) => cx
+                .spawn(async move |cx| {
+                    if signal.recv().await.is_some() {
+                        cx.update(|cx| cx.quit());
+                    }
+                })
+                .detach(),
+            Err(error) => log::warn!("sonora: cannot listen for signal {kind:?}: {error:#}"),
+        }
+    }
 }
 
 /// Opens what a launch or a hand-off passed: a provider's link opens on that provider, and
