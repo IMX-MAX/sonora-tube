@@ -661,7 +661,8 @@ pub(crate) fn mp4_qualities(formats: &Value) -> Vec<Quality> {
         })
         .filter_map(|format| {
             let track = &format["audioTrack"];
-            let name = text(&track["displayName"])
+            let name = string(&track["displayName"])
+                .or_else(|| text(&track["displayName"]))
                 .unwrap_or_default()
                 .to_ascii_lowercase();
             Some((
