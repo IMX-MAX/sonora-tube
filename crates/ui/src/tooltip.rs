@@ -259,7 +259,7 @@ where
 {
     let hidden = move |text: &TooltipText, cx: &App| {
         clip.as_ref()
-            .is_some_and(|layout| layout.text() == &*text.resolve(cx))
+            .is_some_and(|layout| layout.text() == *text.resolve(cx))
     };
     match perch {
         Perch::Follow => element
