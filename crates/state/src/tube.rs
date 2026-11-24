@@ -1524,11 +1524,14 @@ impl Watching {
                     return None;
                 }
                 let player = this.player()?.clone();
-                let direct = match named {
-                    Ok(streams) => {
-                        this.qualities = streams.qualities;
-                        this.board = streams.board;
-                        this.duration = streams.duration;
+                let qualities = named.and_then(|streams| {
+                    this.board = streams.board;
+                    this.duration = streams.duration;
+                    streams.qualities
+                });
+                let direct = match qualities {
+                    Ok(qualities) => {
+                        this.qualities = qualities;
                         this.quality()
                             .map(|quality| player.play(&quality.picture, &quality.sound, start))
                     }
