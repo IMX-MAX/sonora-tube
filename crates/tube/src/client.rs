@@ -11,7 +11,7 @@ use sha1::{Digest as _, Sha1};
 use crate::parse;
 use crate::{
     Caption, Captions, Channel, ChannelPage, Comments, Found, Identity, Page, PlaylistPage,
-    Section, Storyboard, Streams, Tab, Video, Watch,
+    Quality, Section, Storyboard, Streams, Tab, Video, Watch,
 };
 
 const ORIGIN: &str = "https://www.youtube.com";
@@ -113,13 +113,16 @@ pub struct ShortStreams {
     pub mp4: Option<Streams>,
     manifest: Result<String>,
     board: Option<Storyboard>,
+    duration: Option<Duration>,
 }
 
 impl ShortStreams {
-    /// Consumes these sources and fetches the HLS manifest. If resolving its address failed,
-    /// returns the stored error without making a request.
-    pub async fn hls(self, client: &Client) -> Result<Streams> {
-        client.read_hls(self.manifest?, self.board).await
+    /// Consumes these sources and fetches the HLS manifest, preserving playback metadata even
+    /// on failure. If resolving the address failed, returns the stored error without a request.
+    pub async fn hls(self, client: &Client) -> Streams {
+        client
+            .hls_streams(self.manifest, self.board, self.duration)
+            .await
     }
 }
 
@@ -434,13 +437,16 @@ impl Client {
         })
     }
 
-    /// The qualities a video can be played at, best first, each a pair of addresses a player
-    /// opens directly. That skips the page scraping a player would otherwise do before the
-    /// first frame.
+    /// The video's playback metadata, plus direct streams when available to skip page scraping.
     pub async fn streams(&self, id: &str) -> Result<Streams> {
         let answer = self.player(id).await?;
-        self.read_hls(hls_manifest(&answer)?, parse::storyboard(&answer))
-            .await
+        Ok(self
+            .hls_streams(
+                hls_manifest(&answer),
+                parse::storyboard(&answer),
+                parse::duration(&answer),
+            )
+            .await)
     }
 
     /// Resolves a Short's sources without fetching its HLS manifest until needed.
@@ -448,13 +454,16 @@ impl Client {
         let answer = self.player(id).await?;
         let qualities = parse::mp4_qualities(&answer["streamingData"]["adaptiveFormats"]);
         let board = parse::storyboard(&answer);
+        let duration = parse::duration(&answer);
         Ok(ShortStreams {
             mp4: (!qualities.is_empty()).then(|| Streams {
-                qualities,
+                qualities: Ok(qualities),
                 board: board.clone(),
+                duration,
             }),
             manifest: hls_manifest(&answer),
             board,
+            duration,
         })
     }
 
@@ -466,7 +475,26 @@ impl Client {
             .await
     }
 
-    async fn read_hls(&self, list: String, board: Option<Storyboard>) -> Result<Streams> {
+    /// Pairs a manifest lookup result with metadata already read from the player response.
+    async fn hls_streams(
+        &self,
+        manifest: Result<String>,
+        board: Option<Storyboard>,
+        duration: Option<Duration>,
+    ) -> Streams {
+        let qualities = match manifest {
+            Ok(list) => self.stream_qualities(list).await,
+            Err(error) => Err(error),
+        };
+        Streams {
+            qualities,
+            board,
+            duration,
+        }
+    }
+
+    /// Fetches the direct stream list, independently of the video's playback metadata.
+    async fn stream_qualities(&self, list: String) -> Result<Vec<Quality>> {
         let response = self
             .http
             .get(list)
@@ -482,7 +510,7 @@ impl Client {
             .context("cannot read the stream list")?;
         let qualities = parse::qualities(&listed);
         ensure!(!qualities.is_empty(), "the stream list names no stream");
-        Ok(Streams { qualities, board })
+        Ok(qualities)
     }
 
     fn visitor(&self) -> Option<String> {

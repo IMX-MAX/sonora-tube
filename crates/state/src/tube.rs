@@ -58,6 +58,14 @@ impl VideoSearch {
         &self.found
     }
 
+    /// The duration badge for a video in the current search results.
+    pub fn listed_duration(&self, id: &str) -> Option<&str> {
+        self.found.iter().find_map(|found| match found {
+            Found::Video(video) if video.id == id => video.length.as_deref(),
+            _ => None,
+        })
+    }
+
     pub fn is_loading(&self) -> bool {
         self.loading
     }
@@ -298,6 +306,8 @@ pub struct Watching {
     like: Option<Task<()>>,
     /// The qualities the video can be played at, best first, once YouTube has named them.
     qualities: Vec<Quality>,
+    listed_duration: Option<String>,
+    duration: Option<Duration>,
     /// The small pictures the seek bar previews the video with.
     board: Option<Storyboard>,
     /// The tallest picture the user wants, `None` to let the app choose.
@@ -369,6 +379,8 @@ impl Watching {
             short: false,
             like: None,
             qualities: Vec::new(),
+            listed_duration: None,
+            duration: None,
             board: None,
             ceiling: None,
             ambient: true,
@@ -898,13 +910,22 @@ impl Watching {
     }
 
     /// Starts `id` playing and fetches its page. The music stops, since both would sound at once.
-    pub fn open(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.show(id, false, cx);
+    pub fn open(&mut self, id: &str, listed_duration: Option<String>, cx: &mut Context<Self>) {
+        self.show(id, false, listed_duration, cx);
     }
 
     /// Opens `id` as a long video, or as a Short when `short`: looping and from its start.
-    fn show(&mut self, id: &str, short: bool, cx: &mut Context<Self>) {
+    fn show(
+        &mut self,
+        id: &str,
+        short: bool,
+        listed_duration: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if self.id.as_deref() == Some(id) {
+            if listed_duration.is_some() {
+                self.listed_duration = listed_duration;
+            }
             self.set_short(short);
             // Opened again, perhaps under another profile, whose history has yet to see it.
             if let Some(seen) = self.video() {
@@ -918,6 +939,8 @@ impl Watching {
         self.newest = false;
         self.playback.update(cx, |playback, cx| playback.pause(cx));
         self.id = Some(id.to_owned());
+        self.listed_duration = listed_duration;
+        self.duration = None;
         self.seen = false;
         self.set_short(short);
         self.watch = None;
@@ -983,7 +1006,7 @@ impl Watching {
     /// Opens a Short in the upright player, which plays it over and over and steps through
     /// `reel`, the list it was opened from.
     pub fn open_short(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.show(id, true, cx);
+        self.show(id, true, None, cx);
         if !self.reel.iter().any(|short| short.id == id) {
             self.reel.clear();
         }
@@ -1021,7 +1044,8 @@ impl Watching {
         };
         let paused = self.player().is_some_and(|player| player.paused());
         let seen = self.seen;
-        self.show(&id, self.short, cx);
+        let listed_duration = self.listed_duration.take();
+        self.show(&id, self.short, listed_duration, cx);
         self.seen = seen;
         self.set_paused(paused, cx);
     }
@@ -1145,6 +1169,16 @@ impl Watching {
     /// The qualities the video can be played at, best first. Empty until YouTube names them.
     pub fn qualities(&self) -> &[Quality] {
         &self.qualities
+    }
+
+    /// The running time YouTube supplied with the playback metadata.
+    pub fn duration(&self) -> Option<Duration> {
+        self.duration
+    }
+
+    /// The duration as shown in search, when this video's result is available.
+    pub fn listed_duration(&self) -> Option<&str> {
+        self.listed_duration.as_deref()
     }
 
     /// The tallest picture asked for, `None` when the app chooses.
@@ -1627,7 +1661,7 @@ impl Watching {
                         {
                             return;
                         }
-                        join(io.spawn(async move { sources.hls(&client).await })).await
+                        join(io.spawn(async move { Ok(sources.hls(&client).await) })).await
                     }
                     Err(error) => Err(error),
                 }
@@ -1675,10 +1709,18 @@ impl Watching {
             if this.id.as_deref() != Some(id) {
                 return None;
             }
-            let player = this.player()?.clone();
-            this.qualities = streams.qualities.clone();
             this.board = streams.board.clone();
+            this.duration = streams.duration;
             cx.notify();
+            match &streams.qualities {
+                Ok(qualities) => this.qualities.clone_from(qualities),
+                Err(error) => {
+                    this.qualities.clear();
+                    log::warn!("video: no direct streams for {id}: {error:#}");
+                    return None;
+                }
+            }
+            let player = this.player()?.clone();
             let quality = this.quality()?;
             player.play(&quality.picture, &quality.sound, start).ok()?;
             Some(player)

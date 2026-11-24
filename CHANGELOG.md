@@ -29,6 +29,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Shorts start faster, especially when you go back to one you just watched.
 - Show more in YouTube search displays every result it fetches and combines sparse pages.
+- Videos with hidden like counts show “Like”, and the transcript control says “Hide transcript” while the panel is open.
+- The player’s video duration now matches the duration in search results when YouTube publishes it.
+- The welcome and sign-in screens describe YouTube rather than music services.
 - The player's More controls button is announced and labelled as More controls instead of Show more.
 - Removing a single track from history or a playlist shows a translated menu label again.
 - With a light theme, the rest of the app no longer turns dark while the fullscreen player opens or closes.

@@ -1196,9 +1196,15 @@ impl Root {
         let content: AnyView = match destination {
             Destination::Fullscreen => return,
             Destination::Watch(id) => {
+                let listed_duration = self
+                    .screens
+                    .video_search
+                    .read(cx)
+                    .listed_duration(&id)
+                    .map(str::to_owned);
                 self.screens
                     .watching
-                    .update(cx, |watching, cx| watching.open(&id, cx));
+                    .update(cx, |watching, cx| watching.open(&id, listed_duration, cx));
                 self.screens.watch.clone().into()
             }
             Destination::Short(id) => {

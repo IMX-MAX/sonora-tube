@@ -8,8 +8,8 @@ login-failed-title = Falha no login
 login-problem-region = O Spotify não abrirá uma sessão do país onde você está. Faça login do seu país de origem ou altere o país na sua conta do Spotify.
 login-problem-credentials = Sua sessão salva do Spotify não é mais válida. Faça login novamente para continuar.
 login-problem-password = O servidor não aceitou esse nome de usuário e senha. Confira os dados e tente novamente.
-login-problem-network = O YouTube+ não conseguiu acessar o serviço de música. Verifique sua conexão com a internet e tente novamente.
-login-problem-blocked = O serviço de música está recusando conexões da sua rede. Se você usa uma VPN, tente outro servidor ou desative-a.
+login-problem-network = O YouTube+ não conseguiu acessar o YouTube. Verifique sua conexão com a internet e tente novamente.
+login-problem-blocked = O YouTube está recusando conexões da sua rede. Se você usa uma VPN, tente outro servidor ou desative-a.
 login-problem-cancelled = Você fechou a página do navegador antes de aprovar o login. Recomece para finalizar.
 login-problem-refused = O Spotify recusou o login. Aguarde um momento e tente novamente.
 login-problem-premium = O YouTube+ usa o Spotify Premium para reproduzir, e esta conta não possui o plano. Faça login com uma conta Premium para continuar.
@@ -20,7 +20,7 @@ login-connect-cookies = Colar cookies manualmente
 login-cookie-open = Abrir { $provider }
 login-cookie-submit = Continuar
 login-cookie-hint = Cole o cabeçalho Cookie aqui
-login-cookie-step-1 = Acesse music.youtube.com e certifique-se de estar conectado. Funciona melhor em uma janela anônima.
+login-cookie-step-1 = Acesse youtube.com e certifique-se de estar conectado. Funciona melhor em uma janela anônima.
 login-cookie-step-2 = Pressione F12, abra a guia Rede e recarregue a página.
 login-cookie-step-3 = Selecione qualquer requisição chamada "browse" ou "next".
 login-cookie-step-4 = Em Cabeçalhos, encontre Cookie em Cabeçalhos da Requisição, clique com o botão direito e copie o valor.
@@ -58,9 +58,9 @@ login-choose-detail = Escolha como entrar no { $provider }.
 # album and playlist pages
 
 # artist page
-login-providers = Serviços de música
+login-providers = Opções de login
 login-welcome-title = Boas-vindas ao YouTube+
-login-welcome-detail = Você pode adicionar mais serviços depois nas configurações.
+login-welcome-detail = Faça login no YouTube ou assista como convidado.
 login-or = ou
 artist-eyebrow = Artista
 artist-monthly-listeners = { $count ->
