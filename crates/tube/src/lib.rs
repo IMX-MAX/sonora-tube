@@ -8,7 +8,7 @@ pub mod ai;
 mod client;
 mod parse;
 
-pub use client::{Client, PROOF};
+pub use client::{Client, PROOF, ShortStreams};
 
 /// A video as a list shows it. The counts and dates stay the text YouTube wrote, since that is
 /// already abbreviated and localised.

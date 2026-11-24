@@ -11,7 +11,7 @@ use sha1::{Digest as _, Sha1};
 use crate::parse;
 use crate::{
     Caption, Captions, Channel, ChannelPage, Comments, Found, Identity, Page, PlaylistPage,
-    Section, Streams, Tab, Video, Watch,
+    Section, Storyboard, Streams, Tab, Video, Watch,
 };
 
 const ORIGIN: &str = "https://www.youtube.com";
@@ -106,6 +106,19 @@ pub struct Client {
     acting: Arc<RwLock<Acting>>,
     /// The name YouTube gave this guest, which it wants back before it hands out streams.
     visitor: Arc<RwLock<Option<String>>>,
+}
+
+/// A Short's MP4 streams and its unopened HLS fallback from the same player response.
+pub struct ShortStreams {
+    pub mp4: Option<Streams>,
+    manifest: Result<String>,
+    board: Option<Storyboard>,
+}
+
+impl ShortStreams {
+    pub async fn hls(self, client: &Client) -> Result<Streams> {
+        client.read_hls(self.manifest?, self.board).await
+    }
 }
 
 impl Client {
@@ -423,40 +436,35 @@ impl Client {
     /// opens directly. That skips the page scraping a player would otherwise do before the
     /// first frame.
     pub async fn streams(&self, id: &str) -> Result<Streams> {
-        self.streams_for(id, false).await
+        let answer = self.player(id).await?;
+        self.read_hls(hls_manifest(&answer)?, parse::storyboard(&answer))
+            .await
     }
 
-    /// Resolves directly playable MP4 streams for a Short without opening HLS playlists first.
-    pub async fn short_streams(&self, id: &str) -> Result<Streams> {
-        self.streams_for(id, true).await
+    /// Resolves a Short's sources without fetching its HLS manifest until needed.
+    pub async fn short_streams(&self, id: &str) -> Result<ShortStreams> {
+        let answer = self.player(id).await?;
+        let qualities = parse::mp4_qualities(&answer["streamingData"]["adaptiveFormats"]);
+        let board = parse::storyboard(&answer);
+        Ok(ShortStreams {
+            mp4: (!qualities.is_empty()).then(|| Streams {
+                qualities,
+                board: board.clone(),
+            }),
+            manifest: hls_manifest(&answer),
+            board,
+        })
     }
 
-    async fn streams_for(&self, id: &str, short: bool) -> Result<Streams> {
+    async fn player(&self, id: &str) -> Result<Value> {
         if self.visitor().is_none() {
             self.call("visitor_id", json!({})).await?;
         }
-        let answer = self
-            .call_as(&HEADSET, "player", json!({ "videoId": id }))
-            .await?;
-        if short {
-            let qualities = parse::mp4_qualities(&answer["streamingData"]["adaptiveFormats"]);
-            ensure!(
-                !qualities.is_empty(),
-                "youtube names no directly playable MP4 streams"
-            );
-            return Ok(Streams {
-                qualities,
-                board: parse::storyboard(&answer),
-            });
-        }
-        let list = answer["streamingData"]["hlsManifestUrl"]
-            .as_str()
-            .with_context(|| {
-                let reason = answer["playabilityStatus"]["reason"]
-                    .as_str()
-                    .unwrap_or("no stream list");
-                format!("youtube holds the streams back: {reason}")
-            })?;
+        self.call_as(&HEADSET, "player", json!({ "videoId": id }))
+            .await
+    }
+
+    async fn read_hls(&self, list: String, board: Option<Storyboard>) -> Result<Streams> {
         let response = self
             .http
             .get(list)
@@ -472,10 +480,7 @@ impl Client {
             .context("cannot read the stream list")?;
         let qualities = parse::qualities(&listed);
         ensure!(!qualities.is_empty(), "the stream list names no stream");
-        Ok(Streams {
-            qualities,
-            board: parse::storyboard(&answer),
-        })
+        Ok(Streams { qualities, board })
     }
 
     fn visitor(&self) -> Option<String> {
@@ -579,6 +584,18 @@ impl Client {
         }
         Ok(answer)
     }
+}
+
+fn hls_manifest(answer: &Value) -> Result<String> {
+    answer["streamingData"]["hlsManifestUrl"]
+        .as_str()
+        .map(str::to_owned)
+        .with_context(|| {
+            let reason = answer["playabilityStatus"]["reason"]
+                .as_str()
+                .unwrap_or("no stream list");
+            format!("youtube holds the streams back: {reason}")
+        })
 }
 
 /// The value of the first proof cookie in a `Cookie` header.

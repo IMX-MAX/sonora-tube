@@ -1587,27 +1587,47 @@ impl Watching {
             {
                 return;
             }
-            for mp4 in [true, false].into_iter().filter(|mp4| short || !mp4) {
-                let (client, id) = (client.clone(), asked.clone());
-                let request = io.spawn(async move {
-                    if mp4 {
-                        client.short_streams(&id).await
-                    } else {
-                        client.streams(&id).await
+            let id = asked.clone();
+            let named = if short {
+                let resolver = client.clone();
+                match join(io.spawn(async move { resolver.short_streams(&id).await })).await {
+                    Ok(mut sources) => {
+                        if let Some(streams) = sources.mp4.take()
+                            && Self::start_stream(
+                                &this,
+                                cx,
+                                &asked,
+                                start,
+                                streams,
+                                Some(Instant::now()),
+                            )
+                            .await
+                        {
+                            return;
+                        }
+                        join(io.spawn(async move { sources.hls(&client).await })).await
                     }
-                });
-                let streams = match join(request).await {
-                    Ok(streams) => streams,
-                    Err(error) => {
-                        log::warn!("video: no direct streams for {asked}: {error:#}");
-                        continue;
-                    }
-                };
-                if Self::start_stream(&this, cx, &asked, start, streams, short.then(Instant::now))
-                    .await
-                {
-                    return;
+                    Err(error) => Err(error),
                 }
+            } else {
+                join(io.spawn(async move { client.streams(&id).await })).await
+            };
+            match named {
+                Ok(streams) => {
+                    if Self::start_stream(
+                        &this,
+                        cx,
+                        &asked,
+                        start,
+                        streams,
+                        short.then(Instant::now),
+                    )
+                    .await
+                    {
+                        return;
+                    }
+                }
+                Err(error) => log::warn!("video: no direct streams for {asked}: {error:#}"),
             }
             this.update(cx, |this, cx| {
                 if this.id.as_deref() == Some(asked.as_str()) {
