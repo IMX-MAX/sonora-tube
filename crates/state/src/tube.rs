@@ -1683,7 +1683,8 @@ impl Watching {
                 return false;
             }
         }
-        true
+        // Shorts are finite; without a duration their direct open has not succeeded.
+        opened.is_none()
     }
 
     /// Plays the video through the player's own page scraper, the slow way that always works.
