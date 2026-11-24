@@ -11,7 +11,7 @@ use sha1::{Digest as _, Sha1};
 use crate::parse;
 use crate::{
     Caption, Captions, Channel, ChannelPage, Comments, Found, Identity, Page, PlaylistPage,
-    Quality, Section, Streams, Tab, Video, Watch,
+    Quality, Section, Storyboard, Streams, Tab, Video, Watch,
 };
 
 const ORIGIN: &str = "https://www.youtube.com";
@@ -106,6 +106,24 @@ pub struct Client {
     acting: Arc<RwLock<Acting>>,
     /// The name YouTube gave this guest, which it wants back before it hands out streams.
     visitor: Arc<RwLock<Option<String>>>,
+}
+
+/// A Short's MP4 streams and its unopened HLS fallback from the same player response.
+pub struct ShortStreams {
+    pub mp4: Option<Streams>,
+    manifest: Result<String>,
+    board: Option<Storyboard>,
+    duration: Option<Duration>,
+}
+
+impl ShortStreams {
+    /// Consumes these sources and fetches the HLS manifest, preserving playback metadata even
+    /// on failure. If resolving the address failed, returns the stored error without a request.
+    pub async fn hls(self, client: &Client) -> Streams {
+        client
+            .hls_streams(self.manifest, self.board, self.duration)
+            .await
+    }
 }
 
 impl Client {
@@ -421,32 +439,62 @@ impl Client {
 
     /// The video's playback metadata, plus direct streams when available to skip page scraping.
     pub async fn streams(&self, id: &str) -> Result<Streams> {
-        if self.visitor().is_none() {
-            self.call("visitor_id", json!({})).await?;
-        }
-        let answer = self
-            .call_as(&HEADSET, "player", json!({ "videoId": id }))
-            .await?;
-        let duration = parse::duration(&answer);
+        let answer = self.player(id).await?;
+        Ok(self
+            .hls_streams(
+                hls_manifest(&answer),
+                parse::storyboard(&answer),
+                parse::duration(&answer),
+            )
+            .await)
+    }
+
+    /// Resolves a Short's sources without fetching its HLS manifest until needed.
+    pub async fn short_streams(&self, id: &str) -> Result<ShortStreams> {
+        let answer = self.player(id).await?;
+        let qualities = parse::mp4_qualities(&answer["streamingData"]["adaptiveFormats"]);
         let board = parse::storyboard(&answer);
-        let qualities = self.stream_qualities(&answer).await;
-        Ok(Streams {
-            qualities,
+        let duration = parse::duration(&answer);
+        Ok(ShortStreams {
+            mp4: (!qualities.is_empty()).then(|| Streams {
+                qualities: Ok(qualities),
+                board: board.clone(),
+                duration,
+            }),
+            manifest: hls_manifest(&answer),
             board,
             duration,
         })
     }
 
+    async fn player(&self, id: &str) -> Result<Value> {
+        if self.visitor().is_none() {
+            self.call("visitor_id", json!({})).await?;
+        }
+        self.call_as(&HEADSET, "player", json!({ "videoId": id }))
+            .await
+    }
+
+    /// Pairs a manifest lookup result with metadata already read from the player response.
+    async fn hls_streams(
+        &self,
+        manifest: Result<String>,
+        board: Option<Storyboard>,
+        duration: Option<Duration>,
+    ) -> Streams {
+        let qualities = match manifest {
+            Ok(list) => self.stream_qualities(list).await,
+            Err(error) => Err(error),
+        };
+        Streams {
+            qualities,
+            board,
+            duration,
+        }
+    }
+
     /// Fetches the direct stream list, independently of the video's playback metadata.
-    async fn stream_qualities(&self, answer: &Value) -> Result<Vec<Quality>> {
-        let list = answer["streamingData"]["hlsManifestUrl"]
-            .as_str()
-            .with_context(|| {
-                let reason = answer["playabilityStatus"]["reason"]
-                    .as_str()
-                    .unwrap_or("no stream list");
-                format!("youtube holds the streams back: {reason}")
-            })?;
+    async fn stream_qualities(&self, list: String) -> Result<Vec<Quality>> {
         let response = self
             .http
             .get(list)
@@ -566,6 +614,18 @@ impl Client {
         }
         Ok(answer)
     }
+}
+
+fn hls_manifest(answer: &Value) -> Result<String> {
+    answer["streamingData"]["hlsManifestUrl"]
+        .as_str()
+        .map(str::to_owned)
+        .with_context(|| {
+            let reason = answer["playabilityStatus"]["reason"]
+                .as_str()
+                .unwrap_or("no stream list");
+            format!("youtube holds the streams back: {reason}")
+        })
 }
 
 /// The value of the first proof cookie in a `Cookie` header.
