@@ -3984,7 +3984,7 @@ impl Render for PipView {
                                 closed.update(cx, |watching, cx| {
                                     watching.set_floating(false, cx);
                                     if away {
-                                        watching.set_paused(true, cx);
+                                        watching.leave(cx);
                                     }
                                 });
                                 window.remove_window();

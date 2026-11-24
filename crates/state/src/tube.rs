@@ -207,7 +207,8 @@ pub struct Watching {
     error: Option<String>,
     thread: Thread,
     script: Script,
-    /// Made on the first video and kept, so one mpv serves every video after it.
+    /// Made when a video plays and dropped once nothing shows it, so mpv and its buffers are
+    /// freed while no video is on screen.
     screen: Option<(Arc<Player>, Entity<VideoView>)>,
     /// The volume from 0 to 1, as the slider shows it.
     volume: f32,
@@ -828,6 +829,12 @@ impl Watching {
                 self.subscriptions
                     .update(cx, |kept, cx| kept.watched_now(seen, cx));
             }
+            if self.screen.is_none()
+                && let Err(error) = self.play(id, cx)
+            {
+                log::error!("video: cannot play {id}: {error:#}");
+                self.error = Some(format!("{error:#}"));
+            }
             self.set_paused(false, cx);
             return;
         }
@@ -943,11 +950,14 @@ impl Watching {
         self.set_paused(paused, cx);
     }
 
-    /// Stops the video when its page is left, so nothing plays unseen.
+    /// Stops the video when its page is left, so nothing plays unseen, and frees the player.
+    /// Coming back to the page plays it again from where it was left.
     pub fn leave(&mut self, cx: &mut Context<Self>) {
         self.place(cx);
         self.full = false;
-        self.set_paused(true, cx);
+        self.placing = None;
+        self.screen = None;
+        cx.notify();
     }
 
     pub fn set_paused(&mut self, paused: bool, cx: &mut Context<Self>) {

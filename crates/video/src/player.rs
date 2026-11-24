@@ -96,8 +96,8 @@ impl Player {
             ("cache", "yes"),
             // Read a little ahead of what plays rather than the whole video.
             ("cache-secs", "30"),
-            ("demuxer-max-bytes", "64MiB"),
-            ("demuxer-max-back-bytes", "32MiB"),
+            ("demuxer-max-bytes", "32MiB"),
+            ("demuxer-max-back-bytes", "8MiB"),
             ("ytdl-format", "bestvideo[height<=?1080]+bestaudio/best"),
             ("terminal", "no"),
             ("keep-open", "yes"),
