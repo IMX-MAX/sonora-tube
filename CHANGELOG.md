@@ -27,7 +27,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- Shorts start faster and reuse recent streams when you go back to them.
+- Shorts start faster, especially when you go back to one you just watched.
 - Show more in YouTube search displays every result it fetches and combines sparse pages.
 - Removing a single track from history or a playlist shows a translated menu label again.
 - With a light theme, the rest of the app no longer turns dark while the fullscreen player opens or closes.
