@@ -238,27 +238,6 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Treats Unix shutdown signals as an explicit quit, not a window close into the tray.
-#[cfg(unix)]
-fn quit_on_signal(io: &state::Io, cx: &mut App) {
-    use tokio::signal::unix::{SignalKind, signal};
-
-    let handle = io.handle();
-    let _runtime = handle.enter();
-    for kind in [SignalKind::terminate(), SignalKind::interrupt()] {
-        match signal(kind) {
-            Ok(mut signal) => cx
-                .spawn(async move |cx| {
-                    if signal.recv().await.is_some() {
-                        cx.update(|cx| cx.quit());
-                    }
-                })
-                .detach(),
-            Err(error) => log::warn!("sonora: cannot listen for signal {kind:?}: {error:#}"),
-        }
-    }
-}
-
 /// Opens what a launch or a hand-off passed: a provider's link opens on that provider, and
 /// anything else is read as a file to play. The first batch of an open starts playing at once,
 /// later batches of the same open join its queue. An address no provider knows is refused with
@@ -646,6 +625,27 @@ unsafe extern "system" fn work_area(
 #[cfg(not(target_os = "windows"))]
 fn platform_handle(_window: &gpui::Window) -> Option<*mut std::ffi::c_void> {
     None
+}
+
+/// Treats Unix shutdown signals as an explicit quit, not a window close into the tray.
+#[cfg(unix)]
+fn quit_on_signal(io: &state::Io, cx: &mut App) {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let handle = io.handle();
+    let _runtime = handle.enter();
+    for kind in [SignalKind::terminate(), SignalKind::interrupt()] {
+        match signal(kind) {
+            Ok(mut signal) => cx
+                .spawn(async move |cx| {
+                    if signal.recv().await.is_some() {
+                        cx.update(|cx| cx.quit());
+                    }
+                })
+                .detach(),
+            Err(error) => log::warn!("sonora: cannot listen for signal {kind:?}: {error:#}"),
+        }
+    }
 }
 
 #[cfg(test)]
