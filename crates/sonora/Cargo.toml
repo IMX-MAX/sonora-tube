@@ -38,8 +38,11 @@ tokio = { workspace = true, features = ["rt"] }
 interprocess.workspace = true
 image.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 libc.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
 ksni.workspace = true
 raw-window-handle.workspace = true
 x11rb.workspace = true
@@ -50,7 +53,6 @@ tray-icon.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2.workspace = true
-libc.workspace = true
 objc2.workspace = true
 objc2-app-kit = { workspace = true, features = [
     "block2",

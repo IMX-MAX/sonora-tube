@@ -27,6 +27,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- On Linux, a quit signal exits the app even when it is set to keep running in the background.
+- On Linux, the app still opens when the configured runtime directory does not exist.
 - Shorts start faster, especially when you go back to one you just watched.
 - Show more in YouTube search displays every result it fetches and combines sparse pages.
 - Videos with hidden like counts show “Like”, and the transcript control says “Hide transcript” while the panel is open.
