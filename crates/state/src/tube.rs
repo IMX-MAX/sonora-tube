@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{AnyView, App, AppContext as _, ClipboardItem, Context, Entity, Global, Image, Task};
+use tokio::task::AbortHandle;
 use tube::ai::{Said, Speaker};
 use tube::{
     Caption, Channel, Chapter, Client, Comment, Found, Identity, Line, Page, Peek, Playlist, Post,
@@ -28,6 +29,7 @@ pub struct VideoSearch {
     more: Option<String>,
     loading: bool,
     error: Option<String>,
+    request: Option<AbortHandle>,
     task: Option<Task<()>>,
 }
 
@@ -41,6 +43,7 @@ impl VideoSearch {
             more: None,
             loading: false,
             error: None,
+            request: None,
             task: None,
         }
     }
@@ -74,6 +77,9 @@ impl VideoSearch {
         self.more = None;
         self.error = None;
         self.task = None;
+        if let Some(request) = self.request.take() {
+            request.abort();
+        }
         self.loading = !query.is_empty();
         cx.notify();
         if query.is_empty() {
@@ -118,9 +124,11 @@ impl VideoSearch {
         request: tokio::task::JoinHandle<anyhow::Result<Page<Found>>>,
         cx: &mut Context<Self>,
     ) {
+        self.request = Some(request.abort_handle());
         self.task = Some(cx.spawn(async move |this, cx| {
             let loaded = join(request).await;
             this.update(cx, |this, cx| {
+                this.request = None;
                 this.loading = false;
                 match crate::settled(loaded, cx) {
                     Ok(page) => {
