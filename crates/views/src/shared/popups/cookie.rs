@@ -22,7 +22,7 @@ struct Guide {
 }
 
 const YOUTUBE: Guide = Guide {
-    url: "https://music.youtube.com",
+    url: "https://youtube.com",
     title: "login-cookie-header-title",
     hint: "login-cookie-hint",
     steps: [
