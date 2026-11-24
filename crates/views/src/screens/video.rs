@@ -2239,7 +2239,7 @@ impl WatchView {
                     Button::new("video-more")
                         .icon("icons/ellipsis.svg")
                         .ghost()
-                        .tooltip("video-more"),
+                        .tooltip("video-more-controls"),
                 ),
             });
         let buttons = div()
@@ -3857,27 +3857,44 @@ impl PipView {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         cx.observe(&watching, |_, _, cx| cx.notify()).detach();
-        // However the window goes, the watch page gets its picture back. Closed by the system
-        // away from its page, the video stops as the Close button stops it.
+        let closed = watching.downgrade();
+        window.on_window_should_close(cx, move |_, cx| {
+            if let Some(watching) = closed.upgrade() {
+                Self::dismiss(&watching, cx);
+            }
+            true
+        });
+        // However the window goes, the watch page gets its picture back.
         let back = watching.downgrade();
         cx.on_release(move |_, cx| {
-            let away = !matches!(
-                router::trail(cx).read(cx).current(),
-                Destination::Watch(_) | Destination::Short(_)
-            );
-            back.update(cx, |watching, cx| {
-                if watching.floating() && away {
-                    watching.leave(cx);
-                }
-                watching.set_floating(false, cx);
-            })
-            .ok();
+            back.update(cx, |watching, cx| watching.set_floating(false, cx))
+                .ok();
         })
         .detach();
         Self {
             watching,
             picture,
             focus,
+        }
+    }
+
+    /// Returns the picture to its page, or dismisses playback and its navigation visits when away.
+    fn dismiss(watching: &Entity<Watching>, cx: &mut App) {
+        let trail = router::trail(cx);
+        let current = trail.read(cx).current();
+        let dismissed = watching.update(cx, |watching, cx| {
+            watching.set_floating(false, cx);
+            let id = watching.id()?;
+            if current.video_id() == Some(id) {
+                return None;
+            }
+            let id = id.to_owned();
+            watching.set_paused(true, cx);
+            watching.unload(cx);
+            Some(id)
+        });
+        if let Some(id) = dismissed {
+            trail.update(cx, |trail, cx| trail.forget_video(&id, cx));
         }
     }
 }
@@ -3985,18 +4002,7 @@ impl Render for PipView {
                             .ghost()
                             .tooltip("video-pip-close")
                             .on_click(move |_, window, cx| {
-                                // Closed away from its page the video has nowhere to show, so
-                                // it stops. On its page the picture goes back there.
-                                let away = !matches!(
-                                    router::trail(cx).read(cx).current(),
-                                    Destination::Watch(_) | Destination::Short(_)
-                                );
-                                closed.update(cx, |watching, cx| {
-                                    watching.set_floating(false, cx);
-                                    if away {
-                                        watching.leave(cx);
-                                    }
-                                });
+                                Self::dismiss(&closed, cx);
                                 window.remove_window();
                             }),
                     ),

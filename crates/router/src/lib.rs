@@ -402,6 +402,14 @@ impl From<&ui::Pin> for Destination {
 }
 
 impl Destination {
+    /// The YouTube video shown by a watch or Shorts page.
+    pub fn video_id(&self) -> Option<&str> {
+        match self {
+            Self::Watch(id) | Self::Short(id) => Some(id.as_ref()),
+            _ => None,
+        }
+    }
+
     /// Whether the sidebar row leading to `self` is lit while `other` is open. Every settings page
     /// lights the one Settings row, and every other row is lit only on its own page.
     pub fn same_section(&self, other: &Destination) -> bool {
