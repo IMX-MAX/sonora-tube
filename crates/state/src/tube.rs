@@ -249,8 +249,6 @@ pub struct Watching {
     /// Whether the video's page was left and its player freed, so a fetch of the page again
     /// leaves it unplayed until it is opened.
     away: bool,
-    /// The video and second it was at when its page was left, taken up again when it comes back.
-    left: Option<(String, f64)>,
     shot: Option<Task<()>>,
     /// The video's chapters in order: the description's, or the AI's when it lists none.
     chapters: Arc<Vec<Chapter>>,
@@ -304,7 +302,6 @@ impl Watching {
             newest: false,
             placing: None,
             away: false,
-            left: None,
             shot: None,
             chapters: Arc::default(),
             chapters_ai: false,
@@ -868,7 +865,6 @@ impl Watching {
         self.liked = self.subscriptions.read(cx).liked(id);
         cx.notify();
 
-        self.left = None;
         if !self.away {
             self.reload(cx);
         }
@@ -960,10 +956,6 @@ impl Watching {
     /// Coming back to the page plays it again from where it was left.
     pub fn leave(&mut self, cx: &mut Context<Self>) {
         self.place(cx);
-        let at = self.player().and_then(|player| player.position());
-        if let Some(left) = self.id.clone().zip(at) {
-            self.left = Some(left);
-        }
         self.full = false;
         self.away = true;
         self.placing = None;
@@ -1508,10 +1500,7 @@ impl Watching {
         // A Short is over in a moment and plays round again, so it always starts at its start.
         let start = match self.short {
             true => 0.,
-            false => match &self.left {
-                Some((left, at)) if left == id => *at,
-                _ => self.subscriptions.read(cx).resume(id).unwrap_or(0.),
-            },
+            false => self.subscriptions.read(cx).resume(id).unwrap_or(0.),
         };
         if self.placing.is_none() {
             self.placing = Some(cx.spawn(async move |this, cx| {
