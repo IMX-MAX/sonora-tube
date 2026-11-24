@@ -2038,6 +2038,7 @@ impl WatchView {
         let (level, muted, captions) = (watching.volume(), watching.muted(), watching.captions());
         let (captioned, silenced) = (self.watching.clone(), self.watching.clone());
         let (scripted, script) = (watching.transcript_open(), self.watching.clone());
+        let script_tooltip = script.clone();
         let floating = watching.floating();
         let (full, filled) = (watching.full(), self.watching.clone());
         let (discussed, theater) = (self.discussed, self.theater);
@@ -2061,10 +2062,17 @@ impl WatchView {
                 .child(text)
         };
 
-        let ends = SharedString::from(format!(
-            "{elapsed} / {}",
-            clock(Duration::from_secs_f64(total.max(0.)))
-        ));
+        let duration = watching
+            .listed_duration()
+            .map(SharedString::from)
+            .unwrap_or_else(|| {
+                clock(
+                    watching
+                        .duration()
+                        .unwrap_or_else(|| Duration::from_secs_f64(total.max(0.).round())),
+                )
+            });
+        let ends = SharedString::from(format!("{elapsed} / {duration}"));
         let spread = self.spread
             || self.choosing.is_some()
             || self.pacing.is_some()
@@ -2111,9 +2119,11 @@ impl WatchView {
                                 .icon("icons/text-select.svg")
                                 .ghost()
                                 .selected(scripted)
-                                .tooltip(match scripted {
-                                    true => "video-transcript-hide",
-                                    false => "video-transcript-show",
+                                .tooltip_dynamic(move |cx| {
+                                    match script_tooltip.read(cx).transcript_open() {
+                                        true => "video-transcript-hide".into(),
+                                        false => "video-transcript-show".into(),
+                                    }
                                 })
                                 .on_click(move |_, _, cx| {
                                     script
