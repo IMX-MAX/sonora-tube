@@ -569,17 +569,23 @@ fn whole_banner(address: &str) -> String {
 /// YouTube marks as the default, then the language the video was recorded in, then anything
 /// that is not a dub. YouTube lists dubs first and often marks no default.
 fn fitness(line: &str) -> u8 {
-    if attribute(line, "DEFAULT") == Some("YES") {
-        return 3;
-    }
     let tags = attribute(line, "YT-EXT-XTAGS")
         .and_then(|tags| URL_SAFE_NO_PAD.decode(tags.trim_end_matches('=')).ok())
         .map(|tags| String::from_utf8_lossy(&tags).into_owned())
         .unwrap_or_default();
-    match (tags.contains("original"), tags.contains("dubbed")) {
-        (true, _) => 2,
-        (false, false) => 1,
-        (false, true) => 0,
+    audio_fitness(
+        attribute(line, "DEFAULT") == Some("YES"),
+        tags.contains("original"),
+        tags.contains("dubbed"),
+    )
+}
+
+fn audio_fitness(default: bool, original: bool, dubbed: bool) -> u8 {
+    match (default, original, dubbed) {
+        (true, _, _) => 3,
+        (false, true, _) => 2,
+        (false, false, false) => 1,
+        (false, false, true) => 0,
     }
 }
 
@@ -654,15 +660,21 @@ pub(crate) fn mp4_qualities(formats: &Value) -> Vec<Quality> {
                 .is_some_and(|mime| mime.starts_with("audio/mp4; codecs=\"mp4a."))
         })
         .filter_map(|format| {
+            let track = &format["audioTrack"];
+            let name = text(&track["displayName"])
+                .unwrap_or_default()
+                .to_ascii_lowercase();
             Some((
-                format["audioTrack"]["audioIsDefault"]
-                    .as_bool()
-                    .unwrap_or(false),
+                audio_fitness(
+                    track["audioIsDefault"].as_bool().unwrap_or(false),
+                    name.contains("original"),
+                    name.contains("dubbed"),
+                ),
                 format["bitrate"].as_u64().unwrap_or_default(),
                 address(format)?,
             ))
         })
-        .max_by_key(|(default, bitrate, _)| (*default, *bitrate))
+        .max_by_key(|(fitness, bitrate, _)| (*fitness, *bitrate))
         .map(|(_, _, sound)| sound)
     else {
         return Vec::new();
