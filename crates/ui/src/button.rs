@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::f32::consts::TAU;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::prelude::*;
@@ -15,7 +16,7 @@ use crate::metrics::{Text, text_width};
 use crate::motion::{Glow, PRESS_SCALE, Springs, Sprung, glow_fill, pressing, solid_fill};
 use crate::panel::Side;
 use crate::theme::ActiveTheme as _;
-use crate::tooltip::{Perch, Tipped as _};
+use crate::tooltip::{Perch, TooltipText, attach};
 
 const FADED: f32 = 0.55;
 /// How much of a white tint a frosted ghost or outline button shows when hovered
@@ -133,7 +134,7 @@ pub struct Button {
     lit: Option<(bool, Hsla)>,
     pressed: Option<StyleRefinement>,
     tint: Option<Hsla>,
-    tooltip: Option<(SharedString, Perch)>,
+    tooltip: Option<(TooltipText, Perch)>,
     on_click: Option<Click>,
     /// The caller's hover listener, which the button calls from its own.
     on_hover: Option<Hover>,
@@ -405,17 +406,23 @@ impl Button {
     }
 
     pub fn tooltip(mut self, key: impl Into<SharedString>) -> Self {
-        self.tooltip = Some((key.into(), Perch::Below));
+        self.tooltip = Some((TooltipText::Static(key.into()), Perch::Below));
+        self
+    }
+
+    /// Reads the Fluent key from live state, even while the tooltip is already visible.
+    pub fn tooltip_dynamic(mut self, resolve: impl Fn(&App) -> SharedString + 'static) -> Self {
+        self.tooltip = Some((TooltipText::Dynamic(Rc::new(resolve)), Perch::Below));
         self
     }
 
     pub fn tooltip_above(mut self, key: impl Into<SharedString>) -> Self {
-        self.tooltip = Some((key.into(), Perch::Above));
+        self.tooltip = Some((TooltipText::Static(key.into()), Perch::Above));
         self
     }
 
     pub fn tooltip_trailing(mut self, key: impl Into<SharedString>) -> Self {
-        self.tooltip = Some((key.into(), Perch::Trailing));
+        self.tooltip = Some((TooltipText::Static(key.into()), Perch::Trailing));
         self
     }
 
@@ -769,9 +776,11 @@ impl RenderOnce for Button {
         let (accessible, description) = match name {
             Some(name) => (Some(name), label.clone().or_else(|| detail.clone())),
             None => (
-                label
-                    .clone()
-                    .or_else(|| tooltip.as_ref().map(|(key, _)| i18n::lookup(key, None))),
+                label.clone().or_else(|| {
+                    tooltip
+                        .as_ref()
+                        .map(|(key, _)| i18n::lookup(&key.resolve(cx), None))
+                }),
                 detail.clone(),
             ),
         };
@@ -825,7 +834,7 @@ impl RenderOnce for Button {
             .when(interactive, |this| this.cursor_pointer())
             .when_some(
                 tooltip.filter(|_| interactive && expanded != Some(true)),
-                |this, (key, perch)| this.tip(key, perch),
+                |this, (key, perch)| attach(this, key, false, None, perch),
             )
             .when_some(hovered, |this, style| this.hover(move |_| style))
             .when_some(pressed, |this, style| this.active(move |_| style))

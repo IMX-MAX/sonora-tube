@@ -37,13 +37,30 @@ pub enum Perch {
 /// The bubble a hovered element shows. It is placed against the element's bounds as they were
 /// when the pointer arrived, so it lands in the same spot wherever the pointer entered.
 pub struct Tooltip {
-    text: SharedString,
+    text: TooltipText,
     raw: bool,
     perch: Perch,
     /// The owning element in window coordinates. A following tooltip ignores it.
     host: Bounds<Pixels>,
     /// Draws nothing, for a clipped tooltip whose text showed in full when the pointer arrived.
     hidden: bool,
+}
+
+type TooltipResolver = Rc<dyn Fn(&App) -> SharedString>;
+
+#[derive(Clone)]
+pub(crate) enum TooltipText {
+    Static(SharedString),
+    Dynamic(TooltipResolver),
+}
+
+impl TooltipText {
+    pub(crate) fn resolve(&self, cx: &App) -> SharedString {
+        match self {
+            Self::Static(text) => text.clone(),
+            Self::Dynamic(resolve) => resolve(cx),
+        }
+    }
 }
 
 /// Attaches a tooltip to an element with the show delay its perch calls for. A tooltip perched
@@ -68,15 +85,21 @@ struct Beside {
 
 impl<E: StatefulInteractiveElement + ParentElement> Tipped for E {
     fn tip(self, key: impl Into<SharedString>, perch: Perch) -> Self {
-        attach(self, key.into(), false, None, perch)
+        attach(self, TooltipText::Static(key.into()), false, None, perch)
     }
 
     fn tip_label(self, text: impl Into<SharedString>, perch: Perch) -> Self {
-        attach(self, text.into(), true, None, perch)
+        attach(self, TooltipText::Static(text.into()), true, None, perch)
     }
 
     fn tip_clipped(self, text: impl Into<SharedString>, layout: TextLayout, perch: Perch) -> Self {
-        attach(self, text.into(), true, Some(layout), perch)
+        attach(
+            self,
+            TooltipText::Static(text.into()),
+            true,
+            Some(layout),
+            perch,
+        )
     }
 }
 
@@ -87,6 +110,7 @@ impl Render for Tooltip {
         }
         let theme = *cx.theme();
         let follow = self.perch == Perch::Follow;
+        let text = self.text.resolve(cx);
         let bubble = div()
             .px_2()
             .py_1()
@@ -98,8 +122,8 @@ impl Render for Tooltip {
             .text_size(theme.text(Text::Small))
             .text_color(theme.popover_foreground)
             .child(match self.raw {
-                true => self.text.clone(),
-                false => i18n::lookup(&self.text, None),
+                true => text,
+                false => i18n::lookup(&text, None),
             })
             .when(follow, |this| this.child(tracker()));
 
@@ -223,17 +247,26 @@ impl Element for Beside {
 /// Wires a tooltip into `element`. A perched tooltip also lays a recorder over the element so
 /// the tooltip knows where the element stood, and a following one drops the hover delay. With
 /// `clip`, the tooltip stays empty unless that layout drew a shorter text than `text`.
-fn attach<E>(element: E, text: SharedString, raw: bool, clip: Option<TextLayout>, perch: Perch) -> E
+pub(crate) fn attach<E>(
+    element: E,
+    text: TooltipText,
+    raw: bool,
+    clip: Option<TextLayout>,
+    perch: Perch,
+) -> E
 where
     E: StatefulInteractiveElement + ParentElement,
 {
-    let hidden = move |text: &str| clip.as_ref().is_some_and(|layout| layout.text() == text);
+    let hidden = move |text: &TooltipText, cx: &App| {
+        clip.as_ref()
+            .is_some_and(|layout| layout.text() == &*text.resolve(cx))
+    };
     match perch {
         Perch::Follow => element
             .tooltip_show_delay(Duration::ZERO)
             .tooltip(move |_, cx| {
                 let text = text.clone();
-                let hidden = hidden(&text);
+                let hidden = hidden(&text, cx);
                 cx.new(|_| Tooltip {
                     text,
                     raw,
@@ -250,7 +283,7 @@ where
                 .tooltip_show_delay(DELAY)
                 .tooltip(move |window, cx| {
                     let text = text.clone();
-                    let hidden = hidden(&text);
+                    let hidden = hidden(&text, cx);
                     let host = host.get().unwrap_or_else(|| {
                         Bounds::new(window.mouse_position(), Default::default())
                     });

@@ -2038,10 +2038,7 @@ impl WatchView {
         let (level, muted, captions) = (watching.volume(), watching.muted(), watching.captions());
         let (captioned, silenced) = (self.watching.clone(), self.watching.clone());
         let (scripted, script) = (watching.transcript_open(), self.watching.clone());
-        let transcript_tooltip = match scripted {
-            true => "video-transcript-hide",
-            false => "video-transcript-show",
-        };
+        let script_tooltip = script.clone();
         let floating = watching.floating();
         let (full, filled) = (watching.full(), self.watching.clone());
         let (discussed, theater) = (self.discussed, self.theater);
@@ -2111,11 +2108,16 @@ impl WatchView {
                         .items_center()
                         .gap_2()
                         .child(
-                            Button::new(transcript_tooltip)
+                            Button::new("video-transcript")
                                 .icon("icons/text-select.svg")
                                 .ghost()
                                 .selected(scripted)
-                                .tooltip(transcript_tooltip)
+                                .tooltip_dynamic(move |cx| {
+                                    match script_tooltip.read(cx).transcript_open() {
+                                        true => "video-transcript-hide".into(),
+                                        false => "video-transcript-show".into(),
+                                    }
+                                })
                                 .on_click(move |_, _, cx| {
                                     script
                                         .update(cx, |watching, cx| watching.toggle_transcript(cx));
