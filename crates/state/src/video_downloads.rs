@@ -233,13 +233,12 @@ async fn stream(client: &tube::Client, video: &Video, heard: UnboundedSender<f32
         Some(folder) => PathBuf::from(folder).join("ffmpeg"),
         None => PathBuf::from("ffmpeg"),
     };
-    let streams = client.streams(&video.id).await?;
-    let quality = streams
-        .qualities
+    let qualities = client.streams(&video.id).await?.qualities?;
+    let quality = qualities
         .iter()
         .filter(|quality| quality.height <= TALLEST)
         .max_by_key(|quality| (quality.height, quality.rate))
-        .or_else(|| streams.qualities.first())
+        .or_else(|| qualities.first())
         .context("the video has no stream to save")?;
     let name: String = video
         .title

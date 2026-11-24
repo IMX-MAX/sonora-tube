@@ -29,6 +29,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - On Linux, a quit signal exits the app even when it is set to keep running in the background.
 - On Linux, the app still opens when the configured runtime directory does not exist.
+- Videos with hidden like counts show “Like”, and the transcript control says “Hide transcript” while the panel is open.
+- The player’s video duration now matches the duration in search results when YouTube publishes it.
+- The welcome and sign-in screens describe YouTube rather than music services.
 - The player's More controls button is announced and labelled as More controls instead of Show more.
 - Removing a single track from history or a playlist shows a translated menu label again.
 - With a light theme, the rest of the app no longer turns dark while the fullscreen player opens or closes.

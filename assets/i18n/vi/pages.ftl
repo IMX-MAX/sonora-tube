@@ -8,7 +8,7 @@ login-signed-in = Đã đăng nhập với tên { $name }
 login-failed-title = Đăng nhập thất bại
 login-problem-region = Spotify không mở phiên từ quốc gia bạn đang ở. Hãy đăng nhập từ quốc gia của bạn, hoặc đổi quốc gia trong tài khoản Spotify.
 login-problem-credentials = Phiên đã lưu cho dịch vụ này không còn hợp lệ. Hãy đăng nhập lại để tiếp tục.
-login-problem-network = YouTube+ không kết nối được với dịch vụ nhạc. Hãy kiểm tra kết nối internet và thử lại.
+login-problem-network = YouTube+ không kết nối được với YouTube. Hãy kiểm tra kết nối internet và thử lại.
 login-problem-cancelled = Yêu cầu đăng nhập chưa được chấp thuận trong trình duyệt hoặc đã hết thời gian. Hãy bắt đầu lại để hoàn tất.
 login-problem-refused = Spotify đã từ chối đăng nhập. Hãy chờ một lát rồi thử lại.
 login-problem-premium = YouTube+ phát nhạc qua Spotify Premium, nhưng tài khoản này không có Premium. Hãy đăng nhập bằng tài khoản Premium để tiếp tục.
@@ -19,7 +19,7 @@ login-connect-cookies = Dán cookie thủ công
 login-cookie-open = Mở { $provider }
 login-cookie-submit = Tiếp tục
 login-cookie-hint = Dán header yêu cầu Cookie vào đây
-login-cookie-step-1 = Mở music.youtube.com và đảm bảo bạn đã đăng nhập. Tốt nhất nên dùng cửa sổ ẩn danh.
+login-cookie-step-1 = Mở youtube.com và đảm bảo bạn đã đăng nhập. Tốt nhất nên dùng cửa sổ ẩn danh.
 login-cookie-step-2 = Nhấn F12, mở tab Network và tải lại trang.
 login-cookie-step-3 = Chọn một yêu cầu bất kỳ có tên "browse" hoặc "next".
 login-cookie-step-4 = Trong Headers, tìm Cookie trong mục Request Headers, nhấp chuột phải và sao chép giá trị.
@@ -48,7 +48,7 @@ login-account-title = Chọn tài khoản
 login-account-detail = Phiên này đã đăng nhập vào nhiều tài khoản Google. Hãy chọn tài khoản YouTube+ sẽ dùng.
 login-choose-title = Đăng nhập vào { $provider }
 login-choose-detail = Chọn cách đăng nhập vào { $provider }.
-login-providers = Dịch vụ nhạc
+login-providers = Tùy chọn đăng nhập
 
 # album and playlist pages
 
