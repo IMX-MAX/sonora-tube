@@ -28,7 +28,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - Videos with hidden like counts show “Like”, and the transcript control says “Hide transcript” while the panel is open.
-- Search results and the player use YouTube’s published video duration when it is available.
+- The player’s video duration now matches the duration in search results when YouTube publishes it.
 - The welcome and sign-in screens describe YouTube rather than music services.
 - Removing a single track from history or a playlist shows a translated menu label again.
 - With a light theme, the rest of the app no longer turns dark while the fullscreen player opens or closes.
