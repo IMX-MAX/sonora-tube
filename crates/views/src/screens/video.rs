@@ -3857,11 +3857,21 @@ impl PipView {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         cx.observe(&watching, |_, _, cx| cx.notify()).detach();
-        // However the window goes, the watch page gets its picture back.
+        // However the window goes, the watch page gets its picture back. Closed by the system
+        // away from its page, the video stops as the Close button stops it.
         let back = watching.downgrade();
         cx.on_release(move |_, cx| {
-            back.update(cx, |watching, cx| watching.set_floating(false, cx))
-                .ok();
+            let away = !matches!(
+                router::trail(cx).read(cx).current(),
+                Destination::Watch(_) | Destination::Short(_)
+            );
+            back.update(cx, |watching, cx| {
+                if watching.floating() && away {
+                    watching.leave(cx);
+                }
+                watching.set_floating(false, cx);
+            })
+            .ok();
         })
         .detach();
         Self {
@@ -3979,7 +3989,7 @@ impl Render for PipView {
                                 // it stops. On its page the picture goes back there.
                                 let away = !matches!(
                                     router::trail(cx).read(cx).current(),
-                                    Destination::Watch(_)
+                                    Destination::Watch(_) | Destination::Short(_)
                                 );
                                 closed.update(cx, |watching, cx| {
                                     watching.set_floating(false, cx);
