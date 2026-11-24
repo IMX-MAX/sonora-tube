@@ -70,6 +70,29 @@ impl Navigation {
         self.arrive(cx);
     }
 
+    /// Removes visits that would reopen a dismissed video, without leaving the page on show.
+    pub fn forget_video(&mut self, id: &str, cx: &mut Context<Self>) {
+        let current = self.at;
+        let mut trail = Vec::with_capacity(self.trail.len());
+        let mut skipped = false;
+        for (at, destination) in self.trail.drain(..).enumerate() {
+            if at != current && destination.video_id() == Some(id) {
+                skipped = true;
+                continue;
+            }
+            // If the video separated two visits to the same page, Back should skip the repeat.
+            if !skipped || trail.last() != Some(&destination) {
+                trail.push(destination);
+            }
+            if at == current {
+                self.at = trail.len() - 1;
+            }
+            skipped = false;
+        }
+        self.trail = trail;
+        cx.notify();
+    }
+
     /// Returns from a drill-in to `parent`. Stepping back keeps the trail free of a parent,
     /// drill-in, parent loop when the page before shows the parent's settings tab, which also
     /// puts that tab back where it was scrolled to. Anywhere else the drill-in is replaced so Back
