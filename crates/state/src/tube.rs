@@ -15,7 +15,9 @@ use tube::{
 };
 use video::{Player, VideoView};
 
-use crate::{Assistant, Io, Outcome, Playback, Toasts, VideoDownloads, join};
+use crate::{
+    Assistant, Io, Outcome, Playback, Session, SessionEvent, Toasts, VideoDownloads, join,
+};
 
 const SEARCH_BATCH: usize = 20;
 const SEARCH_PAGES_PER_BATCH: usize = 10;
@@ -309,6 +311,7 @@ pub struct Watching {
     stream: Option<Task<()>>,
     /// Recently opened guest streams, kept briefly so stepping back doesn't resolve them again.
     short_streams: VecDeque<(String, Instant, Streams)>,
+    short_cached_after: Instant,
     task: Option<Task<()>>,
     /// Whether the comments come newest first rather than best first.
     newest: bool,
@@ -333,7 +336,16 @@ impl Watching {
         io: Io,
         playback: Entity<Playback>,
         subscriptions: Entity<Subscriptions>,
+        session: Entity<Session>,
+        cx: &mut Context<Self>,
     ) -> Self {
+        cx.subscribe(&session, |this, _, event, _| {
+            if matches!(event, SessionEvent::SignedOut) {
+                this.short_streams.clear();
+                this.short_cached_after = Instant::now();
+            }
+        })
+        .detach();
         Self {
             client,
             io,
@@ -364,6 +376,7 @@ impl Watching {
             hurried: false,
             stream: None,
             short_streams: VecDeque::new(),
+            short_cached_after: Instant::now(),
             task: None,
             newest: false,
             placing: None,
@@ -1589,6 +1602,7 @@ impl Watching {
         } else {
             None
         };
+        let requested = Instant::now();
         self.stream = Some(cx.spawn(async move |this, cx| {
             if let Some((_, opened, streams)) = cached
                 && Self::start_stream(&this, cx, &asked, start, streams, Some(opened)).await
@@ -1607,7 +1621,7 @@ impl Watching {
                                 &asked,
                                 start,
                                 streams,
-                                Some(Instant::now()),
+                                Some(requested),
                             )
                             .await
                         {
@@ -1628,7 +1642,7 @@ impl Watching {
                         &asked,
                         start,
                         streams,
-                        short.then(Instant::now),
+                        short.then_some(requested),
                     )
                     .await
                     {
@@ -1677,7 +1691,7 @@ impl Watching {
             if player.duration().is_some() {
                 if let Some(opened) = opened {
                     this.update(cx, |this, _| {
-                        if this.id.as_deref() == Some(id) {
+                        if this.id.as_deref() == Some(id) && opened >= this.short_cached_after {
                             this.short_streams
                                 .push_front((id.to_owned(), opened, streams));
                             this.short_streams.truncate(RECENT_SHORTS);
