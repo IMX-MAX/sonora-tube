@@ -1,20 +1,23 @@
 //! YouTube as the video screens see it: one entity each for the search, the video being watched
 //! and the channel or playlist that is open.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{AnyView, App, AppContext as _, ClipboardItem, Context, Entity, Global, Image, Task};
 use tube::ai::{Said, Speaker};
 use tube::{
     Caption, Channel, Chapter, Client, Comment, Found, Identity, Line, Page, Peek, Playlist, Post,
-    Quality, Storyboard, Tab, Video, Watch,
+    Quality, Storyboard, Streams, Tab, Video, Watch,
 };
 use video::{Player, VideoView};
 
 use crate::{Assistant, Io, Outcome, Playback, Toasts, VideoDownloads, join};
+
+const SEARCH_BATCH: usize = 20;
+const SEARCH_PAGES_PER_BATCH: usize = 10;
 
 /// A search of YouTube and the results fetched so far.
 pub struct VideoSearch {
@@ -92,15 +95,21 @@ impl VideoSearch {
         if self.loading {
             return;
         }
-        let Some(token) = self.more.take() else {
+        let Some(token) = self.more.clone() else {
             return;
         };
         self.loading = true;
+        self.error = None;
         cx.notify();
         let client = self.client.clone();
-        let request = self
-            .io
-            .spawn(async move { client.search_more(&token).await });
+        let seen = self.found.iter().map(found_key).collect();
+        let request = self.io.spawn(async move {
+            search_batch(token, seen, |token| {
+                let client = client.clone();
+                async move { client.search_more(&token).await }
+            })
+            .await
+        });
         self.land(request, cx);
     }
 
@@ -131,6 +140,54 @@ impl VideoSearch {
     }
 }
 
+/// Search result identity, independent of mutable metadata like title or view count.
+fn found_key(found: &Found) -> (u8, String) {
+    match found {
+        Found::Video(video) => (0, video.id.clone()),
+        Found::Channel(channel) => (1, channel.id.clone()),
+        Found::Playlist(playlist) => (2, playlist.id.clone()),
+    }
+}
+
+/// Joins sparse continuation pages without skipping results or looping on a repeated token.
+async fn search_batch<F>(
+    token: String,
+    mut seen: HashSet<(u8, String)>,
+    mut fetch: impl FnMut(String) -> F,
+) -> anyhow::Result<Page<Found>>
+where
+    F: Future<Output = anyhow::Result<Page<Found>>>,
+{
+    let mut page = Page {
+        items: Vec::new(),
+        more: Some(token),
+    };
+    let mut visited = HashSet::new();
+    for _ in 0..SEARCH_PAGES_PER_BATCH {
+        let Some(token) = page.more.take() else { break };
+        visited.insert(token.clone());
+        let next = match fetch(token.clone()).await {
+            Ok(next) => next,
+            Err(error) if !page.items.is_empty() => {
+                log::warn!("video: cannot finish the search batch: {error:#}");
+                page.more = Some(token);
+                break;
+            }
+            Err(error) => return Err(error),
+        };
+        page.items.extend(
+            next.items
+                .into_iter()
+                .filter(|item| seen.insert(found_key(item))),
+        );
+        page.more = next.more.filter(|more| !visited.contains(more));
+        if page.items.len() >= SEARCH_BATCH {
+            break;
+        }
+    }
+    Ok(page)
+}
+
 /// How fast a video plays while its picture is held down.
 pub const HURRY: f32 = 2.;
 /// The tallest picture played when the user has not chosen one.
@@ -140,6 +197,8 @@ const CAPTION_STAYS: f64 = 5.;
 /// How often and how many times a freshly opened stream is checked for having failed.
 const OPENING_CHECK: Duration = Duration::from_millis(250);
 const OPENING_CHECKS: usize = 80;
+const RECENT_SHORTS: usize = 16;
+const SHORT_STREAM_LIFETIME: Duration = Duration::from_secs(300);
 /// How often the place a video is watched up to is written down.
 const PLACE_EVERY: Duration = Duration::from_secs(5);
 /// The share of a video before which it is not worth resuming and after which it is finished.
@@ -240,6 +299,8 @@ pub struct Watching {
     /// Whether the video is held at [`HURRY`] for as long as the picture is pressed.
     hurried: bool,
     stream: Option<Task<()>>,
+    /// Recently opened guest streams, kept briefly so stepping back doesn't resolve them again.
+    short_streams: VecDeque<(String, Instant, Streams)>,
     task: Option<Task<()>>,
     /// Whether the comments come newest first rather than best first.
     newest: bool,
@@ -294,6 +355,7 @@ impl Watching {
             speed: 1.,
             hurried: false,
             stream: None,
+            short_streams: VecDeque::new(),
             task: None,
             newest: false,
             placing: None,
@@ -1468,6 +1530,7 @@ impl Watching {
             return Ok(());
         };
         player.set_looping(self.short);
+        self.stream = None;
         player.stop();
         // A Short is over in a moment and plays round again, so it always starts at its start.
         let start = match self.short {
@@ -1502,60 +1565,105 @@ impl Watching {
             self.load_transcript(cx);
         }
 
-        // Asking YouTube for the streams directly is seconds faster than letting the player
-        // scrape the page, which stays as the way out when YouTube holds them back.
-        let (client, asked) = (self.client.clone(), id.to_owned());
-        let request = self.io.spawn({
-            let asked = asked.clone();
-            async move { client.streams(&asked).await }
-        });
+        let (short, client, io, asked) = (
+            self.short,
+            self.client.clone(),
+            self.io.clone(),
+            id.to_owned(),
+        );
+        let cached = if short {
+            self.short_streams
+                .retain(|(_, opened, _)| opened.elapsed() < SHORT_STREAM_LIFETIME);
+            self.short_streams
+                .iter()
+                .position(|(id, _, _)| id == &asked)
+                .and_then(|place| self.short_streams.remove(place))
+        } else {
+            None
+        };
         self.stream = Some(cx.spawn(async move |this, cx| {
-            let named = join(request).await;
-            let started = this.update(cx, |this, cx| {
-                if this.id.as_deref() != Some(asked.as_str()) {
-                    return None;
-                }
-                let player = this.player()?.clone();
-                let direct = match named {
-                    Ok(streams) => {
-                        this.qualities = streams.qualities;
-                        this.board = streams.board;
-                        this.quality()
-                            .map(|quality| player.play(&quality.picture, &quality.sound, start))
+            if let Some((_, opened, streams)) = cached
+                && Self::start_stream(&this, cx, &asked, start, streams, Some(opened)).await
+            {
+                return;
+            }
+            for mp4 in [true, false].into_iter().filter(|mp4| short || !mp4) {
+                let (client, id) = (client.clone(), asked.clone());
+                let request = io.spawn(async move {
+                    if mp4 {
+                        client.short_streams(&id).await
+                    } else {
+                        client.streams(&id).await
                     }
+                });
+                let streams = match join(request).await {
+                    Ok(streams) => streams,
                     Err(error) => {
                         log::warn!("video: no direct streams for {asked}: {error:#}");
-                        None
+                        continue;
                     }
                 };
-                cx.notify();
-                match direct {
-                    Some(Ok(())) => Some(player),
-                    _ => {
-                        this.scrape(&asked, start, cx);
-                        None
-                    }
-                }
-            });
-            let Ok(Some(player)) = started else { return };
-            for _ in 0..OPENING_CHECKS {
-                cx.background_executor().timer(OPENING_CHECK).await;
-                if player.duration().is_some() {
-                    return;
-                }
-                if player.idle() {
-                    this.update(cx, |this, cx| {
-                        if this.id.as_deref() == Some(asked.as_str()) {
-                            this.qualities.clear();
-                            this.scrape(&asked, start, cx);
-                        }
-                    })
-                    .ok();
+                if Self::start_stream(&this, cx, &asked, start, streams, short.then(Instant::now))
+                    .await
+                {
                     return;
                 }
             }
+            this.update(cx, |this, cx| {
+                if this.id.as_deref() == Some(asked.as_str()) {
+                    this.qualities.clear();
+                    this.scrape(&asked, start, cx);
+                }
+            })
+            .ok();
         }));
         Ok(())
+    }
+
+    /// Opens resolved streams and remembers Short streams that mpv can actually play.
+    async fn start_stream(
+        this: &gpui::WeakEntity<Self>,
+        cx: &mut gpui::AsyncApp,
+        id: &str,
+        start: f64,
+        streams: Streams,
+        opened: Option<Instant>,
+    ) -> bool {
+        let started = this.update(cx, |this, cx| {
+            if this.id.as_deref() != Some(id) {
+                return None;
+            }
+            let player = this.player()?.clone();
+            this.qualities = streams.qualities.clone();
+            this.board = streams.board.clone();
+            cx.notify();
+            let quality = this.quality()?;
+            player.play(&quality.picture, &quality.sound, start).ok()?;
+            Some(player)
+        });
+        let Ok(Some(player)) = started else {
+            return false;
+        };
+        for _ in 0..OPENING_CHECKS {
+            cx.background_executor().timer(OPENING_CHECK).await;
+            if player.duration().is_some() {
+                if let Some(opened) = opened {
+                    this.update(cx, |this, cx| {
+                        if this.id.as_deref() == Some(id) {
+                            this.short_streams
+                                .push_front((id.to_owned(), opened, streams));
+                            this.short_streams.truncate(RECENT_SHORTS);
+                        }
+                    })
+                    .ok();
+                }
+                return true;
+            }
+            if player.idle() {
+                return false;
+            }
+        }
+        true
     }
 
     /// Plays the video through the player's own page scraper, the slow way that always works.
@@ -3109,4 +3217,32 @@ fn chosen(kept: &str) -> (usize, Option<String>) {
         None => (0, kept),
     };
     (user, Some(page.to_owned()).filter(|page| !page.is_empty()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn search_batch_combines_sparse_pages_without_counting_duplicates() {
+        let video = |id: usize| {
+            Found::Video(Video {
+                id: id.to_string(),
+                ..Video::default()
+            })
+        };
+        let initial = HashSet::from([found_key(&video(0))]);
+        let batch = search_batch("0".to_owned(), initial, |token| async move {
+            let offset = token.parse::<usize>()?;
+            Ok(Page {
+                items: (offset..=offset + 7).map(video).collect(),
+                more: Some((offset + 7).to_string()),
+            })
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(batch.items, (1..=21).map(video).collect::<Vec<_>>());
+        assert_eq!(batch.more.as_deref(), Some("21"));
+    }
 }

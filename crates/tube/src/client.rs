@@ -423,12 +423,32 @@ impl Client {
     /// opens directly. That skips the page scraping a player would otherwise do before the
     /// first frame.
     pub async fn streams(&self, id: &str) -> Result<Streams> {
+        self.streams_for(id, false).await
+    }
+
+    /// Resolves directly playable MP4 streams for a Short without opening HLS playlists first.
+    pub async fn short_streams(&self, id: &str) -> Result<Streams> {
+        self.streams_for(id, true).await
+    }
+
+    async fn streams_for(&self, id: &str, short: bool) -> Result<Streams> {
         if self.visitor().is_none() {
             self.call("visitor_id", json!({})).await?;
         }
         let answer = self
             .call_as(&HEADSET, "player", json!({ "videoId": id }))
             .await?;
+        if short {
+            let qualities = parse::mp4_qualities(&answer["streamingData"]["adaptiveFormats"]);
+            ensure!(
+                !qualities.is_empty(),
+                "youtube names no directly playable MP4 streams"
+            );
+            return Ok(Streams {
+                qualities,
+                board: parse::storyboard(&answer),
+            });
+        }
         let list = answer["streamingData"]["hlsManifestUrl"]
             .as_str()
             .with_context(|| {

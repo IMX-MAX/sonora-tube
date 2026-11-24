@@ -637,6 +637,59 @@ pub(crate) fn qualities(listed: &str) -> Vec<Quality> {
             plain,
         ));
     }
+    best_qualities(found)
+}
+
+/// Pairs a Short's directly playable H.264 pictures with its original AAC sound.
+pub(crate) fn mp4_qualities(formats: &Value) -> Vec<Quality> {
+    let Some(formats) = formats.as_array() else {
+        return Vec::new();
+    };
+    let address = |format: &Value| string(&format["url"]).filter(|url| url.starts_with("https://"));
+    let Some(sound) = formats
+        .iter()
+        .filter(|format| {
+            format["mimeType"]
+                .as_str()
+                .is_some_and(|mime| mime.starts_with("audio/mp4; codecs=\"mp4a."))
+        })
+        .filter_map(|format| {
+            Some((
+                format["audioTrack"]["audioIsDefault"]
+                    .as_bool()
+                    .unwrap_or(false),
+                format["bitrate"].as_u64().unwrap_or_default(),
+                address(format)?,
+            ))
+        })
+        .max_by_key(|(default, bitrate, _)| (*default, *bitrate))
+        .map(|(_, _, sound)| sound)
+    else {
+        return Vec::new();
+    };
+    let found = formats
+        .iter()
+        .filter(|format| {
+            format["mimeType"]
+                .as_str()
+                .is_some_and(|mime| mime.starts_with("video/mp4; codecs=\"avc1."))
+        })
+        .filter_map(|format| {
+            Some((
+                Quality {
+                    height: format["height"].as_u64()?.try_into().ok()?,
+                    rate: format["fps"].as_u64().unwrap_or_default().try_into().ok()?,
+                    picture: address(format)?,
+                    sound: sound.clone(),
+                },
+                true,
+            ))
+        })
+        .collect();
+    best_qualities(found)
+}
+
+fn best_qualities(mut found: Vec<(Quality, bool)>) -> Vec<Quality> {
     // Within a height the smoother picture wins, then the plainer codec, then the last listed,
     // which carries the better sound.
     found.sort_by_key(|(quality, plain)| (quality.height, quality.rate, *plain));
@@ -950,5 +1003,54 @@ fn entity(name: &str) -> Option<char> {
             },
             None => None,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn short_streams_use_direct_avc_and_default_aac() {
+        let formats = json!([
+            {
+                "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"",
+                "url": "https://example.com/dub",
+                "bitrate": 128000,
+                "audioTrack": { "audioIsDefault": false }
+            },
+            {
+                "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"",
+                "url": "https://example.com/original",
+                "bitrate": 96000,
+                "audioTrack": { "audioIsDefault": true }
+            },
+            {
+                "mimeType": "video/mp4; codecs=\"avc1.4d401f\"",
+                "height": 854,
+                "fps": 30,
+                "url": "https://example.com/854"
+            },
+            {
+                "mimeType": "video/mp4; codecs=\"avc1.640028\"",
+                "height": 1920,
+                "fps": 60,
+                "url": "https://example.com/1920"
+            },
+            {
+                "mimeType": "video/mp4; codecs=\"avc1.640028\"",
+                "height": 2160,
+                "fps": 60,
+                "signatureCipher": "not-a-direct-url"
+            }
+        ]);
+        let qualities = mp4_qualities(&formats);
+        assert_eq!(qualities.len(), 2);
+        assert_eq!(qualities[0].height, 1920);
+        assert_eq!(qualities[1].height, 854);
+        assert_eq!(qualities[0].picture, "https://example.com/1920");
+        assert_eq!(qualities[0].sound, "https://example.com/original");
+        assert!(mp4_qualities(&json!([formats[2].clone()])).is_empty());
     }
 }

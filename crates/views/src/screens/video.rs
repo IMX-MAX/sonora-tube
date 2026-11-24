@@ -280,21 +280,28 @@ fn short_tile(
     )
 }
 
-/// The Shorts of a list under a heading of their own, a row of them unless `all` are asked for.
+/// Whether to show a preview row, all search results, or a grid already titled by its tab.
+enum ShortsLayout {
+    Preview,
+    Search,
+    Tab,
+}
+
+/// The Shorts of a list as a preview or a full grid.
 fn shorts_shelf(
     scope: &str,
     shorts: &Rc<[Video]>,
     width: Pixels,
-    all: bool,
+    layout: ShortsLayout,
     cx: &App,
 ) -> Option<AnyElement> {
     if shorts.is_empty() {
         return None;
     }
     let tiles = Tiles::upright(width, cx);
-    let shown = match all {
-        true => shorts.len(),
-        false => shorts.len().min(tiles.columns),
+    let shown = match layout {
+        ShortsLayout::Preview => shorts.len().min(tiles.columns),
+        ShortsLayout::Search | ShortsLayout::Tab => shorts.len(),
     };
     let cards = shorts
         .iter()
@@ -307,7 +314,9 @@ fn shorts_shelf(
             .flex()
             .flex_col()
             .gap_3()
-            .when(!all, |this| this.child(heading(t!("video-shorts"), cx)))
+            .when(!matches!(layout, ShortsLayout::Tab), |this| {
+                this.child(heading(t!("video-shorts"), cx))
+            })
             .child(tiles.grid(cards))
             .into_any_element(),
     )
@@ -1095,7 +1104,7 @@ impl VideoSearchView {
             })
             .partition(|video| video.short);
         let reel: Rc<[Video]> = shorts.into_iter().cloned().collect();
-        let shorts = shorts_shelf("search", &reel, self.width, false, cx);
+        let shorts = shorts_shelf("search", &reel, self.width, ShortsLayout::Search, cx);
         let listed = videos.len();
         let videos = videos.into_iter().enumerate().map(|(place, video)| {
             video_row(
@@ -4422,7 +4431,7 @@ impl Render for VideoListView {
             Tab::Shorts => list.shorts().into(),
             Tab::Videos | Tab::Playlists | Tab::Posts | Tab::Releases => Rc::default(),
         };
-        let shorts = shorts_shelf("list", &reel, self.width, true, cx);
+        let shorts = shorts_shelf("list", &reel, self.width, ShortsLayout::Tab, cx);
         let posts: Vec<AnyElement> = match open {
             Tab::Posts => {
                 let posts = list.posts();
@@ -4660,7 +4669,13 @@ impl VideoFeedView {
             })
             .collect();
         std::iter::once(self.titled(t!("video-home-recommended"), None, cx))
-            .chain(shorts_shelf("recommended", &reel, self.width, false, cx))
+            .chain(shorts_shelf(
+                "recommended",
+                &reel,
+                self.width,
+                ShortsLayout::Preview,
+                cx,
+            ))
             .chain(std::iter::once(tiles.grid(cards).into_any_element()))
             .collect()
     }
@@ -4739,7 +4754,7 @@ impl Render for VideoFeedView {
             _ => home && kept.is_loading(),
         };
         let (videos, reel) = sorted(videos);
-        let shorts = shorts_shelf(kind, &reel, self.width, false, cx);
+        let shorts = shorts_shelf(kind, &reel, self.width, ShortsLayout::Preview, cx);
         let total = videos.len() + reel.len();
         let listed = videos.len();
         let cards: Vec<AnyElement> = videos
