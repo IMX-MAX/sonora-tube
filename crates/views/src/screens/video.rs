@@ -2063,9 +2063,16 @@ impl WatchView {
         };
 
         let duration = watching
-            .duration()
-            .unwrap_or_else(|| Duration::from_secs_f64(total.max(0.).round()));
-        let ends = SharedString::from(format!("{elapsed} / {}", clock(duration)));
+            .listed_duration()
+            .map(SharedString::from)
+            .unwrap_or_else(|| {
+                clock(
+                    watching
+                        .duration()
+                        .unwrap_or_else(|| Duration::from_secs_f64(total.max(0.).round())),
+                )
+            });
+        let ends = SharedString::from(format!("{elapsed} / {duration}"));
         let spread = self.spread
             || self.choosing.is_some()
             || self.pacing.is_some()

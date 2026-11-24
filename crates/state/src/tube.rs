@@ -50,6 +50,14 @@ impl VideoSearch {
         &self.found
     }
 
+    /// The duration badge for a video in the current search results.
+    pub fn listed_duration(&self, id: &str) -> Option<&str> {
+        self.found.iter().find_map(|found| match found {
+            Found::Video(video) if video.id == id => video.length.as_deref(),
+            _ => None,
+        })
+    }
+
     pub fn is_loading(&self) -> bool {
         self.loading
     }
@@ -229,6 +237,7 @@ pub struct Watching {
     like: Option<Task<()>>,
     /// The qualities the video can be played at, best first, once YouTube has named them.
     qualities: Vec<Quality>,
+    listed_duration: Option<String>,
     duration: Option<Duration>,
     /// The small pictures the seek bar previews the video with.
     board: Option<Storyboard>,
@@ -289,6 +298,7 @@ impl Watching {
             short: false,
             like: None,
             qualities: Vec::new(),
+            listed_duration: None,
             duration: None,
             board: None,
             ceiling: None,
@@ -817,13 +827,22 @@ impl Watching {
     }
 
     /// Starts `id` playing and fetches its page. The music stops, since both would sound at once.
-    pub fn open(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.show(id, false, cx);
+    pub fn open(&mut self, id: &str, listed_duration: Option<String>, cx: &mut Context<Self>) {
+        self.show(id, false, listed_duration, cx);
     }
 
     /// Opens `id` as a long video, or as a Short when `short`: looping and from its start.
-    fn show(&mut self, id: &str, short: bool, cx: &mut Context<Self>) {
+    fn show(
+        &mut self,
+        id: &str,
+        short: bool,
+        listed_duration: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if self.id.as_deref() == Some(id) {
+            if listed_duration.is_some() {
+                self.listed_duration = listed_duration;
+            }
             self.set_short(short);
             // Opened again, perhaps under another profile, whose history has yet to see it.
             if let Some(seen) = self.video() {
@@ -837,6 +856,7 @@ impl Watching {
         self.newest = false;
         self.playback.update(cx, |playback, cx| playback.pause(cx));
         self.id = Some(id.to_owned());
+        self.listed_duration = listed_duration;
         self.duration = None;
         self.seen = false;
         self.set_short(short);
@@ -903,7 +923,7 @@ impl Watching {
     /// Opens a Short in the upright player, which plays it over and over and steps through
     /// `reel`, the list it was opened from.
     pub fn open_short(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.show(id, true, cx);
+        self.show(id, true, None, cx);
         if !self.reel.iter().any(|short| short.id == id) {
             self.reel.clear();
         }
@@ -941,7 +961,8 @@ impl Watching {
         };
         let paused = self.player().is_some_and(|player| player.paused());
         let seen = self.seen;
-        self.show(&id, self.short, cx);
+        let listed_duration = self.listed_duration.take();
+        self.show(&id, self.short, listed_duration, cx);
         self.seen = seen;
         self.set_paused(paused, cx);
     }
@@ -1067,9 +1088,14 @@ impl Watching {
         &self.qualities
     }
 
-    /// The running time shown in listings, when YouTube has published one for this video.
+    /// The running time YouTube supplied with the playback metadata.
     pub fn duration(&self) -> Option<Duration> {
         self.duration
+    }
+
+    /// The duration as shown in search, when this video's result is available.
+    pub fn listed_duration(&self) -> Option<&str> {
+        self.listed_duration.as_deref()
     }
 
     /// The tallest picture asked for, `None` when the app chooses.
