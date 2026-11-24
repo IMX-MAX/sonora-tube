@@ -654,18 +654,19 @@ fn x11_fallback() -> Option<gpui::WindowingRequest> {
         .x11_display
         .as_ref()
         .is_some_and(|display| !display.is_empty());
-    if relative_wayland
+    let should_fall_back = relative_wayland
         && !runtime_exists
         && has_x11
-        && std::env::var_os("WAYLAND_SOCKET").is_none()
-    {
-        log::warn!(
-            "sonora: cannot resolve the Wayland socket without a runtime directory; using X11"
-        );
-        environment.wayland_display = None;
-        Some(WindowingRequest::Windowed(environment))
-    } else {
-        None
+        && std::env::var_os("WAYLAND_SOCKET").is_none();
+    match should_fall_back {
+        true => {
+            log::warn!(
+                "sonora: cannot resolve the Wayland socket without a runtime directory; using X11"
+            );
+            environment.wayland_display = None;
+            Some(WindowingRequest::Windowed(environment))
+        }
+        false => None,
     }
 }
 
