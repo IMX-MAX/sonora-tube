@@ -2239,7 +2239,7 @@ impl WatchView {
                     Button::new("video-more")
                         .icon("icons/ellipsis.svg")
                         .ghost()
-                        .tooltip("video-more"),
+                        .tooltip("video-more-controls"),
                 ),
             });
         let buttons = div()
