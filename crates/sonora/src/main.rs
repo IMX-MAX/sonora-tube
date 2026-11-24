@@ -676,7 +676,10 @@ fn quit_on_signal(io: &state::Io, cx: &mut App) {
 
     let handle = io.handle();
     let _runtime = handle.enter();
-    for kind in [SignalKind::terminate(), SignalKind::interrupt()] {
+    let signals = [SignalKind::terminate(), SignalKind::interrupt()]
+        .into_iter()
+        .chain(should_listen_for_hangup().then_some(SignalKind::hangup()));
+    for kind in signals {
         match signal(kind) {
             Ok(mut signal) => cx
                 .spawn(async move |cx| {
@@ -688,6 +691,20 @@ fn quit_on_signal(io: &state::Io, cx: &mut App) {
             Err(error) => log::warn!("sonora: cannot listen for signal {kind:?}: {error:#}"),
         }
     }
+}
+
+/// Respects a launcher such as nohup that asks the process to ignore SIGHUP.
+#[cfg(unix)]
+fn should_listen_for_hangup() -> bool {
+    let mut disposition = std::mem::MaybeUninit::<libc::sigaction>::uninit();
+    // SAFETY: A null new action only queries the disposition, writing to the valid output pointer.
+    if unsafe { libc::sigaction(libc::SIGHUP, std::ptr::null(), disposition.as_mut_ptr()) } != 0 {
+        let error = std::io::Error::last_os_error();
+        log::warn!("sonora: cannot read the SIGHUP disposition: {error:#}");
+        return false;
+    }
+    // SAFETY: A successful sigaction call initialized the output.
+    unsafe { disposition.assume_init().sa_sigaction != libc::SIG_IGN }
 }
 
 #[cfg(test)]
