@@ -238,5 +238,4 @@ toast-video-channels = This account has several YouTube channels. Pick one in Se
 toast-video-frame-saved = Saved a frame of { $name }
 toast-video-frame-copied = Copied a frame of { $name }
 toast-video-frame-failed = Could not take a frame of { $name }
-toast-link-copied = Link copied
 toast-ai-copied = Answer copied
