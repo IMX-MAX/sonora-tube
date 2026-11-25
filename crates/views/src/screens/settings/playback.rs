@@ -14,9 +14,12 @@ impl SettingsView {
         vec![
             Group::new("settings-group-videos", "icons/play.svg").rows([
                 Slot::HideShorts,
+                Slot::ShortsRow,
                 Slot::Captions,
                 Slot::Ambient,
             ]),
+            Group::new("settings-group-sponsors", "icons/skip-forward.svg")
+                .rows([Slot::SponsorBlock, Slot::SponsorAi]),
             Group::new("settings-group-ai", "icons/message-square.svg").rows([
                 Slot::AiKey,
                 Slot::AiChatModel,

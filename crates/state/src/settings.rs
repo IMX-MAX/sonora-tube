@@ -393,6 +393,8 @@ struct Values {
     normalisation: bool,
     gapless: bool,
     sponsorblock: bool,
+    /// Whether the AI looks for sponsored stretches in a video's transcript.
+    sponsor_ai: bool,
     /// Whether played tracks are kept, sealed, so playing one again downloads nothing.
     keep_tracks: bool,
     /// How many gigabytes the cache of played tracks may take. Downloads do not count.
@@ -733,7 +735,8 @@ impl Default for Values {
             provider: None,
             normalisation: false,
             gapless: true,
-            sponsorblock: false,
+            sponsorblock: true,
+            sponsor_ai: false,
             keep_tracks: true,
             offline_mode: false,
             cache_gb: crate::vault::CACHE_GB,
@@ -1816,6 +1819,16 @@ impl AppSettings {
 
     pub fn set_sponsorblock(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.values.sponsorblock = enabled;
+        self.schedule_save(cx);
+    }
+
+    /// Whether the AI looks for sponsored stretches in a video's transcript.
+    pub fn sponsor_ai(&self) -> bool {
+        self.values.sponsor_ai
+    }
+
+    pub fn set_sponsor_ai(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.values.sponsor_ai = enabled;
         self.schedule_save(cx);
     }
 

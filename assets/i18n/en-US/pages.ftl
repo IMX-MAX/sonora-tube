@@ -214,6 +214,7 @@ video-channel-videos = Videos
 video-channel-shorts = Shorts
 video-channel-playlists = Playlists
 video-shorts = Shorts
+video-shorts-empty = No Shorts found yet. Follow channels that post them
 video-short-next = Next Short
 video-short-previous = Previous Short
 video-short-actions = Short
@@ -325,3 +326,14 @@ video-chapter-meta = { $start } · { $minutes ->
        *[other] { $minutes } min
     }
 video-chapter-now = Chapter: { $title }
+video-partners = { $count ->
+    [one] Made together with
+   *[other] Made together with { $count } channels
+}
+
+video-sponsor-coming = Skipping a sponsor in { $seconds }s
+video-sponsor-skipped = Skipped a sponsor
+video-sponsor-ai = { $notice } (found by AI)
+video-sponsor-watch = Watch anyway
+video-live = Live
+video-go-live = Go to live
