@@ -163,13 +163,13 @@ pub(crate) fn watch(id: &str, answer: &Value) -> Result<Watch> {
 }
 
 /// Whether the player response describes a broadcast that is live right now.
-pub(crate) fn live(player: &Value) -> bool {
+pub(crate) fn player_is_live(player: &Value) -> bool {
     player["videoDetails"]["isLive"].as_bool() == Some(true)
 }
 
 /// The whole-second duration YouTube publishes, rather than the length of a media rendition.
 pub(crate) fn duration(player: &Value) -> Option<Duration> {
-    if live(player) {
+    if player_is_live(player) {
         return None;
     }
     let seconds = player["videoDetails"]["lengthSeconds"]

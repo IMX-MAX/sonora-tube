@@ -451,7 +451,7 @@ impl Client {
                 hls_manifest(&answer),
                 parse::storyboard(&answer),
                 parse::duration(&answer),
-                parse::live(&answer),
+                parse::player_is_live(&answer),
             )
             .await)
     }
@@ -462,7 +462,7 @@ impl Client {
         let qualities = parse::mp4_qualities(&answer["streamingData"]["adaptiveFormats"]);
         let board = parse::storyboard(&answer);
         let duration = parse::duration(&answer);
-        let live = parse::live(&answer);
+        let live = parse::player_is_live(&answer);
         Ok(ShortStreams {
             mp4: (!qualities.is_empty()).then(|| Streams {
                 qualities: Ok(qualities),
