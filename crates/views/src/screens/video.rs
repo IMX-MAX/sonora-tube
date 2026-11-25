@@ -5345,6 +5345,7 @@ impl Render for VideoFeedView {
                                 .label(i18n::lookup(name, None))
                                 .ghost()
                                 .small()
+                                .selected(sift == choice)
                                 .toggled(sift == choice)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.sift = choice;

@@ -3313,6 +3313,9 @@ pub struct Subscriptions {
     find: Option<Task<()>>,
     /// What YouTube's home page recommends to the signed-in account.
     recommended: Vec<Video>,
+    /// Everything YouTube recommended, the videos turned down among it, so taking a choice
+    /// back can show them again.
+    offered: Vec<Video>,
     syncing: Option<Task<()>>,
     /// The Shorts gathered for the Shorts page, and whether they were asked for yet.
     shorts: Vec<Video>,
@@ -3396,6 +3399,7 @@ impl Subscriptions {
             finding: false,
             find: None,
             recommended: Vec::new(),
+            offered: Vec::new(),
             syncing: None,
         }
     }
@@ -3515,6 +3519,7 @@ impl Subscriptions {
             return self.load(cx);
         }
         self.recommended.clear();
+        self.offered.clear();
         self.syncing = None;
         cx.notify();
         if !self.client.signed_in() {
@@ -3534,7 +3539,7 @@ impl Subscriptions {
                 };
                 match recommended {
                     Ok(page) => {
-                        this.recommended = page.items;
+                        this.offered = page.items;
                         this.drop_unwanted();
                     }
                     Err(error) => log::warn!("video: cannot read the recommendations: {error:#}"),
@@ -3722,6 +3727,8 @@ impl Subscriptions {
 
     /// Picks the videos to find unless they are picked for the history as it stands.
     pub fn find(&mut self, cx: &mut Context<Self>) {
+        // The followed channels' uploads fill in for a short history, so they are fetched.
+        self.open(cx);
         if !self.finding && self.found_for != Some(self.kept.watched.len()) {
             self.find_again(cx);
         }
@@ -3734,8 +3741,10 @@ impl Subscriptions {
     fn seeds(&self) -> Vec<(String, f32)> {
         let mut seeds: Vec<(String, f32)> = Vec::new();
         let add = |seeds: &mut Vec<(String, f32)>, id: &str, weight: f32| {
-            if seeds.iter().all(|(held, _)| held != id) {
-                seeds.push((id.to_owned(), weight));
+            // A video that counts twice, as watched and liked, counts as the stronger.
+            match seeds.iter_mut().find(|(held, _)| held == id) {
+                Some((_, held)) => *held = held.max(weight),
+                None => seeds.push((id.to_owned(), weight)),
             }
         };
         for video in self.kept.more.iter().take(FIND_MORE_SEEDS) {
@@ -3764,7 +3773,8 @@ impl Subscriptions {
             add(&mut seeds, id, FIND_LIKED);
         }
         if seeds.len() < FIND_FEW {
-            for video in self.feed.iter().take(FIND_SEEDS) {
+            let uploads = self.feed.iter().filter(|video| !turned_down(&video.id));
+            for video in uploads.take(FIND_SEEDS) {
                 add(&mut seeds, &video.id, FIND_FILLED);
             }
         }
@@ -3824,9 +3834,9 @@ impl Subscriptions {
                 self.kept.more.retain(|kept| kept.id != video.id);
                 self.kept.passed.insert(0, video.clone());
                 self.kept.passed.truncate(TASTES_PASSED);
-                self.drop_unwanted();
             }
         }
+        self.drop_unwanted();
         self.save();
         cx.notify();
     }
@@ -3835,11 +3845,9 @@ impl Subscriptions {
     pub fn toggle_muted(&mut self, channel: &tube::ChannelRef, cx: &mut Context<Self>) {
         match self.muted(&channel.id) {
             true => self.kept.muted.retain(|kept| kept.id != channel.id),
-            false => {
-                self.kept.muted.push(channel.clone());
-                self.drop_unwanted();
-            }
+            false => self.kept.muted.push(channel.clone()),
         }
+        self.drop_unwanted();
         self.save();
         cx.notify();
     }
@@ -3850,6 +3858,7 @@ impl Subscriptions {
         self.kept.passed.clear();
         self.kept.muted.clear();
         self.save();
+        self.drop_unwanted();
         self.find_again(cx);
     }
 
@@ -3857,8 +3866,19 @@ impl Subscriptions {
     fn drop_unwanted(&mut self) {
         let kept = &self.kept;
         let wanted = |video: &Video| !unwanted(video, kept);
+        // The videos found before the ones looked beside so far keep that count right.
+        let dug = self.dug.min(self.found.len());
+        self.dug = self.found[..dug]
+            .iter()
+            .filter(|video| wanted(video))
+            .count();
         self.found.retain(wanted);
-        self.recommended.retain(wanted);
+        self.recommended = self
+            .offered
+            .iter()
+            .filter(|video| wanted(video))
+            .cloned()
+            .collect();
     }
 
     /// Picks the videos to find afresh: what YouTube puts next to the seeds, ranked by how
@@ -4129,6 +4149,10 @@ impl Subscriptions {
                 match crate::settled(loaded, cx) {
                     Ok(feed) => this.feed = feed,
                     Err(reason) => log::warn!("video: cannot read the feed: {reason}"),
+                }
+                // A page of new videos that found nothing may find some beside these uploads.
+                if this.found_for.is_some() && this.found.is_empty() && !this.finding {
+                    this.find_again(cx);
                 }
                 cx.notify();
             })
