@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Right-click a video for More like this, Not interested and Don't suggest this channel, which shape what Find new videos suggests, and reset them from that page.
+- Find new videos also learns from likes and how much of a video you watched, and can show only new channels or only ones you know.
 - Sponsored stretches are skipped, with SponsorBlock, Mistral or both, and a card on the picture lets you watch one anyway.
 - Live broadcasts open at their newest moment, show a Live mark, and offer a way back to live once you fall behind.
 - The next Shorts are readied ahead, so stepping to one starts sooner.
