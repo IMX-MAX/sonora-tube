@@ -35,9 +35,14 @@ const PINS: &str = "sidebar-pins";
 /// The sidebar's navigation rows in order: the entry that can hide each, its icon and where it goes.
 /// Settings also lives in the account menu of the title bar and shows here only when added. It
 /// opens on the settings page last visited rather than on the one named here.
-pub(crate) const NAV: [(NavEntry, &str, Destination); 5] = [
+pub(crate) const NAV: [(NavEntry, &str, Destination); 6] = [
     (NavEntry::Home, "icons/house.svg", Destination::Home),
     (NavEntry::Search, "icons/search.svg", Destination::Search),
+    (
+        NavEntry::Shorts,
+        "icons/smartphone.svg",
+        Destination::Shorts,
+    ),
     (
         NavEntry::Discover,
         "icons/compass.svg",

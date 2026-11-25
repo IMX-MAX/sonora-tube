@@ -10,8 +10,8 @@ use gpui::{AnyView, App, AppContext as _, ClipboardItem, Context, Entity, Global
 use tokio::task::AbortHandle;
 use tube::ai::{Said, Speaker};
 use tube::{
-    Caption, Channel, Chapter, Client, Comment, Found, Identity, Line, Page, Peek, Playlist, Post,
-    Quality, Storyboard, Streams, Tab, Video, Watch,
+    Caption, Channel, Chapter, Client, Comment, EndCard, Found, Identity, Line, Page, Peek,
+    Playlist, Post, Quality, ShortStreams, Sponsor, Storyboard, Streams, Tab, Video, Watch,
 };
 use video::{Player, VideoView};
 
@@ -218,7 +218,19 @@ const OPENING_CHECKS: usize = 80;
 const RECENT_SHORTS: usize = 16;
 const SHORT_STREAM_LIFETIME: Duration = Duration::from_secs(300);
 /// How often the place a video is watched up to is written down.
+/// How many of the top comments the AI is told of.
+const TOLD_COMMENTS: usize = 30;
 const PLACE_EVERY: Duration = Duration::from_secs(5);
+/// How far behind the newest moment of a broadcast, in seconds, still counts as live.
+const LIVE_NEAR: f64 = 15.;
+/// How often the video is checked for having reached a sponsored stretch.
+const SPONSOR_EVERY: Duration = Duration::from_millis(250);
+/// How many seconds before a sponsored stretch its notice comes up, and how long the notice
+/// of one just skipped stays.
+const SPONSOR_AHEAD: f64 = 8.;
+const SPONSOR_SHOWN: Duration = Duration::from_secs(6);
+/// How near its end a sponsored stretch is no longer worth skipping, in seconds.
+const SPONSOR_TAIL: f64 = 1.;
 /// The share of a video before which it is not worth resuming and after which it is finished.
 const RESUME_FROM: f32 = 0.02;
 const RESUME_UNTIL: f32 = 0.95;
@@ -273,6 +285,15 @@ struct Script {
 }
 
 /// The video being watched: its player, its page and its comments.
+/// What the viewer is told about a sponsored stretch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SponsorNotice {
+    /// It starts in this many seconds and will be skipped.
+    Coming(Sponsor, f64),
+    /// It was just skipped.
+    Skipped(Sponsor),
+}
+
 pub struct Watching {
     client: Client,
     io: Io,
@@ -300,6 +321,8 @@ pub struct Watching {
     /// The Shorts the upright player steps through, in the order of the list one was opened
     /// from, and whether the video on the page is played as one.
     reel: Vec<Video>,
+    /// Whether `reel` is the gathered Shorts, which grow as their end comes near.
+    endless: bool,
     short: bool,
     /// Whether the video has gone into the history since it was opened, so that reading its
     /// page again, perhaps under another profile, adds nothing.
@@ -311,6 +334,26 @@ pub struct Watching {
     duration: Option<Duration>,
     /// The small pictures the seek bar previews the video with.
     board: Option<Storyboard>,
+    /// Whether the video is a broadcast that is live right now.
+    live: bool,
+    /// The cards the video ends on, once YouTube has named them.
+    cards: Arc<Vec<EndCard>>,
+    carding: Option<Task<()>>,
+    /// The stretch of the video an answer pointed at, marked on the seek bar until it is over.
+    pointed: Option<(f64, f64)>,
+    /// The streams of the Shorts next to the one playing, asked for ahead so stepping to one
+    /// starts it without waiting on YouTube, and the requests still out for them.
+    ahead: HashMap<String, (Instant, ShortStreams)>,
+    preloading: HashMap<String, Task<()>>,
+    /// The video's sponsored stretches in order, and the ones the viewer chose to watch.
+    sponsors: Vec<Sponsor>,
+    sponsors_kept: Vec<Sponsor>,
+    /// The stretch last skipped and when, so its notice can offer to go back.
+    sponsor_skipped: Option<(Sponsor, Instant)>,
+    sponsor_ai_tried: bool,
+    sponsoring: Option<Task<()>>,
+    sponsoring_ai: Option<Task<()>>,
+    skipping: Option<Task<()>>,
     /// The tallest picture the user wants, `None` to let the app choose.
     ceiling: Option<u32>,
     /// Whether the picture's colours glow around it.
@@ -356,7 +399,20 @@ impl Watching {
         cx.subscribe(&session, |this, _, event, _| {
             if matches!(event, SessionEvent::SignedOut) {
                 this.short_streams.clear();
+                this.ahead.clear();
+                this.preloading.clear();
                 this.short_cached_after = Instant::now();
+            }
+        })
+        .detach();
+        cx.observe(&subscriptions, |this, _, cx| this.extend_reel(cx))
+            .detach();
+        // A sponsor source switched on looks the video on the page up straight away.
+        let settings = crate::Sonora::global(cx).settings.clone();
+        cx.observe(&settings, |this, _, cx| {
+            if this.watch.is_some() {
+                this.find_sponsors(cx);
+                this.find_sponsors_ai(cx);
             }
         })
         .detach();
@@ -380,12 +436,26 @@ impl Watching {
             liked: false,
             seen: false,
             reel: Vec::new(),
+            endless: false,
             short: false,
             like: None,
             qualities: Vec::new(),
             listed_duration: None,
             duration: None,
             board: None,
+            live: false,
+            cards: Arc::default(),
+            carding: None,
+            pointed: None,
+            ahead: HashMap::new(),
+            preloading: HashMap::new(),
+            sponsors: Vec::new(),
+            sponsors_kept: Vec::new(),
+            sponsor_skipped: None,
+            sponsor_ai_tried: false,
+            sponsoring: None,
+            sponsoring_ai: None,
+            skipping: None,
             ceiling: None,
             ambient: true,
             speed: 1.,
@@ -519,15 +589,35 @@ impl Watching {
             self.chat.failed = Some("no key".to_owned());
             return;
         };
-        let title = self
+        let (title, description) = self
             .watch
             .as_ref()
-            .map(|watch| watch.title.clone())
+            .map(|watch| (watch.title.clone(), watch.description.clone()))
             .unwrap_or_default();
+        // The best comments go along, where they are here. Ones not fetched yet are asked for,
+        // for the questions that follow.
+        let comments: Vec<String> = match self.newest {
+            true => Vec::new(),
+            false => self
+                .thread
+                .comments
+                .iter()
+                .take(TOLD_COMMENTS)
+                .map(|comment| {
+                    let likes = comment.likes.as_deref().unwrap_or("0");
+                    format!("{} ({likes} likes): {}", comment.author.name, comment.text)
+                })
+                .collect(),
+        };
+        if comments.is_empty() && !self.newest {
+            self.load_comments(cx);
+        }
         let (said, asked) = (self.chat.said.clone(), self.id.clone());
-        let request = self
-            .io
-            .spawn(async move { client.ask(&model, &title, &lines, &said).await });
+        let request = self.io.spawn(async move {
+            client
+                .ask(&model, &title, &description, &lines, &comments, &said)
+                .await
+        });
         self.chat.task = Some(cx.spawn(async move |this, cx| {
             let answered = join(request).await;
             this.update(cx, |this, cx| {
@@ -642,6 +732,7 @@ impl Watching {
             self.chapters_failed = false;
         }
         self.chapter(cx);
+        self.find_sponsors_ai(cx);
     }
 
     /// Whether the comments come newest first.
@@ -751,7 +842,8 @@ impl Watching {
         let (Some(at), Some(length)) = (player.position(), player.duration()) else {
             return;
         };
-        if length <= 0. || player.idle() {
+        // A broadcast's length keeps growing, so a place in it means nothing later.
+        if self.live || length <= 0. || player.idle() {
             return;
         }
         self.subscriptions
@@ -934,7 +1026,7 @@ impl Watching {
             }
             self.set_short(short);
             // Opened again, perhaps under another profile, whose history has yet to see it.
-            if let Some(seen) = self.video() {
+            if let Some(seen) = self.video().filter(|_| !short) {
                 self.subscriptions
                     .update(cx, |kept, cx| kept.watched_now(seen, cx));
             }
@@ -950,6 +1042,7 @@ impl Watching {
         self.id = Some(id.to_owned());
         self.listed_duration = listed_duration;
         self.duration = None;
+        self.live = false;
         self.seen = false;
         self.set_short(short);
         self.watch = None;
@@ -964,6 +1057,12 @@ impl Watching {
         self.chapters_ai = false;
         self.chaptering = None;
         self.chapters_failed = false;
+        self.sponsors.clear();
+        self.sponsors_kept.clear();
+        self.sponsor_skipped = None;
+        self.sponsor_ai_tried = false;
+        self.sponsoring = None;
+        self.sponsoring_ai = None;
         if self.script.open {
             self.load_transcript(cx);
         }
@@ -996,12 +1095,14 @@ impl Watching {
                         this.chapters = Arc::new(tube::chapters(&watch.description));
                         this.watch = Some(Arc::new(watch));
                         let again = std::mem::replace(&mut this.seen, true);
-                        if let Some(seen) = this.video().filter(|_| !again) {
+                        if let Some(seen) = this.video().filter(|_| !again && !this.short) {
                             this.subscriptions
                                 .update(cx, |kept, cx| kept.watched_now(seen, cx));
                         }
                         this.load_comments(cx);
+                        this.find_sponsors(cx);
                         this.chapter(cx);
+                        this.find_sponsors_ai(cx);
                     }
                     Err(reason) => this.error = Some(reason),
                 }
@@ -1018,7 +1119,9 @@ impl Watching {
         self.show(id, true, None, cx);
         if !self.reel.iter().any(|short| short.id == id) {
             self.reel.clear();
+            self.endless = false;
         }
+        self.extend_reel(cx);
     }
 
     /// Whether the video is played as a Short: over and over, with none of a long video's tools.
@@ -1037,6 +1140,84 @@ impl Watching {
     /// The Shorts a press of next or previous steps through.
     pub fn set_reel(&mut self, reel: Vec<Video>) {
         self.reel = reel;
+        self.endless = false;
+    }
+
+    /// Steps through the gathered Shorts, fetching more whenever their end comes near.
+    pub fn set_endless_reel(&mut self, cx: &mut Context<Self>) {
+        self.reel = self.subscriptions.read(cx).shorts().to_vec();
+        self.endless = true;
+    }
+
+    /// Asks for the streams of the Shorts just after and before the one playing, and forgets
+    /// those of Shorts no longer near.
+    fn preload(&mut self, cx: &mut Context<Self>) {
+        if !self.short {
+            self.ahead.clear();
+            self.preloading.clear();
+            return;
+        }
+        let near: Vec<String> = SHORTS_PRELOAD
+            .iter()
+            .filter_map(|by| self.beside(*by))
+            .map(|short| short.id.clone())
+            .collect();
+        self.ahead.retain(|id, (requested, _)| {
+            near.contains(id) && requested.elapsed() < SHORT_STREAM_LIFETIME
+        });
+        self.preloading.retain(|id, _| near.contains(id));
+        for id in near {
+            if self.ahead.contains_key(&id) || self.preloading.contains_key(&id) {
+                continue;
+            }
+            let (client, asked) = (self.client.clone(), id.clone());
+            let requested = Instant::now();
+            let request = self
+                .io
+                .spawn(async move { client.short_streams(&asked).await });
+            let asked = id.clone();
+            let task = cx.spawn(async move |this, cx| {
+                let named = join(request).await;
+                this.update(cx, |this, _| {
+                    if this.preloading.remove(&asked).is_none() {
+                        return;
+                    }
+                    match named {
+                        Ok(streams) => {
+                            this.ahead.insert(asked, (requested, streams));
+                        }
+                        Err(error) => {
+                            log::warn!("video: cannot ready the short {asked}: {error:#}");
+                        }
+                    }
+                })
+                .ok();
+            });
+            self.preloading.insert(id, task);
+        }
+    }
+
+    /// Takes in the Shorts gathered since, and asks for more when few are left ahead.
+    fn extend_reel(&mut self, cx: &mut Context<Self>) {
+        if !self.endless || !self.short {
+            self.preload(cx);
+            return;
+        }
+        let gathered = self.subscriptions.read(cx).shorts();
+        if gathered.len() > self.reel.len() {
+            self.reel = gathered.to_vec();
+            cx.notify();
+        }
+        self.preload(cx);
+        if self.beside(0).is_some() && self.beside(SHORTS_AHEAD).is_none() {
+            self.subscriptions
+                .update(cx, |kept, cx| kept.gather_more(cx));
+        }
+    }
+
+    /// Where the Short `id` stands in the list one was opened from.
+    pub fn reel_place(&self, id: &str) -> Option<usize> {
+        self.reel.iter().position(|short| short.id == id)
     }
 
     /// The Short `by` places from the one playing in the list it was opened from.
@@ -1085,7 +1266,298 @@ impl Watching {
         if let Some(player) = self.player() {
             player.set_paused(paused);
         }
+        self.keep_awake(cx);
         cx.notify();
+    }
+
+    /// Whether the video is a broadcast that is live right now.
+    pub fn live(&self) -> bool {
+        self.live
+    }
+
+    /// How many seconds the picture is behind a live broadcast's newest moment. None when the
+    /// video is not live or its length is not known yet.
+    pub fn behind_live(&self) -> Option<f64> {
+        let player = self.player().filter(|_| self.live)?;
+        Some((player.duration()? - player.position()?).max(0.))
+    }
+
+    /// Jumps to the newest moment of a live broadcast and plays on from there.
+    pub fn go_live(&mut self, cx: &mut Context<Self>) {
+        if !self.live {
+            return;
+        }
+        // Playing at the newest moment already, so there is nothing to open again. A paused
+        // broadcast has moved on meanwhile, however near its end the player thinks it is.
+        let playing = self.player().is_some_and(|player| !player.paused());
+        if playing && self.behind_live().is_some_and(|behind| behind < LIVE_NEAR) {
+            return;
+        }
+        // The player's idea of where a broadcast ends is the one it opened with, so the
+        // broadcast is opened again, which always starts at its newest moment.
+        if let Some(id) = self.id.clone()
+            && let Err(error) = self.play(&id, cx)
+        {
+            log::error!("video: cannot go back to live on {id}: {error:#}");
+        }
+        cx.notify();
+    }
+
+    /// Asks SponsorBlock for the video's sponsored stretches, when its switch is on.
+    fn find_sponsors(&mut self, cx: &mut Context<Self>) {
+        let settings = crate::Sonora::global(cx).settings.clone();
+        if self.short || self.sponsoring.is_some() || !settings.read(cx).sponsorblock() {
+            return;
+        }
+        let Some(id) = self.id.clone() else { return };
+        let client = self.client.clone();
+        let asked = id.clone();
+        let request = self.io.spawn(async move { client.sponsors(&asked).await });
+        self.sponsoring = Some(cx.spawn(async move |this, cx| {
+            let found = join(request).await;
+            this.update(cx, |this, cx| {
+                if this.id.as_deref() != Some(id.as_str()) {
+                    return;
+                }
+                match found {
+                    Ok(found) => this.add_sponsors(found, cx),
+                    Err(error) => log::warn!("video: cannot ask sponsorblock: {error:#}"),
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Has the AI look for sponsored stretches in the transcript, when its switch is on and
+    /// there is a key. Fetches the transcript first when it is not here.
+    fn find_sponsors_ai(&mut self, cx: &mut Context<Self>) {
+        let settings = crate::Sonora::global(cx).settings.clone();
+        if self.short
+            || self.sponsor_ai_tried
+            || self.sponsoring_ai.is_some()
+            || self.watch.is_none()
+            || !settings.read(cx).sponsor_ai()
+        {
+            return;
+        }
+        let Some(assistant) = Assistant::entity(cx) else {
+            return;
+        };
+        let (client, model) = {
+            let assistant = assistant.read(cx);
+            (assistant.client(), assistant.chapter_model().to_owned())
+        };
+        let Some(client) = client else { return };
+        let lines = match &self.script.lines {
+            Some(lines) if !lines.is_empty() => lines.clone(),
+            Some(_) => return,
+            None => {
+                if !self.script.failed {
+                    self.load_transcript(cx);
+                }
+                return;
+            }
+        };
+        self.sponsor_ai_tried = true;
+        let title = self
+            .watch
+            .as_ref()
+            .map(|watch| watch.title.clone())
+            .unwrap_or_default();
+        let length = self
+            .player()
+            .and_then(|player| player.duration())
+            .unwrap_or(0.);
+        let asked = self.id.clone();
+        let request = self
+            .io
+            .spawn(async move { client.sponsors(&model, &title, &lines, length).await });
+        self.sponsoring_ai = Some(cx.spawn(async move |this, cx| {
+            let found = join(request).await;
+            this.update(cx, |this, cx| {
+                if this.id != asked {
+                    return;
+                }
+                this.sponsoring_ai = None;
+                match found {
+                    Ok(found) => this.add_sponsors(found, cx),
+                    Err(error) => {
+                        let reason = format!("{error:#}");
+                        log::warn!("video: the ai cannot find sponsors: {reason}");
+                        refused(&reason, cx);
+                    }
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Takes in stretches just found. Both sources' are held, and the ones that overlap are
+    /// joined once it is known which sources are on.
+    fn add_sponsors(&mut self, found: Vec<Sponsor>, cx: &mut Context<Self>) {
+        self.sponsors.extend(found);
+        self.sponsors
+            .sort_by(|one, other| one.start.total_cmp(&other.start));
+        cx.notify();
+    }
+
+    /// The stretches that get skipped: those whose switch is on and that were not kept.
+    fn skipped_sponsors(&self, cx: &App) -> Vec<Sponsor> {
+        let settings = crate::Sonora::global(cx).settings.read(cx);
+        let (marked, ai) = (settings.sponsorblock(), settings.sponsor_ai());
+        let on = self
+            .sponsors
+            .iter()
+            .filter(|sponsor| match sponsor.ai {
+                true => ai,
+                false => marked,
+            })
+            .copied()
+            .collect();
+        tube::sponsor::settle(on)
+            .into_iter()
+            .filter(|sponsor| {
+                // A stretch the viewer chose to watch stays kept when a source switched off
+                // leaves a shorter one in its place.
+                !self
+                    .sponsors_kept
+                    .iter()
+                    .any(|kept| sponsor.start < kept.end && kept.start < sponsor.end)
+            })
+            .collect()
+    }
+
+    /// Jumps past a sponsored stretch the video has reached, and redraws while a notice shows.
+    fn skip_sponsors(&mut self, cx: &mut Context<Self>) {
+        if self.live || (self.sponsors.is_empty() && self.sponsor_skipped.is_none()) {
+            return;
+        }
+        if self
+            .sponsor_skipped
+            .is_some_and(|(_, when)| when.elapsed() > SPONSOR_SHOWN)
+        {
+            self.sponsor_skipped = None;
+            cx.notify();
+        }
+        let Some(at) = self
+            .player()
+            .filter(|player| !player.paused())
+            .and_then(|player| player.position())
+        else {
+            return;
+        };
+        let skipped = self.skipped_sponsors(cx);
+        if let Some(sponsor) = skipped
+            .iter()
+            .find(|sponsor| at >= sponsor.start && at < sponsor.end - SPONSOR_TAIL)
+        {
+            self.sponsor_skipped = Some((*sponsor, Instant::now()));
+            self.seek_to(sponsor.end, cx);
+        } else if skipped
+            .iter()
+            .any(|sponsor| at < sponsor.start && sponsor.start - at <= SPONSOR_AHEAD)
+        {
+            cx.notify();
+        }
+    }
+
+    /// What to tell the viewer about sponsors right now: one is coming, or one was skipped.
+    pub fn sponsor_notice(&self, cx: &App) -> Option<SponsorNotice> {
+        if self.live {
+            return None;
+        }
+        if let Some((sponsor, _)) = self.sponsor_skipped {
+            return Some(SponsorNotice::Skipped(sponsor));
+        }
+        let at = self.player().and_then(|player| player.position())?;
+        self.skipped_sponsors(cx)
+            .into_iter()
+            .find(|sponsor| at < sponsor.start && sponsor.start - at <= SPONSOR_AHEAD)
+            .map(|sponsor| SponsorNotice::Coming(sponsor, sponsor.start - at))
+    }
+
+    /// Lets the stretch play: it is no longer skipped, and one just skipped starts over.
+    pub fn watch_sponsor(&mut self, sponsor: Sponsor, cx: &mut Context<Self>) {
+        self.sponsors_kept.push(sponsor);
+        if self
+            .sponsor_skipped
+            .take()
+            .is_some_and(|(skipped, _)| skipped == sponsor)
+        {
+            self.seek_to(sponsor.start, cx);
+        }
+        cx.notify();
+    }
+
+    /// Whether the video played to its end.
+    pub fn ended(&self) -> bool {
+        self.player().is_some_and(|player| player.ended())
+    }
+
+    /// Keeps the screen on for as long as the video plays, and lets it sleep once it does not.
+    fn keep_awake(&mut self, cx: &mut Context<Self>) {
+        // A stretch that has played is forgotten, so playing the video again does not mark it.
+        if let Some((_, end)) = self.pointed
+            && self
+                .player()
+                .and_then(|player| player.position())
+                .is_some_and(|at| at >= end)
+        {
+            self.pointed = None;
+        }
+        let playing = self
+            .player()
+            .is_some_and(|player| !player.paused() && !player.ended() && !player.idle());
+        let wake = crate::Sonora::global(cx).wake.clone();
+        wake.update(cx, |wake, cx| wake.set_watching(playing, cx));
+    }
+
+    /// The cards the video ends on, each with the seconds it is shown between.
+    pub fn cards(&self) -> Arc<Vec<EndCard>> {
+        self.cards.clone()
+    }
+
+    fn load_cards(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.cards = Arc::default();
+        // A Short plays round and round, so it never comes to its end cards.
+        if self.short {
+            self.carding = None;
+            return;
+        }
+        let (client, asked) = (self.client.clone(), id.to_owned());
+        let request = self.io.spawn({
+            let asked = asked.clone();
+            async move { client.end_cards(&asked).await }
+        });
+        self.carding = Some(cx.spawn(async move |this, cx| {
+            let cards = match join(request).await {
+                Ok(cards) => cards,
+                Err(error) => {
+                    log::warn!("video: no end cards for {asked}: {error:#}");
+                    return;
+                }
+            };
+            this.update(cx, |this, cx| {
+                if this.id.as_deref() == Some(asked.as_str()) {
+                    this.cards = Arc::new(cards);
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// The stretch an answer pointed at, while the video is still inside or before it.
+    pub fn pointed(&self) -> Option<(f64, f64)> {
+        let (start, end) = self.pointed?;
+        let at = self.player()?.position()?;
+        (at < end).then_some((start, end))
+    }
+
+    /// Goes to the start of a stretch and marks it on the seek bar until it has played.
+    pub fn point_at(&mut self, start: f64, end: f64, cx: &mut Context<Self>) {
+        self.pointed = (end > start).then_some((start, end));
+        self.seek_to(start, cx);
     }
 
     /// Whether the picture is in its own small window.
@@ -1119,6 +1591,11 @@ impl Watching {
         if self.screen.is_none() {
             self.reload(cx);
             return;
+        }
+        // A video that has ended starts over rather than staying on its last frame.
+        if self.ended() {
+            self.seek_to(0., cx);
+            return self.set_paused(false, cx);
         }
         let paused = self.player().is_some_and(|player| player.paused());
         self.set_paused(!paused, cx);
@@ -1332,6 +1809,15 @@ impl Watching {
         cx.notify();
     }
 
+    /// Shows the frame after the one on screen, or the one before it, and holds there.
+    pub fn step_frame(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if let Some(player) = self.player() {
+            player.step_frame(forward);
+        }
+        self.keep_awake(cx);
+        cx.notify();
+    }
+
     /// Whether the transcript panel is open.
     pub fn transcript_open(&self) -> bool {
         self.script.open
@@ -1425,6 +1911,7 @@ impl Watching {
                     this.answer(cx);
                 }
                 this.chapter(cx);
+                this.find_sponsors_ai(cx);
                 cx.notify();
             })
             .ok();
@@ -1616,10 +2103,20 @@ impl Watching {
         self.stream = None;
         player.stop();
         // A Short is over in a moment and plays round again, so it always starts at its start.
-        let start = match self.short {
+        let start = match self.short || self.live {
             true => 0.,
             false => self.subscriptions.read(cx).resume(id).unwrap_or(0.),
         };
+        if self.skipping.is_none() {
+            self.skipping = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(SPONSOR_EVERY).await;
+                    if this.update(cx, |this, cx| this.skip_sponsors(cx)).is_err() {
+                        return;
+                    }
+                }
+            }));
+        }
         if self.placing.is_none() {
             self.placing = Some(cx.spawn(async move |this, cx| {
                 loop {
@@ -1628,6 +2125,7 @@ impl Watching {
                         if this.player().is_some_and(|player| !player.paused()) {
                             this.place(cx);
                         }
+                        this.keep_awake(cx);
                     });
                     if alive.is_err() {
                         return;
@@ -1644,6 +2142,9 @@ impl Watching {
         self.pace();
         self.qualities.clear();
         self.board = None;
+        self.pointed = None;
+        self.keep_awake(cx);
+        self.load_cards(id, cx);
         if self.captions {
             self.load_transcript(cx);
         }
@@ -1665,6 +2166,10 @@ impl Watching {
             None
         };
         let requested = Instant::now();
+        let ahead = self
+            .ahead
+            .remove(id)
+            .filter(|(requested, _)| requested.elapsed() < SHORT_STREAM_LIFETIME);
         self.stream = Some(cx.spawn(async move |this, cx| {
             if let Some((_, opened, streams)) = cached
                 && Self::start_stream(&this, cx, &asked, start, streams, Some(opened)).await
@@ -1672,9 +2177,17 @@ impl Watching {
                 return;
             }
             let id = asked.clone();
+            let mut requested = requested;
             let named = if short {
                 let resolver = client.clone();
-                match join(io.spawn(async move { resolver.short_streams(&id).await })).await {
+                let sources = match ahead {
+                    Some((at, sources)) => {
+                        requested = at;
+                        Ok(sources)
+                    }
+                    None => join(io.spawn(async move { resolver.short_streams(&id).await })).await,
+                };
+                match sources {
                     Ok(mut sources) => {
                         if let Some(streams) = sources.mp4.take()
                             && Self::start_stream(
@@ -1716,7 +2229,7 @@ impl Watching {
             this.update(cx, |this, cx| {
                 if this.id.as_deref() == Some(asked.as_str()) {
                     this.qualities.clear();
-                    this.scrape(&asked, start, cx);
+                    this.scrape(&asked, if this.live { 0. } else { start }, cx);
                 }
             })
             .ok();
@@ -1739,6 +2252,7 @@ impl Watching {
             }
             this.board = streams.board.clone();
             this.duration = streams.duration;
+            this.live = streams.live;
             cx.notify();
             match &streams.qualities {
                 Ok(qualities) => this.qualities.clone_from(qualities),
@@ -1750,7 +2264,13 @@ impl Watching {
             }
             let player = this.player()?.clone();
             let quality = this.quality()?;
-            player.play(&quality.picture, &quality.sound, start).ok()?;
+            player
+                .play(
+                    &quality.picture,
+                    &quality.sound,
+                    if streams.live { 0. } else { start },
+                )
+                .ok()?;
             Some(player)
         });
         let Ok(Some(player)) = started else {
@@ -2636,6 +3156,17 @@ pub(crate) fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io:
 }
 
 const HISTORY_CAP: usize = 500;
+/// How many followed channels the Shorts page reads, and how many Shorts of each it takes.
+const SHORTS_CHANNELS: usize = 12;
+const SHORTS_EACH: usize = 10;
+/// What is searched for to fill the Shorts page past the followed channels.
+const SHORTS_QUERY: &str = "#shorts";
+/// How near the end of the endless Shorts the one playing gets before more are fetched.
+const SHORTS_AHEAD: isize = 4;
+/// Which Shorts around the one playing have their streams asked for ahead.
+const SHORTS_PRELOAD: [isize; 3] = [1, 2, -1];
+/// How long after a failure more Shorts are not asked for.
+const SHORTS_RETRY: Duration = Duration::from_secs(30);
 /// How many of a channel's newest uploads go into the feed.
 const FEED_PER_CHANNEL: usize = 12;
 
@@ -2749,6 +3280,20 @@ pub struct Subscriptions {
     /// What YouTube's home page recommends to the signed-in account.
     recommended: Vec<Video>,
     syncing: Option<Task<()>>,
+    /// The Shorts gathered for the Shorts page, and whether they were asked for yet.
+    shorts: Vec<Video>,
+    shorts_read: bool,
+    /// Where the search that fills the Shorts goes on from.
+    shorts_more: Option<String>,
+    /// Whether the search has no more Shorts to give, so it is not asked over and over.
+    shorts_dry: bool,
+    /// When asking for more Shorts last failed, so it is not asked again straight away.
+    shorts_failed: Option<Instant>,
+    /// The wait after a failure, which has the Shorts looked at again when it ends.
+    retrying: Option<Task<()>>,
+    /// Whether the search's place was already asked for again after failing.
+    shorts_retried: bool,
+    gathering: Option<Task<()>>,
 }
 
 impl Subscriptions {
@@ -2804,6 +3349,14 @@ impl Subscriptions {
             loading: false,
             task: None,
             found: Vec::new(),
+            shorts: Vec::new(),
+            shorts_read: false,
+            shorts_more: None,
+            shorts_dry: false,
+            shorts_failed: None,
+            retrying: None,
+            shorts_retried: false,
+            gathering: None,
             found_for: None,
             dug: 0,
             finding: false,
@@ -2899,6 +3452,10 @@ impl Subscriptions {
         self.loading = false;
         self.task = None;
         self.found.clear();
+        self.shorts.clear();
+        self.shorts_read = false;
+        self.shorts_more = None;
+        self.gathering = None;
         self.found_for = None;
         self.dug = 0;
         self.finding = false;
@@ -2964,6 +3521,7 @@ impl Subscriptions {
                                 this.kept.channels.push(channel);
                             }
                         }
+                        this.shorts_read = false;
                         this.save();
                         this.refresh(cx);
                     }
@@ -2973,6 +3531,147 @@ impl Subscriptions {
             })
             .ok();
         }));
+    }
+
+    /// The Shorts gathered for the Shorts page: those of the followed channels in turn, then
+    /// what a search for Shorts brings.
+    pub fn shorts(&self) -> &[Video] {
+        &self.shorts
+    }
+
+    pub fn is_gathering(&self) -> bool {
+        self.gathering.is_some()
+    }
+
+    /// Gathers the Shorts unless they are here or on their way.
+    pub fn gather(&mut self, cx: &mut Context<Self>) {
+        if !self.shorts_read && self.gathering.is_none() {
+            self.gather_again(cx);
+        }
+    }
+
+    /// Gathers more Shorts after the ones here, so stepping through them never runs out. Once
+    /// a search has given all it has, a new one starts.
+    pub fn gather_more(&mut self, cx: &mut Context<Self>) {
+        let failed = self
+            .shorts_failed
+            .is_some_and(|failed| failed.elapsed() < SHORTS_RETRY);
+        if self.gathering.is_some() || self.shorts_dry || failed {
+            return;
+        }
+        let token = self.shorts_more.take();
+        let asked = token.clone();
+        let client = self.client.clone();
+        let request = self.io.spawn(async move {
+            match token {
+                Some(token) => client.search_more(&token).await,
+                None => client.search(SHORTS_QUERY).await,
+            }
+        });
+        self.gathering = Some(cx.spawn(async move |this, cx| {
+            let page = join(request).await;
+            this.update(cx, |this, cx| {
+                this.gathering = None;
+                match page {
+                    Ok(page) => {
+                        this.shorts_more = page.more;
+                        let held = this.shorts.len();
+                        let mut seen: std::collections::HashSet<String> =
+                            this.shorts.iter().map(|short| short.id.clone()).collect();
+                        this.shorts.extend(page.items.into_iter().filter_map(
+                            |found| match found {
+                                Found::Video(video)
+                                    if video.short && seen.insert(video.id.clone()) =>
+                                {
+                                    Some(video)
+                                }
+                                _ => None,
+                            },
+                        ));
+                        this.shorts_dry = this.shorts_more.is_none() && this.shorts.len() == held;
+                        this.shorts_retried = false;
+                    }
+                    Err(error) => {
+                        // The search keeps its place, and is asked again once the wait is over.
+                        // Only once, in case it is the place itself YouTube turns down.
+                        this.shorts_more = asked.filter(|_| !this.shorts_retried);
+                        this.shorts_retried = this.shorts_more.is_some();
+                        this.shorts_failed = Some(Instant::now());
+                        this.retrying = Some(cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(SHORTS_RETRY).await;
+                            this.update(cx, |_, cx| cx.notify()).ok();
+                        }));
+                        log::warn!("video: cannot gather more shorts: {error:#}");
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// Gathers the Shorts afresh.
+    pub fn gather_again(&mut self, cx: &mut Context<Self>) {
+        self.shorts_read = true;
+        // A different handful each time, so every followed channel gets its turn.
+        let mut channels: Vec<String> = self
+            .kept
+            .channels
+            .iter()
+            .map(|channel| channel.id.clone())
+            .collect();
+        fastrand::shuffle(&mut channels);
+        channels.truncate(SHORTS_CHANNELS);
+        self.shorts_dry = false;
+        self.shorts_failed = None;
+        let client = self.client.clone();
+        let request = self.io.spawn(async move {
+            let parts = channels
+                .iter()
+                .map(|id| client.channel_section(id, Tab::Shorts));
+            let (parts, searched) = futures::future::join(
+                futures::future::join_all(parts),
+                client.search(SHORTS_QUERY),
+            )
+            .await;
+            let mut lists: Vec<std::vec::IntoIter<Video>> = parts
+                .into_iter()
+                .filter_map(Result::ok)
+                .map(|section| section.videos.items.into_iter())
+                .collect();
+            // One from each channel in turn, so no channel fills the page.
+            let mut gathered: Vec<Video> = Vec::new();
+            for _ in 0..SHORTS_EACH {
+                gathered.extend(lists.iter_mut().filter_map(Iterator::next));
+            }
+            let (searched, more) = searched
+                .map(|page| (page.items, page.more))
+                .unwrap_or_default();
+            gathered.extend(searched.into_iter().filter_map(|found| match found {
+                Found::Video(video) => Some(video),
+                _ => None,
+            }));
+            let mut seen = std::collections::HashSet::new();
+            gathered.retain(|video| video.short && seen.insert(video.id.clone()));
+            anyhow::Ok((gathered, more))
+        });
+        self.gathering = Some(cx.spawn(async move |this, cx| {
+            let gathered = join(request).await;
+            this.update(cx, |this, cx| {
+                this.gathering = None;
+                match gathered {
+                    Ok((gathered, more)) => {
+                        this.shorts = gathered;
+                        this.shorts_more = more;
+                    }
+                    Err(error) => log::warn!("video: cannot gather shorts: {error:#}"),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     /// Videos to find new channels by, the likeliest first.
@@ -3109,12 +3808,14 @@ impl Subscriptions {
     pub fn toggle(&mut self, channel: &Channel, cx: &mut Context<Self>) {
         match self.follows(&channel.id) {
             true => {
+                self.shorts_read = false;
                 self.kept.channels.retain(|kept| kept.id != channel.id);
                 self.feed
                     .retain(|video| video.channel.as_ref().is_none_or(|by| by.id != channel.id));
             }
             false => {
                 self.kept.channels.push(channel.clone());
+                self.shorts_read = false;
                 self.loaded = false;
             }
         }
@@ -3172,7 +3873,14 @@ impl Subscriptions {
     pub fn toggle_later(&mut self, video: &Video, cx: &mut Context<Self>) {
         match self.saved(&video.id) {
             true => self.kept.later.retain(|kept| kept.id != video.id),
-            false => self.kept.later.insert(0, video.clone()),
+            // A broadcast is over by the time it is watched later, so it is not kept as live.
+            false => self.kept.later.insert(
+                0,
+                Video {
+                    live: false,
+                    ..video.clone()
+                },
+            ),
         }
         self.save();
         cx.notify();

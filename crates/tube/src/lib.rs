@@ -9,8 +9,10 @@ use std::time::Duration;
 pub mod ai;
 mod client;
 mod parse;
+pub mod sponsor;
 
 pub use client::{Client, PROOF, ShortStreams};
+pub use sponsor::Sponsor;
 
 /// A video as a list shows it. The counts and dates stay the text YouTube wrote, since that is
 /// already abbreviated and localised.
@@ -35,6 +37,9 @@ pub struct Video {
     /// The upright picture a Short is listed with.
     #[serde(default)]
     pub still: Option<String>,
+    /// Whether it was being broadcast live when it was listed.
+    #[serde(default)]
+    pub live: bool,
 }
 
 impl Video {
@@ -168,6 +173,33 @@ pub struct Streams {
     pub board: Option<Storyboard>,
     /// YouTube's published running time, absent for live broadcasts.
     pub duration: Option<Duration>,
+    /// Whether it is being broadcast live right now.
+    pub live: bool,
+}
+
+/// What pressing an end card opens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EndTarget {
+    Video(String),
+    Playlist(String),
+    Channel(String),
+}
+
+/// A card the maker laid over the last seconds of a video, pointing at something to see next.
+/// The place and the size are shares of the picture, from 0 to 1.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EndCard {
+    pub target: EndTarget,
+    pub title: String,
+    pub image: Option<String>,
+    pub left: f32,
+    pub top: f32,
+    pub width: f32,
+    /// The width of the card over its height.
+    pub aspect: f32,
+    /// The seconds of the video the card is shown from and until.
+    pub start: f64,
+    pub end: f64,
 }
 
 /// Sheets of small pictures taken through a video at even steps, which a seek bar shows the
@@ -256,7 +288,8 @@ pub fn marks(text: &str) -> Vec<(std::ops::Range<usize>, Mark)> {
             let here = from;
             from += part.len();
             let opened = part.trim_start_matches(['(', '[']);
-            let moment = opened.trim_end_matches(['.', ',', ')', ']', ':', ';', '-', '–', '—']);
+            let moment =
+                opened.trim_end_matches(['.', ',', ')', ']', ':', ';', '!', '?', '-', '–', '—']);
             let digits =
                 |piece: &str| !piece.is_empty() && piece.bytes().all(|b| b.is_ascii_digit());
             let pieces: Vec<&str> = moment.split(':').collect();

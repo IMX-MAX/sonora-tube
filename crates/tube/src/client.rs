@@ -10,8 +10,8 @@ use sha1::{Digest as _, Sha1};
 
 use crate::parse;
 use crate::{
-    Caption, Captions, Channel, ChannelPage, Comments, Found, Identity, Page, PlaylistPage,
-    Quality, Section, Storyboard, Streams, Tab, Video, Watch,
+    Caption, Captions, Channel, ChannelPage, Comments, EndCard, Found, Identity, Page,
+    PlaylistPage, Quality, Section, Storyboard, Streams, Tab, Video, Watch,
 };
 
 const ORIGIN: &str = "https://www.youtube.com";
@@ -114,6 +114,7 @@ pub struct ShortStreams {
     manifest: Result<String>,
     board: Option<Storyboard>,
     duration: Option<Duration>,
+    live: bool,
 }
 
 impl ShortStreams {
@@ -121,7 +122,7 @@ impl ShortStreams {
     /// on failure. If resolving the address failed, returns the stored error without a request.
     pub async fn hls(self, client: &Client) -> Streams {
         client
-            .hls_streams(self.manifest, self.board, self.duration)
+            .hls_streams(self.manifest, self.board, self.duration, self.live)
             .await
     }
 }
@@ -315,6 +316,11 @@ impl Client {
         self.no_shorts.store(hidden, Ordering::Relaxed);
     }
 
+    /// The stretches of `video` that SponsorBlock's viewers marked as paid or self-promoting.
+    pub async fn sponsors(&self, video: &str) -> Result<Vec<crate::Sponsor>> {
+        crate::sponsor::marked(&self.http, video).await
+    }
+
     /// Searches videos, channels and playlists together.
     pub async fn search(&self, query: &str) -> Result<Page<Found>> {
         let answer = self.call("search", json!({ "query": query })).await?;
@@ -445,6 +451,7 @@ impl Client {
                 hls_manifest(&answer),
                 parse::storyboard(&answer),
                 parse::duration(&answer),
+                parse::live(&answer),
             )
             .await)
     }
@@ -455,15 +462,18 @@ impl Client {
         let qualities = parse::mp4_qualities(&answer["streamingData"]["adaptiveFormats"]);
         let board = parse::storyboard(&answer);
         let duration = parse::duration(&answer);
+        let live = parse::live(&answer);
         Ok(ShortStreams {
             mp4: (!qualities.is_empty()).then(|| Streams {
                 qualities: Ok(qualities),
                 board: board.clone(),
                 duration,
+                live,
             }),
             manifest: hls_manifest(&answer),
             board,
             duration,
+            live,
         })
     }
 
@@ -481,6 +491,7 @@ impl Client {
         manifest: Result<String>,
         board: Option<Storyboard>,
         duration: Option<Duration>,
+        live: bool,
     ) -> Streams {
         let qualities = match manifest {
             Ok(list) => self.stream_qualities(list).await,
@@ -490,6 +501,7 @@ impl Client {
             qualities,
             board,
             duration,
+            live,
         }
     }
 
@@ -511,6 +523,36 @@ impl Client {
         let qualities = parse::qualities(&listed);
         ensure!(!qualities.is_empty(), "the stream list names no stream");
         Ok(qualities)
+    }
+
+    /// The cards a video ends on. The headset's player answer leaves them out, so they are read
+    /// from the watch page, asked for without the account.
+    pub async fn end_cards(&self, id: &str) -> Result<Vec<EndCard>> {
+        const OPENED: &str = "\"endscreen\":";
+        let response = self
+            .http
+            .get(crate::watch_url(id))
+            .header("User-Agent", USER_AGENT)
+            .header("Accept-Language", &self.language)
+            .send()
+            .await
+            .context("cannot reach youtube")?;
+        let status = response.status();
+        ensure!(status.is_success(), "youtube answered {status}");
+        let page = response
+            .text()
+            .await
+            .context("cannot read the watch page")?;
+        let Some(at) = page.find(OPENED) else {
+            return Ok(Vec::new());
+        };
+        // The page goes on after the end cards, so only the one value that opens here is read.
+        let endscreen = serde_json::Deserializer::from_str(&page[at + OPENED.len()..])
+            .into_iter::<Value>()
+            .next()
+            .context("the watch page ends inside its end cards")?
+            .context("cannot read the end cards")?;
+        Ok(parse::end_cards(&endscreen))
     }
 
     fn visitor(&self) -> Option<String> {

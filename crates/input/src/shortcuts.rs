@@ -8,10 +8,10 @@ use gpui::{Action, KeyBinding, Keystroke};
 use ui::{FORM_CONTEXT, INPUT_CONTEXT, MENU_CONTEXT, TABLE_CONTEXT};
 
 use crate::{
-    DecreaseFontSize, IncreaseFontSize, NavigateBack, NavigateForward, OpenFilter, OpenSearch,
-    OpenSettings, POWERBAR_CONTEXT, Refresh, ResetFontSize, SEARCH_CONTEXT, SeekBack, SeekForward,
-    ToggleFullscreen, TogglePlayback, TogglePowerbar, ToggleWindowFullscreen, VolumeDown, VolumeUp,
-    WORKSPACE_CONTEXT,
+    DecreaseFontSize, FrameBack, FrameForward, IncreaseFontSize, NavigateBack, NavigateForward,
+    OpenFilter, OpenSearch, OpenSettings, POWERBAR_CONTEXT, Refresh, ResetFontSize, SEARCH_CONTEXT,
+    SeekBack, SeekForward, ToggleFullscreen, TogglePlayback, TogglePowerbar,
+    ToggleWindowFullscreen, VolumeDown, VolumeUp, WORKSPACE_CONTEXT,
 };
 
 /// The modifiers that make a keystroke a command rather than typing. A key pressed without any
@@ -159,6 +159,24 @@ const SHORTCUTS: &[Shortcut] = &[
         scope: Scope::Browsing,
         bind: bind::<SeekForward>,
         defaults: &["right"],
+        mac: &[],
+    },
+    Shortcut {
+        id: "frame-back",
+        key: "keybind-frame-back",
+        section: Section::Playback,
+        scope: Scope::Browsing,
+        bind: bind::<FrameBack>,
+        defaults: &[",", "<"],
+        mac: &[],
+    },
+    Shortcut {
+        id: "frame-forward",
+        key: "keybind-frame-forward",
+        section: Section::Playback,
+        scope: Scope::Browsing,
+        bind: bind::<FrameForward>,
+        defaults: &[".", ">"],
         mac: &[],
     },
     Shortcut {

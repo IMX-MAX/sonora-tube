@@ -57,6 +57,7 @@ nav-history = History
 nav-home = Home
 nav-later = Watch later
 nav-discover = Find new videos
+nav-shorts = Shorts
 sidebar-expand = Expand sidebar
 sidebar-collapse = Collapse sidebar
 nav-search = Search

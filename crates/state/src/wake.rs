@@ -32,6 +32,8 @@ pub struct Wake {
     playback: Entity<Playback>,
     fullscreen: bool,
     focused: bool,
+    /// Whether a video is playing, which keeps the display on wherever it is shown.
+    watching: bool,
     applied: Want,
     #[cfg(target_os = "macos")]
     assertions: Assertions,
@@ -77,6 +79,7 @@ impl Wake {
             playback,
             fullscreen: false,
             focused: false,
+            watching: false,
             applied: Want::default(),
             #[cfg(target_os = "macos")]
             assertions: Assertions::default(),
@@ -97,6 +100,14 @@ impl Wake {
         self.apply(cx);
     }
 
+    /// Records whether a video is playing. One that is keeps the screen from dimming or locking.
+    pub fn set_watching(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.watching != on {
+            self.watching = on;
+            self.apply(cx);
+        }
+    }
+
     /// Works out what should be held now and hands it to the platform when it changed. Loading
     /// counts as playing only when play was asked for, so a track change or a rebuffer keeps
     /// the lock while a restored track loading paused at launch never takes it.
@@ -109,8 +120,8 @@ impl Wake {
                 _ => false,
             };
         let want = Want {
-            system: playing,
-            display: playing && self.fullscreen && self.focused,
+            system: playing || self.watching,
+            display: (playing && self.fullscreen && self.focused) || self.watching,
         };
         if want == self.applied {
             return;

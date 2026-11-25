@@ -95,7 +95,7 @@ impl Player {
             ("demuxer-lavf-probe-info", "nostreams"),
             ("cache", "yes"),
             // Read a little ahead of what plays rather than the whole video.
-            ("cache-secs", "30"),
+            ("cache-secs", "20"),
             ("demuxer-max-bytes", "32MiB"),
             ("demuxer-max-back-bytes", "8MiB"),
             ("ytdl-format", "bestvideo[height<=?1080]+bestaudio/best"),
@@ -104,6 +104,18 @@ impl Player {
             ("audio-client-name", "YouTube+"),
         ] {
             core.option(name, value)?;
+        }
+        // Frames are scaled and converted on the CPU, so the quick scaler is used: at the size a
+        // video is watched it looks the same and takes a fraction of the time. An mpv too old
+        // to know one of these plays without it.
+        for (name, value) in [
+            ("sws-allow-zimg", "no"),
+            ("sws-scaler", "fast-bilinear"),
+            ("sws-fast", "yes"),
+        ] {
+            if let Err(error) = core.option(name, value) {
+                log::warn!("video: cannot set {name}: {error:#}");
+            }
         }
         if let Some(bundled) = bundled_ytdl() {
             core.option("script-opts", &format!("ytdl_hook-ytdl_path={bundled}"))?;
@@ -219,6 +231,11 @@ impl Player {
         self.core.flag("pause").unwrap_or(false)
     }
 
+    /// Whether the video played to its end and stands on its last frame.
+    pub fn ended(&self) -> bool {
+        self.core.flag("eof-reached").unwrap_or(false)
+    }
+
     pub fn set_paused(&self, paused: bool) {
         let value = match paused {
             true => "yes",
@@ -246,6 +263,17 @@ impl Player {
             .command(&["seek", &seconds.to_string(), "relative"])
         {
             log::warn!("video: cannot seek: {error:#}");
+        }
+    }
+
+    /// Shows the next frame, or the one before, and pauses on it.
+    pub fn step_frame(&self, forward: bool) {
+        let command = match forward {
+            true => "frame-step",
+            false => "frame-back-step",
+        };
+        if let Err(error) = self.core.command(&[command]) {
+            log::warn!("video: cannot step a frame: {error:#}");
         }
     }
 

@@ -11,8 +11,9 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
 
 use crate::{
-    Caption, Channel, ChannelPage, ChannelRef, Comment, Comments, Found, Identity, Line, Page,
-    Playlist, PlaylistPage, Post, Quality, Section, Storyboard, Tab, Video, Watch,
+    Caption, Channel, ChannelPage, ChannelRef, Comment, Comments, EndCard, EndTarget, Found,
+    Identity, Line, Page, Playlist, PlaylistPage, Post, Quality, Section, Storyboard, Tab, Video,
+    Watch,
 };
 
 /// Containers whose contents are never listed: ads, the side card of a search and the chapter
@@ -161,13 +162,20 @@ pub(crate) fn watch(id: &str, answer: &Value) -> Result<Watch> {
     })
 }
 
+/// Whether the player response describes a broadcast that is live right now.
+pub(crate) fn live(player: &Value) -> bool {
+    player["videoDetails"]["isLive"].as_bool() == Some(true)
+}
+
 /// The whole-second duration YouTube publishes, rather than the length of a media rendition.
 pub(crate) fn duration(player: &Value) -> Option<Duration> {
-    let details = &player["videoDetails"];
-    if details["isLive"].as_bool() == Some(true) {
+    if live(player) {
         return None;
     }
-    let seconds = details["lengthSeconds"].as_str()?.parse::<u64>().ok()?;
+    let seconds = player["videoDetails"]["lengthSeconds"]
+        .as_str()?
+        .parse::<u64>()
+        .ok()?;
     (seconds > 0).then(|| Duration::from_secs(seconds))
 }
 
@@ -769,8 +777,21 @@ fn short(node: &Value) -> Option<Video> {
             .or_else(|| first(&node["thumbnailViewModel"], "url"))
             .and_then(Value::as_str)
             .map(str::to_owned),
+        live: false,
         ..Video::default()
     })
+}
+
+/// Whether a listed video carries one of the marks YouTube puts on a live broadcast.
+fn live(node: &Value) -> bool {
+    const MARKS: [&str; 3] = [
+        "\"BADGE_STYLE_TYPE_LIVE_NOW\"",
+        "\"THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE\"",
+        "\"style\":\"LIVE\"",
+    ];
+    // The marks sit at different depths in each renderer, so the node is searched as text.
+    let written = node.to_string();
+    MARKS.iter().any(|mark| written.contains(mark))
 }
 
 /// A video from the older renderers, which name each field.
@@ -796,6 +817,7 @@ fn video(node: &Value) -> Option<Video> {
             .or_else(|| text(&node["descriptionSnippet"])),
         avatar: first(&node["channelThumbnailSupportedRenderers"], "thumbnail").and_then(thumbnail),
         still: None,
+        live: live(node),
     })
 }
 
@@ -832,6 +854,7 @@ fn lockup(node: &Value) -> Option<Found> {
                 snippet: None,
                 avatar: None,
                 still: None,
+                live: live(&node["contentImage"]),
             }))
         }
         "LOCKUP_CONTENT_TYPE_PLAYLIST" | "LOCKUP_CONTENT_TYPE_PODCAST" => {
@@ -854,6 +877,45 @@ fn is_video(id: &str) -> bool {
         && id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// The end cards of a video, from the `endscreen` of a player answer. A card that leads off
+/// YouTube is left out.
+pub(crate) fn end_cards(endscreen: &Value) -> Vec<EndCard> {
+    let Some(elements) = endscreen["endscreenRenderer"]["elements"].as_array() else {
+        return Vec::new();
+    };
+    elements
+        .iter()
+        .filter_map(|element| {
+            let card = &element["endscreenElementRenderer"];
+            let endpoint = &card["endpoint"];
+            let target = match card["style"].as_str()? {
+                "VIDEO" => EndTarget::Video(string(&endpoint["watchEndpoint"]["videoId"])?),
+                "PLAYLIST" => {
+                    EndTarget::Playlist(string(&endpoint["watchEndpoint"]["playlistId"])?)
+                }
+                "CHANNEL" => EndTarget::Channel(string(&endpoint["browseEndpoint"]["browseId"])?),
+                _ => return None,
+            };
+            let share = |name: &str| card[name].as_f64().map(|share| share as f32);
+            let moment = |name: &str| {
+                let written = card[name].as_str()?.parse::<f64>().ok()?;
+                Some(written / 1000.)
+            };
+            Some(EndCard {
+                target,
+                title: text(&card["title"]).unwrap_or_default(),
+                image: thumbnail(&card["image"]),
+                left: share("left")?,
+                top: share("top")?,
+                width: share("width")?,
+                aspect: share("aspectRatio").filter(|aspect| *aspect > 0.)?,
+                start: moment("startMs")?,
+                end: moment("endMs")?,
+            })
+        })
+        .collect()
 }
 
 /// The sheets of preview pictures a player answer names, at the size a seek bar shows.

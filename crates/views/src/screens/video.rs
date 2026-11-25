@@ -19,7 +19,7 @@ use gpui::{
 };
 use i18n::t;
 use router::{Destination, navigate};
-use state::{Outcome, Subscriptions, Toasts, VideoList, VideoSearch, Watching};
+use state::{Outcome, SponsorNotice, Subscriptions, Toasts, VideoList, VideoSearch, Watching};
 use tube::{Channel, Comment, Found, Playlist, Post, Tab, Video};
 use ui::{
     ActiveTheme as _, Artwork, Avatar, Button, Input, Menu, MenuItem, Motion, Popup, Room,
@@ -35,6 +35,8 @@ use crate::shared::trouble;
 
 const CHANNEL_ICON: &str = "icons/user.svg";
 /// How far the unplayed stretch of the seek bar leans from the played colour to the page behind.
+/// How many seconds behind a live broadcast the picture is before the way back is offered.
+const LIVE_BEHIND: f64 = 15.;
 const UNPLAYED: f32 = 0.62;
 const PLAYLIST_ICON: &str = "icons/list.svg";
 /// The narrowest a video tile gets before the grid drops a column.
@@ -45,6 +47,10 @@ const SHORT_MIN: Pixels = px(168.);
 const SHORT_MAX: Pixels = px(520.);
 /// How long a turn of the wheel over a Short is deaf to the next, so one flick steps once.
 const STEP_REST: Duration = Duration::from_millis(450);
+/// How many windows' height ahead of the foot of a list its next stretch is fetched.
+const AHEAD: f32 = 2.;
+/// How much of its height a Short slides in by when stepped to.
+const SHORT_SLIDE: f32 = 0.35;
 /// How dark the foot of a Short's picture goes behind its title.
 const SHORT_SHADE: f32 = 0.7;
 /// How wide the picture and the text under it may grow on the watch page.
@@ -591,7 +597,10 @@ fn video_tile(
         id,
         Card {
             picture,
-            badge: video.length.clone().map(Into::into),
+            badge: match video.live {
+                true => Some(t!("video-live")),
+                false => video.length.clone().map(Into::into),
+            },
             title: &video.title,
             lines,
             corner: Some(later(scope, video, kept, cx)),
@@ -774,9 +783,13 @@ fn video_row(
                 .when_some(kept.read(cx).progress(&video.id), |this, watched| {
                     this.child(watched_bar(picture, watched, cx))
                 })
-                .when_some(video.length.clone(), |this, length| {
-                    this.child(length_badge(length.into(), cx))
-                })
+                .when_some(
+                    match video.live {
+                        true => Some(t!("video-live")),
+                        false => video.length.clone().map(Into::into),
+                    },
+                    |this, length| this.child(length_badge(length, cx)),
+                )
                 .child(later(scope, video, kept, cx)),
         )
         .child(
@@ -966,14 +979,50 @@ fn waiting(id: &'static str) -> impl IntoElement {
         .child(Spinner::new(id))
 }
 
-/// The button under a list that fetches its next stretch.
+/// On the page of a Short, goes to the one `by` places on, and says whether that page is up.
+pub(crate) fn step_short(by: isize, cx: &mut App) -> bool {
+    let current = router::trail(cx).read(cx).current();
+    let Some(stepped) = cx.try_global::<Stepped>() else {
+        return false;
+    };
+    if !matches!(current, Destination::Short(_)) {
+        return false;
+    }
+    let beside = stepped.0.read(cx).beside(by).map(|short| short.id.clone());
+    if let Some(id) = beside {
+        router::replace(Destination::Short(id.into()), cx);
+    }
+    true
+}
+
+/// The foot of a list with more to it: the next stretch is fetched once scrolling brings the
+/// foot within [`AHEAD`] windows of sight, and the button fetches it for whoever does not scroll.
 fn more(id: &'static str, on_click: impl Fn(&mut App) + 'static) -> impl IntoElement {
-    div().flex().w_full().justify_center().child(
-        Button::new(id)
-            .label(t!("video-more"))
-            .secondary()
-            .on_click(move |_, _, cx| on_click(cx)),
-    )
+    let on_click = Rc::new(on_click);
+    let reached = on_click.clone();
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .w_full()
+        .child(
+            gpui::canvas(
+                move |bounds, window, cx| {
+                    if bounds.top() < window.viewport_size().height * AHEAD {
+                        cx.defer(move |cx| reached(cx));
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .w_full()
+            .h_px(),
+        )
+        .child(
+            Button::new(id)
+                .label(t!("video-more"))
+                .secondary()
+                .on_click(move |_, _, cx| on_click(cx)),
+        )
 }
 
 /// The button that subscribes to a channel, or drops the subscription it already has.
@@ -1313,6 +1362,11 @@ pub(crate) struct WatchView {
     /// Whether the full screen controls were last drawn light, over a dark picture.
     /// When the wheel last stepped to another Short.
     stepped: Option<Instant>,
+    /// The Short last drawn, how many were stepped to since the page opened, and whether the
+    /// last step went on down the list, which is the way the next one slides in from.
+    shown: Option<String>,
+    slides: usize,
+    onward: bool,
     /// Which page of the side panel shows: the transcript, the chapters or the AI chat.
     panel: Panel,
     /// The field a question to the AI is written in.
@@ -1403,6 +1457,9 @@ impl WatchView {
             entered: false,
             stirred: None,
             stepped: None,
+            shown: None,
+            slides: 0,
+            onward: true,
             panel: Panel::Transcript,
             query,
             chat_scroll: ScrollHandle::new(),
@@ -1595,6 +1652,13 @@ impl WatchView {
                     stage.when_some(view.filter(|_| !buffering), |this, view| this.child(view))
                 }
             })
+            .children(
+                (!floating)
+                    .then(|| self.end_cards(room, cx))
+                    .into_iter()
+                    .flatten(),
+            )
+            .children((!floating).then(|| self.sponsor_notice(cx)).flatten())
             .when(hurried, |this| {
                 this.child(
                     div()
@@ -1665,6 +1729,218 @@ impl WatchView {
                         ),
                 )
             })
+    }
+
+    /// The mark a live broadcast has where a video has its length: a dot and "Live" at its
+    /// newest moment, and a way back to it once the viewer has fallen behind.
+    fn live_mark(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let behind = self
+            .watching
+            .read(cx)
+            .behind_live()
+            .is_some_and(|behind| behind > LIVE_BEHIND);
+        let name = match behind {
+            true => t!("video-go-live"),
+            false => t!("video-live"),
+        };
+        let watching = self.watching.clone();
+        div()
+            .id("video-live")
+            .role(Role::Button)
+            .aria_label(name.clone())
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1p5()
+            .px_2()
+            .py_0p5()
+            .rounded(theme.radius)
+            .text_size(theme.text(Text::Small))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(match behind {
+                true => theme.muted_foreground,
+                false => theme.foreground,
+            })
+            .cursor_pointer()
+            .hover(|this| this.bg(theme.secondary_hover))
+            .child(
+                div()
+                    .size(theme.metrics.pad / 2.)
+                    .rounded_full()
+                    .bg(match behind {
+                        true => theme.muted_foreground,
+                        false => theme.danger,
+                    }),
+            )
+            .child(name)
+            .on_click(move |_, _, cx| {
+                watching.update(cx, |watching, cx| watching.go_live(cx));
+            })
+            .into_any_element()
+    }
+
+    /// The small card in the picture's corner that says a sponsored stretch is about to be
+    /// skipped, or just was, and lets the viewer watch it anyway.
+    fn sponsor_notice(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let theme = cx.theme();
+        let notice = self.watching.read(cx).sponsor_notice(cx)?;
+        let (sponsor, text) = match notice {
+            SponsorNotice::Coming(sponsor, left) => (
+                sponsor,
+                t!("video-sponsor-coming", seconds = left.ceil() as i64),
+            ),
+            SponsorNotice::Skipped(sponsor) => (sponsor, t!("video-sponsor-skipped")),
+        };
+        let text = match sponsor.ai {
+            true => t!("video-sponsor-ai", notice = text.to_string()),
+            false => text,
+        };
+        let watching = self.watching.clone();
+        Some(
+            div()
+                .id("video-sponsor-notice")
+                .absolute()
+                .right(theme.metrics.pad)
+                .bottom(theme.metrics.pad)
+                .flex()
+                .items_center()
+                .gap_2()
+                .pl_3()
+                .pr_1()
+                .py_1()
+                .rounded(theme.radius)
+                .bg(theme.overlay)
+                .text_size(theme.text(Text::Small))
+                .text_color(theme.overlay_foreground)
+                .occlude()
+                // A press on the card is not a press on the picture under it.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(text)
+                .child(
+                    Button::new("video-sponsor-watch")
+                        .label(t!("video-sponsor-watch"))
+                        .ghost()
+                        .small()
+                        .tint(theme.overlay_foreground)
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            watching.update(cx, |watching, cx| watching.watch_sponsor(sponsor, cx));
+                        }),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The cards the video ends on that are due now, each where its maker laid it over the
+    /// picture and opening what it points at when pressed.
+    fn end_cards(&self, room: Size<Pixels>, cx: &Context<Self>) -> Vec<AnyElement> {
+        let theme = cx.theme();
+        let watching = self.watching.read(cx);
+        let Some(at) = watching.player().and_then(|player| player.position()) else {
+            return Vec::new();
+        };
+        // The cards are placed on the picture, which is narrower or shorter than its room when
+        // the two differ in shape.
+        let shape = watching
+            .player()
+            .and_then(|player| player.frame())
+            .map(|frame| frame.size(0))
+            .filter(|size| size.height.0 > 0)
+            .map_or(room.width / room.height, |size| {
+                size.width.0 as f32 / size.height.0 as f32
+            });
+        let picture = match shape > room.width / room.height {
+            true => size(room.width, room.width / shape),
+            false => size(room.height * shape, room.height),
+        };
+        let (left, top) = (
+            (room.width - picture.width) / 2.,
+            (room.height - picture.height) / 2.,
+        );
+        let cards = watching.cards();
+        let count = cards.len();
+        cards
+            .iter()
+            .enumerate()
+            .filter(|(_, card)| card.start <= at && at < card.end)
+            .map(|(place, card)| {
+                let width = picture.width * card.width;
+                let height = width / card.aspect;
+                let round = matches!(card.target, tube::EndTarget::Channel(_));
+                let name = SharedString::from(card.title.clone());
+                let target = card.target.clone();
+                div()
+                    .id(("video-end-card", place))
+                    .role(Role::Link)
+                    .aria_label(name.clone())
+                    .aria_position_in_set(place + 1)
+                    .aria_size_of_set(count)
+                    .absolute()
+                    .left(left + picture.width * card.left)
+                    .top(top + picture.height * card.top)
+                    .w(width)
+                    .h(height)
+                    .overflow_hidden()
+                    .map(|this| match round {
+                        true => this.rounded_full(),
+                        false => this.rounded(theme.radius).corner_smoothing(theme.smoothing),
+                    })
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.overlay)
+                    .cursor_pointer()
+                    // A press on a card is not one on the picture, which would pause the video.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        navigate(
+                            match &target {
+                                tube::EndTarget::Video(id) => Destination::Watch(id.clone().into()),
+                                tube::EndTarget::Playlist(id) => {
+                                    Destination::Videos(id.clone().into())
+                                }
+                                tube::EndTarget::Channel(id) => {
+                                    Destination::Channel(id.clone().into())
+                                }
+                            },
+                            cx,
+                        );
+                    })
+                    .when_some(card.image.clone(), |this, image| {
+                        this.child(
+                            // A frame does not cut its picture's corners, so the picture is
+                            // rounded as the frame is.
+                            gpui::img(SharedString::from(image))
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Cover)
+                                .map(|this| match round {
+                                    true => this.rounded_full(),
+                                    false => this.rounded(theme.radius),
+                                }),
+                        )
+                    })
+                    .when(!round && !card.title.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .px_2()
+                                .py_1()
+                                .rounded_b(theme.radius)
+                                .bg(theme.overlay)
+                                .text_size(theme.text(Text::Small))
+                                .text_color(theme.overlay_foreground)
+                                .truncate()
+                                .child(name),
+                        )
+                    })
+                    .into_any_element()
+            })
+            .collect()
     }
 
     /// The picture of the moment under the pointer and its time, standing over the seek bar.
@@ -2333,7 +2609,10 @@ impl WatchView {
                         )
                     }),
             )
-            .child(time(ends))
+            .child(match watching.live() {
+                true => self.live_mark(cx),
+                false => time(ends).into_any_element(),
+            })
             .children(self.chapter_now(position, cx))
             .child(div().flex_1())
             .child(tray)
@@ -2379,6 +2658,13 @@ impl WatchView {
                     .child(
                         Scrubber::new(&self.seek, fraction)
                             .cuts(cuts)
+                            // The stretch an answer pointed at stands out until it has played.
+                            .ranges(
+                                self.watching.read(cx).pointed().filter(|_| total > 0.).map(
+                                    |(start, end)| ((start / total) as f32, (end / total) as f32),
+                                ),
+                                theme.selection,
+                            )
                             .name(t!("video-position"))
                             .value(elapsed)
                             .colors(
@@ -2761,6 +3047,16 @@ impl WatchView {
         }
 
         let watching = self.watching.read(cx);
+        let now = watching.id().map(str::to_owned);
+        if now != self.shown {
+            let place = |id: &Option<String>| id.as_deref().and_then(|id| watching.reel_place(id));
+            if let (Some(from), Some(to)) = (place(&self.shown), place(&now)) {
+                self.onward = to > from;
+                self.slides += 1;
+            }
+            self.shown = now;
+        }
+        let (slides, onward) = (self.slides, self.onward);
         let player = watching.player();
         let position = player.and_then(|player| player.position()).unwrap_or(0.);
         let total = player.and_then(|player| player.duration()).unwrap_or(0.);
@@ -3031,14 +3327,28 @@ impl WatchView {
                                     cx,
                                 )),
                         ),
-                        None => this.child(
-                            div()
+                        None => {
+                            let short = div()
+                                .relative()
                                 .flex()
                                 .flex_col()
                                 .flex_none()
                                 .child(picture)
-                                .child(bar),
-                        ),
+                                .child(bar);
+                            let from = stage.height
+                                * match onward {
+                                    true => SHORT_SLIDE,
+                                    false => -SHORT_SLIDE,
+                                };
+                            match slides > 0 && ui::motion::animates(cx) {
+                                true => this.child(short.with_animation(
+                                    ("video-short-slide", slides),
+                                    Motion::Base.animation(),
+                                    move |this, t| this.top(from * (1. - t)).opacity(t),
+                                )),
+                                false => this.child(short),
+                            }
+                        }
                     })
                     .child(div().flex().flex_col().h(stage.height + foot).child(rail))
                     .when(beside, |this| {
@@ -3414,55 +3724,93 @@ impl WatchView {
                     // Everyone else a video made together is credited to, each with its own
                     // way to its channel and to following it.
                     let count = watch.partners.len();
-                    this.child(div().flex().flex_wrap().items_center().gap_4().children(
-                        watch.partners.iter().enumerate().map(|(place, partner)| {
-                            let name = SharedString::from(partner.name.clone());
-                            let opened = SharedString::from(partner.id.clone());
+                    let together = div()
+                        .text_size(theme.text(Text::Small))
+                        .text_color(theme.muted_foreground)
+                        .child(t!("video-partners", count = count));
+                    let credited = div()
+                        .p(theme.metrics.pad)
+                        .rounded(theme.radius)
+                        .corner_smoothing(theme.smoothing)
+                        .bg(theme.secondary)
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(together);
+                    this.child(
+                        credited.child(
                             div()
-                                .id(SharedString::from(format!("video-partner-{}", partner.id)))
-                                .role(Role::Link)
-                                .aria_label(name.clone())
-                                .aria_position_in_set(place + 1)
-                                .aria_size_of_set(count)
                                 .flex()
+                                .flex_wrap()
                                 .items_center()
-                                .gap_3()
-                                .cursor_pointer()
-                                .on_click(move |_, _, cx| {
-                                    navigate(Destination::Channel(opened.clone()), cx);
-                                })
-                                .child(
-                                    Avatar::new(partner.avatar.clone()).size(theme.metrics.control),
-                                )
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .child(
-                                            div()
-                                                .text_size(theme.text(Text::Label))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .child(name),
-                                        )
-                                        .when_some(partner.subscribers.clone(), |this, count| {
-                                            this.child(
-                                                div()
-                                                    .text_size(theme.text(Text::Small))
-                                                    .text_color(theme.muted_foreground)
-                                                    .child(count),
+                                .gap_x_6()
+                                .gap_y_3()
+                                .children(watch.partners.iter().enumerate().map(
+                                    |(place, partner)| {
+                                        let name = SharedString::from(partner.name.clone());
+                                        let opened = SharedString::from(partner.id.clone());
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "video-partner-{}",
+                                                partner.id
+                                            )))
+                                            .role(Role::Link)
+                                            .aria_label(name.clone())
+                                            .aria_position_in_set(place + 1)
+                                            .aria_size_of_set(count)
+                                            .flex()
+                                            .items_center()
+                                            .gap_3()
+                                            .cursor_pointer()
+                                            .on_click(move |_, _, cx| {
+                                                navigate(Destination::Channel(opened.clone()), cx);
+                                            })
+                                            .child(
+                                                Avatar::new(partner.avatar.clone())
+                                                    .size(theme.metrics.control),
                                             )
-                                        }),
-                                )
-                                .child(subscribe(
-                                    gpui::ElementId::Name(
-                                        format!("video-partner-subscribe-{}", partner.id).into(),
-                                    ),
-                                    partner,
-                                    &self.subscriptions,
-                                    cx,
-                                ))
-                        }),
-                    ))
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .child(
+                                                        div()
+                                                            .text_size(theme.text(Text::Label))
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .child(name),
+                                                    )
+                                                    .when_some(
+                                                        partner.subscribers.clone(),
+                                                        |this, count| {
+                                                            this.child(
+                                                                div()
+                                                                    .text_size(
+                                                                        theme.text(Text::Small),
+                                                                    )
+                                                                    .text_color(
+                                                                        theme.muted_foreground,
+                                                                    )
+                                                                    .child(count),
+                                                            )
+                                                        },
+                                                    ),
+                                            )
+                                            .child(subscribe(
+                                                gpui::ElementId::Name(
+                                                    format!(
+                                                        "video-partner-subscribe-{}",
+                                                        partner.id
+                                                    )
+                                                    .into(),
+                                                ),
+                                                partner,
+                                                &self.subscriptions,
+                                                cx,
+                                            ))
+                                    },
+                                )),
+                        ),
+                    )
                 })
                 .when(!watch.description.is_empty(), |this| {
                     this.child(
@@ -3524,7 +3872,7 @@ impl WatchView {
             .id(SharedString::from(format!("video-comment-{}", comment.id)))
             .role(Role::Comment)
             .aria_label(byline.clone())
-            .aria_description(text.clone())
+            .aria_description(text)
             .aria_position_in_set(place.0 + 1)
             .aria_size_of_set(place.1)
             .flex()
@@ -3555,7 +3903,21 @@ impl WatchView {
                             .text_color(theme.muted_foreground)
                             .child(byline),
                     )
-                    .child(div().text_size(theme.text(Text::Label)).child(text))
+                    .child(div().text_size(theme.text(Text::Label)).child({
+                        // The moments a comment names seek the video, as an answer's do.
+                        let mut key = std::hash::DefaultHasher::new();
+                        std::hash::Hash::hash(&comment.id, &mut key);
+                        let mut pen = ai::Pen {
+                            theme: *theme,
+                            watching: self.watching.clone(),
+                            place: std::hash::Hasher::finish(&key) as usize,
+                            drawn: 0,
+                        };
+                        pen.line(&markdown::Rich {
+                            text: comment.text.clone(),
+                            looks: Vec::new(),
+                        })
+                    }))
                     .child(
                         div()
                             .flex()
@@ -4577,6 +4939,8 @@ pub(crate) enum Feed {
     Later,
     /// Videos from channels not followed, picked from what was watched.
     Discover,
+    /// The Shorts gathered from the followed channels and a search.
+    Shorts,
 }
 
 /// The home page and the watch history: a heading and a grid of videos.
@@ -4772,14 +5136,40 @@ impl Render for VideoFeedView {
                 t!("video-discover-empty"),
                 kept.found(),
             ),
+            Feed::Shorts => (
+                "shorts",
+                t!("video-shorts"),
+                t!("video-shorts-empty"),
+                kept.shorts(),
+            ),
         };
         let home = self.feed == Feed::Subscriptions;
         let loading = match self.feed {
             Feed::Discover => kept.is_finding(),
+            Feed::Shorts => kept.is_gathering(),
             _ => home && kept.is_loading(),
         };
+        let mut opened = None;
+        if self.feed == Feed::Shorts
+            && matches!(router::trail(cx).read(cx).current(), Destination::Shorts)
+            && let Some(stepped) = cx.try_global::<Stepped>()
+        {
+            // The row in the sidebar opens a Short itself: the one left off at, or the first.
+            let watching = stepped.0.clone();
+            let playing = stepped.0.read(cx);
+            let first = playing
+                .id()
+                .filter(|id| playing.short() && videos.iter().any(|short| short.id == *id))
+                .or_else(|| videos.first().map(|short| short.id.as_str()))
+                .map(|id| SharedString::from(id.to_owned()));
+            opened = first.map(|first| (watching, first));
+        }
         let (videos, reel) = sorted(videos);
-        let shorts = shorts_shelf(kind, &reel, self.width, ShortsLayout::Preview, cx);
+        let layout = match self.feed {
+            Feed::Shorts => ShortsLayout::Tab,
+            _ => ShortsLayout::Preview,
+        };
+        let shorts = shorts_shelf(kind, &reel, self.width, layout, cx);
         let total = videos.len() + reel.len();
         let listed = videos.len();
         let cards: Vec<AnyElement> = videos
@@ -4790,6 +5180,15 @@ impl Render for VideoFeedView {
             })
             .collect();
         let empty = total == 0 && !loading && (!home || kept.recommended().is_empty());
+        if let Some((watching, first)) = opened {
+            cx.defer(move |cx| {
+                if !matches!(router::trail(cx).read(cx).current(), Destination::Shorts) {
+                    return;
+                }
+                watching.update(cx, |watching, cx| watching.set_endless_reel(cx));
+                router::up(Destination::Short(first), cx);
+            });
+        }
         if self.feed == Feed::Discover && !loading && (1..FOUND_MOST).contains(&total) {
             // Near the foot of the page more are looked for, next to the ones found.
             let scroll = self.scrollbar.read(cx).scroll().clone();
@@ -4821,6 +5220,19 @@ impl Render for VideoFeedView {
                     })
                     .into_any_element(),
             ),
+            Feed::Shorts if !loading => {
+                let again = self.subscriptions.clone();
+                Some(
+                    Button::new("video-shorts-again")
+                        .icon("icons/refresh-cw.svg")
+                        .label(t!("video-discover-again"))
+                        .secondary()
+                        .on_click(move |_, _, cx| {
+                            again.update(cx, |kept, cx| kept.gather_again(cx));
+                        })
+                        .into_any_element(),
+                )
+            }
             _ => None,
         };
 
