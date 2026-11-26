@@ -3179,6 +3179,31 @@ const FIND_PER_CHANNEL: usize = 2;
 const FIND_FADE: f32 = 0.85;
 /// How much less a video counts when its channel was watched before, since it is not new.
 const FIND_KNOWN: f32 = 0.4;
+/// How much a video asked for more of, and a liked one, count as a seed beside one watched.
+const FIND_MORE: f32 = 2.;
+const FIND_LIKED: f32 = 1.5;
+/// How many videos asked for more of and how many liked ones are looked beside.
+const FIND_MORE_SEEDS: usize = 6;
+const FIND_LIKED_SEEDS: usize = 4;
+/// How much a video watched only briefly still counts as a seed.
+const FIND_GLANCED: f32 = 0.4;
+/// How many seeds there have to be before the followed channels' uploads fill in for them,
+/// and how much such an upload counts.
+const FIND_FEW: usize = 4;
+const FIND_FILLED: f32 = 0.6;
+/// How much more a video counts when more of its channel was asked for, and how much less
+/// for each video of its channel that was turned down.
+const FIND_FAVOURED: f32 = 1.5;
+const FIND_SPURNED: f32 = 0.5;
+/// How much each word of a title counts that was in titles asked for more of or turned
+/// down, how many such words are counted, and how short a word is passed over.
+const FIND_WORD_LIKED: f32 = 0.2;
+const FIND_WORD_SPURNED: f32 = 0.75;
+const FIND_WORDS: usize = 3;
+const FIND_WORD_LEAST: usize = 4;
+/// How many videos asked for more of and how many turned down are remembered.
+const TASTES_MORE: usize = 40;
+const TASTES_PASSED: usize = 500;
 
 /// The file the first profile is kept in, the folder of the others and the file naming the
 /// one in use.
@@ -3250,6 +3275,15 @@ struct Kept {
     /// The channels that came from the YouTube account rather than from following them here.
     #[serde(default)]
     synced: Vec<String>,
+    /// The videos more like which were asked for, the latest first.
+    #[serde(default)]
+    more: Vec<Video>,
+    /// The videos turned down as not interesting, the latest first.
+    #[serde(default)]
+    passed: Vec<Video>,
+    /// The channels nothing is to be suggested from.
+    #[serde(default)]
+    muted: Vec<tube::ChannelRef>,
 }
 
 /// The channels the user follows, the feed of their newest uploads and the videos watched, for
@@ -3279,6 +3313,9 @@ pub struct Subscriptions {
     find: Option<Task<()>>,
     /// What YouTube's home page recommends to the signed-in account.
     recommended: Vec<Video>,
+    /// Everything YouTube recommended, the videos turned down among it, so taking a choice
+    /// back can show them again.
+    offered: Vec<Video>,
     syncing: Option<Task<()>>,
     /// The Shorts gathered for the Shorts page, and whether they were asked for yet.
     shorts: Vec<Video>,
@@ -3362,6 +3399,7 @@ impl Subscriptions {
             finding: false,
             find: None,
             recommended: Vec::new(),
+            offered: Vec::new(),
             syncing: None,
         }
     }
@@ -3481,6 +3519,7 @@ impl Subscriptions {
             return self.load(cx);
         }
         self.recommended.clear();
+        self.offered.clear();
         self.syncing = None;
         cx.notify();
         if !self.client.signed_in() {
@@ -3499,7 +3538,10 @@ impl Subscriptions {
                     return;
                 };
                 match recommended {
-                    Ok(page) => this.recommended = page.items,
+                    Ok(page) => {
+                        this.offered = page.items;
+                        this.drop_unwanted();
+                    }
                     Err(error) => log::warn!("video: cannot read the recommendations: {error:#}"),
                 }
                 match channels {
@@ -3685,21 +3727,164 @@ impl Subscriptions {
 
     /// Picks the videos to find unless they are picked for the history as it stands.
     pub fn find(&mut self, cx: &mut Context<Self>) {
+        // The followed channels' uploads fill in for a short history, so they are fetched.
+        self.open(cx);
         if !self.finding && self.found_for != Some(self.kept.watched.len()) {
             self.find_again(cx);
         }
     }
 
-    /// Picks the videos to find afresh: what YouTube puts next to the latest videos watched,
-    /// ranked by how many of them it sits next to and how lately they were watched.
-    pub fn find_again(&mut self, cx: &mut Context<Self>) {
-        let seeds: Vec<String> = self
+    /// The videos new ones are looked for beside, each with how much it counts: the ones more
+    /// was asked of first, then the latest watched, counting for less the further back and
+    /// the less of them was watched, then the latest liked. With few of those, the newest
+    /// uploads of the followed channels fill in.
+    fn seeds(&self) -> Vec<(String, f32)> {
+        let mut seeds: Vec<(String, f32)> = Vec::new();
+        let add = |seeds: &mut Vec<(String, f32)>, id: &str, weight: f32| {
+            // A video that counts twice, as watched and liked, counts as the stronger.
+            match seeds.iter_mut().find(|(held, _)| held == id) {
+                Some((_, held)) => *held = held.max(weight),
+                None => seeds.push((id.to_owned(), weight)),
+            }
+        };
+        for video in self.kept.more.iter().take(FIND_MORE_SEEDS) {
+            add(&mut seeds, &video.id, FIND_MORE);
+        }
+        let turned_down = |id: &str| self.kept.passed.iter().any(|passed| passed.id == id);
+        let watched = self
             .kept
             .watched
             .iter()
-            .take(FIND_SEEDS)
-            .map(|video| video.id.clone())
+            .filter(|video| !turned_down(&video.id))
+            .take(FIND_SEEDS);
+        for (place, video) in watched.enumerate() {
+            // A video left early says less about what is liked than one seen through.
+            let seen = match self.kept.places.get(&video.id) {
+                Some((at, length)) if *length > 0. => {
+                    let part = (at / length).clamp(0., 1.) as f32;
+                    FIND_GLANCED + (1. - FIND_GLANCED) * part
+                }
+                _ => 1.,
+            };
+            add(&mut seeds, &video.id, FIND_FADE.powi(place as i32) * seen);
+        }
+        let liked = self.kept.liked.iter().filter(|id| !turned_down(id));
+        for id in liked.take(FIND_LIKED_SEEDS) {
+            add(&mut seeds, id, FIND_LIKED);
+        }
+        if seeds.len() < FIND_FEW {
+            let uploads = self.feed.iter().filter(|video| !turned_down(&video.id));
+            for video in uploads.take(FIND_SEEDS) {
+                add(&mut seeds, &video.id, FIND_FILLED);
+            }
+        }
+        seeds
+    }
+
+    /// Whether more like the video was asked for.
+    pub fn wants_more(&self, video: &str) -> bool {
+        self.kept.more.iter().any(|kept| kept.id == video)
+    }
+
+    /// Whether the video was turned down as not interesting.
+    pub fn passed(&self, video: &str) -> bool {
+        self.kept.passed.iter().any(|kept| kept.id == video)
+    }
+
+    /// Whether nothing is to be suggested from the channel.
+    pub fn muted(&self, channel: &str) -> bool {
+        self.kept.muted.iter().any(|kept| kept.id == channel)
+    }
+
+    /// How many choices the suggestions have learned from, so a reset can be offered.
+    pub fn learned(&self) -> usize {
+        self.kept.more.len() + self.kept.passed.len() + self.kept.muted.len()
+    }
+
+    /// The channels videos were watched from, by which a video's channel counts as known.
+    pub fn known(&self) -> std::collections::HashSet<&str> {
+        self.kept
+            .watched
+            .iter()
+            .filter_map(|video| video.channel.as_ref())
+            .map(|channel| channel.id.as_str())
+            .collect()
+    }
+
+    /// Asks for more like the video, or takes that back, and picks the videos to find again.
+    pub fn toggle_more(&mut self, video: &Video, cx: &mut Context<Self>) {
+        match self.wants_more(&video.id) {
+            true => self.kept.more.retain(|kept| kept.id != video.id),
+            false => {
+                self.kept.passed.retain(|kept| kept.id != video.id);
+                self.kept.more.insert(0, video.clone());
+                self.kept.more.truncate(TASTES_MORE);
+            }
+        }
+        self.save();
+        self.find_again(cx);
+    }
+
+    /// Turns the video down as not interesting, which takes it out of what is suggested and
+    /// counts against its channel and the words of its title, or takes that back.
+    pub fn toggle_passed(&mut self, video: &Video, cx: &mut Context<Self>) {
+        match self.passed(&video.id) {
+            true => self.kept.passed.retain(|kept| kept.id != video.id),
+            false => {
+                self.kept.more.retain(|kept| kept.id != video.id);
+                self.kept.passed.insert(0, video.clone());
+                self.kept.passed.truncate(TASTES_PASSED);
+            }
+        }
+        self.drop_unwanted();
+        self.save();
+        cx.notify();
+    }
+
+    /// Stops suggesting anything from the channel, or lets it be suggested again.
+    pub fn toggle_muted(&mut self, channel: &tube::ChannelRef, cx: &mut Context<Self>) {
+        match self.muted(&channel.id) {
+            true => self.kept.muted.retain(|kept| kept.id != channel.id),
+            false => self.kept.muted.push(channel.clone()),
+        }
+        self.drop_unwanted();
+        self.save();
+        cx.notify();
+    }
+
+    /// Forgets every choice the suggestions learned from and picks the videos to find again.
+    pub fn forget_tastes(&mut self, cx: &mut Context<Self>) {
+        self.kept.more.clear();
+        self.kept.passed.clear();
+        self.kept.muted.clear();
+        self.save();
+        self.drop_unwanted();
+        self.find_again(cx);
+    }
+
+    /// Takes the videos turned down and those of muted channels out of what is suggested.
+    fn drop_unwanted(&mut self) {
+        let kept = &self.kept;
+        let wanted = |video: &Video| !unwanted(video, kept);
+        // The videos found before the ones looked beside so far keep that count right.
+        let dug = self.dug.min(self.found.len());
+        self.dug = self.found[..dug]
+            .iter()
+            .filter(|video| wanted(video))
+            .count();
+        self.found.retain(wanted);
+        self.recommended = self
+            .offered
+            .iter()
+            .filter(|video| wanted(video))
+            .cloned()
             .collect();
+    }
+
+    /// Picks the videos to find afresh: what YouTube puts next to the seeds, ranked by how
+    /// many of them it sits next to and how much each counts.
+    pub fn find_again(&mut self, cx: &mut Context<Self>) {
+        let seeds = self.seeds();
         self.found_for = Some(self.kept.watched.len());
         self.dug = 0;
         if seeds.is_empty() {
@@ -3711,11 +3896,14 @@ impl Subscriptions {
         cx.notify();
         let client = self.client.clone();
         let request = self.io.spawn(async move {
-            let pages = seeds.iter().map(|id| client.watch(id));
-            let beside: Vec<Vec<Video>> = futures::future::join_all(pages)
+            let pages = seeds.iter().map(|(id, _)| client.watch(id));
+            let beside: Vec<(f32, Vec<Video>)> = futures::future::join_all(pages)
                 .await
                 .into_iter()
-                .map(|page| page.map(|watch| watch.related).unwrap_or_default())
+                .zip(&seeds)
+                .map(|(page, (_, weight))| {
+                    (*weight, page.map(|watch| watch.related).unwrap_or_default())
+                })
                 .collect();
             anyhow::Ok(beside)
         });
@@ -3739,12 +3927,13 @@ impl Subscriptions {
         if self.finding {
             return;
         }
-        let seeds: Vec<String> = self
+        let seeds: Vec<(String, f32)> = self
             .found
             .iter()
             .skip(self.dug)
             .take(FIND_SEEDS)
-            .map(|video| video.id.clone())
+            .enumerate()
+            .map(|(place, video)| (video.id.clone(), FIND_FADE.powi(place as i32)))
             .collect();
         if seeds.is_empty() {
             return;
@@ -3754,11 +3943,14 @@ impl Subscriptions {
         cx.notify();
         let client = self.client.clone();
         let request = self.io.spawn(async move {
-            let pages = seeds.iter().map(|id| client.watch(id));
-            let beside: Vec<Vec<Video>> = futures::future::join_all(pages)
+            let pages = seeds.iter().map(|(id, _)| client.watch(id));
+            let beside: Vec<(f32, Vec<Video>)> = futures::future::join_all(pages)
                 .await
                 .into_iter()
-                .map(|page| page.map(|watch| watch.related).unwrap_or_default())
+                .zip(&seeds)
+                .map(|(page, (_, weight))| {
+                    (*weight, page.map(|watch| watch.related).unwrap_or_default())
+                })
                 .collect();
             anyhow::Ok(beside)
         });
@@ -3958,6 +4150,10 @@ impl Subscriptions {
                     Ok(feed) => this.feed = feed,
                     Err(reason) => log::warn!("video: cannot read the feed: {reason}"),
                 }
+                // A page of new videos that found nothing may find some beside these uploads.
+                if this.found_for.is_some() && this.found.is_empty() && !this.finding {
+                    this.find_again(cx);
+                }
                 cx.notify();
             })
             .ok();
@@ -3979,37 +4175,85 @@ impl Subscriptions {
     }
 }
 
-/// The videos to find new channels by. `beside` holds, for each of the latest videos watched
-/// and the latest first, what YouTube puts next to it. A video counts for more the more of
-/// them it sits next to and the later they were watched, and for less when its channel was
-/// watched before. Videos watched and channels followed are left out, and one channel gets
-/// few places so that many are met.
-fn rank(beside: Vec<Vec<Video>>, kept: &Kept) -> Vec<Video> {
+/// Whether the video was turned down or its channel is one nothing is suggested from.
+fn unwanted(video: &Video, kept: &Kept) -> bool {
+    kept.passed.iter().any(|passed| passed.id == video.id)
+        || video
+            .channel
+            .as_ref()
+            .is_some_and(|channel| kept.muted.iter().any(|muted| muted.id == channel.id))
+}
+
+/// The words of a title that say what it is about, in lower case.
+fn words(title: &str) -> impl Iterator<Item = String> + '_ {
+    title
+        .split(|letter: char| !letter.is_alphanumeric())
+        .filter(|word| word.chars().count() >= FIND_WORD_LEAST)
+        .map(str::to_lowercase)
+}
+
+/// The videos to find new channels by. `beside` holds, for each seed, how much it counts and
+/// what YouTube puts next to it. A video counts for more the more seeds it sits next to and
+/// the more they count, when more of its channel was asked for and when its title shares
+/// words with the titles more was asked of. It counts for less when its channel was watched
+/// before, when videos of its channel were turned down and when its title shares words with
+/// theirs. Videos watched or turned down and channels followed or muted are left out, and
+/// one channel gets few places so that many are met.
+fn rank(beside: Vec<(f32, Vec<Video>)>, kept: &Kept) -> Vec<Video> {
+    use std::collections::HashSet;
+
     let channel = |video: &Video| video.channel.as_ref().map(|channel| channel.id.clone());
-    let known: std::collections::HashSet<String> =
-        kept.watched.iter().filter_map(channel).collect();
+    let known: HashSet<String> = kept.watched.iter().filter_map(channel).collect();
+    let favoured: HashSet<String> = kept.more.iter().filter_map(channel).collect();
+    let mut spurned: HashMap<String, i32> = HashMap::new();
+    for id in kept.passed.iter().filter_map(channel) {
+        *spurned.entry(id).or_default() += 1;
+    }
+    let liked: HashSet<String> = kept.more.iter().flat_map(|v| words(&v.title)).collect();
+    let disliked: HashSet<String> = kept.passed.iter().flat_map(|v| words(&v.title)).collect();
+
     let mut scores: HashMap<String, (f32, Video)> = HashMap::new();
-    let mut weight = 1.;
-    for videos in beside {
+    for (weight, videos) in beside {
         for (place, video) in videos.into_iter().enumerate() {
-            let followed =
-                channel(&video).is_some_and(|id| kept.channels.iter().any(|kept| kept.id == id));
-            if followed || kept.watched.iter().any(|kept| kept.id == video.id) {
+            let made = channel(&video);
+            let followed = made
+                .as_ref()
+                .is_some_and(|id| kept.channels.iter().any(|kept| &kept.id == id));
+            if followed
+                || unwanted(&video, kept)
+                || kept.watched.iter().any(|kept| kept.id == video.id)
+            {
                 continue;
             }
             // What YouTube lists first it thinks closest.
             let near = 1. / (1. + place as f32 * 0.1);
-            let familiar = match channel(&video).is_some_and(|id| known.contains(&id)) {
-                true => FIND_KNOWN,
-                false => 1.,
-            };
-            let score = weight * near * familiar;
+            let mut score = weight * near;
+            if let Some(id) = &made {
+                if favoured.contains(id) {
+                    score *= FIND_FAVOURED;
+                } else if known.contains(id) {
+                    score *= FIND_KNOWN;
+                }
+                if let Some(times) = spurned.get(id) {
+                    score *= FIND_SPURNED.powi(*times);
+                }
+            }
+            // A word in both kinds of title says nothing either way.
+            let (mut likes, mut dislikes) = (0, 0);
+            for word in words(&video.title) {
+                match (liked.contains(&word), disliked.contains(&word)) {
+                    (true, false) => likes += 1,
+                    (false, true) => dislikes += 1,
+                    _ => {}
+                }
+            }
+            score *= 1. + FIND_WORD_LIKED * likes.min(FIND_WORDS) as f32;
+            score *= FIND_WORD_SPURNED.powi(dislikes.min(FIND_WORDS) as i32);
             scores
                 .entry(video.id.clone())
                 .and_modify(|held| held.0 += score)
                 .or_insert((score, video));
         }
-        weight *= FIND_FADE;
     }
     let mut ranked: Vec<(f32, Video)> = scores.into_values().collect();
     ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));

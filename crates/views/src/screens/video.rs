@@ -373,6 +373,15 @@ impl Render for VideoMenu {
         let address = format!("https://www.youtube.com/watch?v={}", video.id);
         let (kept, later) = (self.kept.clone(), video.clone());
         let fetch = video.clone();
+        let tastes = self.kept.read(cx);
+        let (more, passed) = (tastes.wants_more(&video.id), tastes.passed(&video.id));
+        let muted = video
+            .channel
+            .as_ref()
+            .map(|channel| (channel.clone(), tastes.muted(&channel.id)));
+        let (asks, asked) = (self.kept.clone(), video.clone());
+        let (passes, turned) = (self.kept.clone(), video.clone());
+        let mutes = self.kept.clone();
 
         let menu = Menu::new("video-menu")
             .name(t!("video-menu"))
@@ -413,6 +422,66 @@ impl Render for VideoMenu {
                         Toasts::show(Outcome::Done, "toast-link-copied", cx);
                     }),
             )
+            .item(MenuItem::separator("video-menu-tastes"))
+            .item(
+                MenuItem::new(
+                    "video-menu-more",
+                    match more {
+                        true => t!("video-menu-more-undo"),
+                        false => t!("video-menu-more"),
+                    },
+                )
+                .icon(match more {
+                    true => "icons/check.svg",
+                    false => "icons/thumbs-up.svg",
+                })
+                .on_click(move |_, _, cx| {
+                    asks.update(cx, |kept, cx| kept.toggle_more(&asked, cx));
+                    if !more {
+                        Toasts::show(Outcome::Done, "toast-video-more", cx);
+                    }
+                }),
+            )
+            .item(
+                MenuItem::new(
+                    "video-menu-pass",
+                    match passed {
+                        true => t!("video-menu-pass-undo"),
+                        false => t!("video-menu-pass"),
+                    },
+                )
+                .icon(match passed {
+                    true => "icons/undo-2.svg",
+                    false => "icons/x.svg",
+                })
+                .on_click(move |_, _, cx| {
+                    passes.update(cx, |kept, cx| kept.toggle_passed(&turned, cx));
+                    if !passed {
+                        Toasts::show(Outcome::Done, "toast-video-passed", cx);
+                    }
+                }),
+            )
+            .when_some(muted, |menu, (channel, muted)| {
+                menu.item(
+                    MenuItem::new(
+                        "video-menu-mute",
+                        match muted {
+                            true => t!("video-menu-mute-undo"),
+                            false => t!("video-menu-mute"),
+                        },
+                    )
+                    .icon(match muted {
+                        true => "icons/undo-2.svg",
+                        false => "icons/octagon-x.svg",
+                    })
+                    .on_click(move |_, _, cx| {
+                        mutes.update(cx, |kept, cx| kept.toggle_muted(&channel, cx));
+                        if !muted {
+                            Toasts::show(Outcome::Done, "toast-video-muted", cx);
+                        }
+                    }),
+                )
+            })
             .item(MenuItem::separator("video-menu-rule"))
             .item(
                 MenuItem::new(
@@ -4943,10 +5012,36 @@ pub(crate) enum Feed {
     Shorts,
 }
 
+/// Which of the videos found the page of new ones shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sift {
+    /// Every video found.
+    All,
+    /// The ones from channels no video was watched from yet.
+    New,
+    /// The ones from channels watched before but not followed.
+    Known,
+}
+
+impl Sift {
+    const ALL: [Self; 3] = [Self::All, Self::New, Self::Known];
+
+    /// The id of its button and the Fluent key of its name.
+    fn named(self) -> (&'static str, &'static str) {
+        match self {
+            Self::All => ("video-discover-all", "video-discover-all"),
+            Self::New => ("video-discover-new", "video-discover-new"),
+            Self::Known => ("video-discover-known", "video-discover-known"),
+        }
+    }
+}
+
 /// The home page and the watch history: a heading and a grid of videos.
 pub(crate) struct VideoFeedView {
     subscriptions: Entity<Subscriptions>,
     feed: Feed,
+    /// Which of the videos found are shown, on the page of new ones.
+    sift: Sift,
     scrollbar: Entity<Scrollbar>,
     width: Pixels,
 }
@@ -4965,6 +5060,7 @@ impl VideoFeedView {
         Self {
             subscriptions,
             feed,
+            sift: Sift::All,
             scrollbar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id)),
             width: Pixels::ZERO,
         }
@@ -5164,6 +5260,29 @@ impl Render for VideoFeedView {
                 .map(|id| SharedString::from(id.to_owned()));
             opened = first.map(|first| (watching, first));
         }
+        // The page of new videos shows the ones its filter lets through.
+        let found = videos.len();
+        let sifted: Vec<Video>;
+        let videos = match (self.feed, self.sift) {
+            (Feed::Discover, Sift::New | Sift::Known) => {
+                let known = kept.known();
+                let wanted = self.sift == Sift::Known;
+                sifted = videos
+                    .iter()
+                    .filter(|video| {
+                        let seen = video
+                            .channel
+                            .as_ref()
+                            .is_some_and(|channel| known.contains(channel.id.as_str()));
+                        seen == wanted
+                    })
+                    .cloned()
+                    .collect();
+                sifted.as_slice()
+            }
+            _ => videos,
+        };
+        let learned = kept.learned();
         let (videos, reel) = sorted(videos);
         let layout = match self.feed {
             Feed::Shorts => ShortsLayout::Tab,
@@ -5189,7 +5308,7 @@ impl Render for VideoFeedView {
                 router::up(Destination::Short(first), cx);
             });
         }
-        if self.feed == Feed::Discover && !loading && (1..FOUND_MOST).contains(&total) {
+        if self.feed == Feed::Discover && !loading && (1..FOUND_MOST).contains(&found) {
             // Near the foot of the page more are looked for, next to the ones found.
             let scroll = self.scrollbar.read(cx).scroll().clone();
             let left = scroll.max_offset().y + scroll.offset().y;
@@ -5210,16 +5329,55 @@ impl Render for VideoFeedView {
                     })
                     .into_any_element(),
             ),
-            Feed::Discover if !loading => Some(
-                Button::new("video-discover-again")
-                    .icon("icons/refresh-cw.svg")
-                    .label(t!("video-discover-again"))
-                    .secondary()
-                    .on_click(move |_, _, cx| {
-                        again.update(cx, |kept, cx| kept.find_again(cx));
-                    })
-                    .into_any_element(),
-            ),
+            Feed::Discover => {
+                let reset = self.subscriptions.clone();
+                let sift = self.sift;
+                Some(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .justify_end()
+                        .gap_2()
+                        .children(Sift::ALL.map(|choice| {
+                            let (id, name) = choice.named();
+                            Button::new(id)
+                                .label(i18n::lookup(name, None))
+                                .ghost()
+                                .small()
+                                .selected(sift == choice)
+                                .toggled(sift == choice)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.sift = choice;
+                                    cx.notify();
+                                }))
+                        }))
+                        .when(!loading, |row| {
+                            row.child(
+                                Button::new("video-discover-again")
+                                    .icon("icons/refresh-cw.svg")
+                                    .label(t!("video-discover-again"))
+                                    .secondary()
+                                    .on_click(move |_, _, cx| {
+                                        again.update(cx, |kept, cx| kept.find_again(cx));
+                                    }),
+                            )
+                        })
+                        .when(learned > 0, |row| {
+                            row.child(
+                                Button::new("video-discover-reset")
+                                    .icon("icons/undo-2.svg")
+                                    .label(t!("video-discover-reset"))
+                                    .secondary()
+                                    .on_click(move |_, _, cx| {
+                                        reset.update(cx, |kept, cx| kept.forget_tastes(cx));
+                                        Toasts::show(Outcome::Done, "toast-video-tastes-reset", cx);
+                                    }),
+                            )
+                        })
+                        .into_any_element(),
+                )
+            }
             Feed::Shorts if !loading => {
                 let again = self.subscriptions.clone();
                 Some(
